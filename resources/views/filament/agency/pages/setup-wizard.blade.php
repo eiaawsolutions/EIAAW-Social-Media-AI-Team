@@ -156,7 +156,7 @@
         </style>
     @endpush
 
-    @if (! $this->workspaceReadiness || ! $this->workspaceReadiness->hasAnyBrand)
+    @if (! $this->workspaceReadiness() || ! $this->workspaceReadiness()->hasAnyBrand)
         {{-- Empty state: no brands yet --}}
         <div class="wizard-shell">
             <div class="wizard-empty">
@@ -171,11 +171,11 @@
     @else
         <div class="wizard-shell">
             {{-- Brand switcher --}}
-            @if ($this->workspaceReadiness->brandCount > 1)
+            @if ($this->workspaceReadiness()->brandCount > 1)
                 <div class="wizard-brand-switcher">
-                    @foreach ($this->workspaceReadiness->brands as $br)
+                    @foreach ($this->workspaceReadiness()->brands as $br)
                         <a href="{{ url('/agency/setup-wizard?brand=' . $br->brand->id) }}"
-                           class="wizard-brand-pill {{ $br->brand->id === $this->brandReadiness?->brand->id ? 'wizard-brand-pill-active' : '' }}">
+                           class="wizard-brand-pill {{ $br->brand->id === $this->brandReadiness()?->brand->id ? 'wizard-brand-pill-active' : '' }}">
                             {{ $br->brand->name }} · {{ $br->percent }}%
                         </a>
                     @endforeach
@@ -184,27 +184,27 @@
 
             {{-- Progress hero --}}
             <div class="wizard-progress">
-                <div class="wizard-progress-num">{{ $this->brandReadiness->percent }}%</div>
+                <div class="wizard-progress-num">{{ $this->brandReadiness()->percent }}%</div>
                 <div>
                     <div class="wizard-progress-meta">
-                        {{ $this->brandReadiness->doneStages }} / {{ $this->brandReadiness->totalStages }} stages complete
+                        {{ $this->brandReadiness()->doneStages }} / {{ $this->brandReadiness()->totalStages }} stages complete
                     </div>
                     <div style="font-size: 14px; color: var(--eiaaw-ink-2); margin-top: 4px;">
-                        @if ($this->brandReadiness->isComplete)
+                        @if ($this->brandReadiness()->isComplete)
                             Every stage complete. The agents have everything they need to run.
                         @else
-                            Next: <strong>{{ $this->brandReadiness->nextActionable?->label ?? '—' }}</strong>
+                            Next: <strong>{{ $this->brandReadiness()->nextActionable?->label ?? '—' }}</strong>
                         @endif
                     </div>
                 </div>
             </div>
 
             <div class="wizard-progress-bar">
-                <span style="width: {{ $this->brandReadiness->percent }}%"></span>
+                <span style="width: {{ $this->brandReadiness()->percent }}%"></span>
             </div>
 
             {{-- Stage list --}}
-            @foreach ($this->brandReadiness->stages as $stage)
+            @foreach ($this->brandReadiness()->stages as $stage)
                 <div class="wizard-stage {{ $this->statusClass($stage->status()) }}"
                      id="stage-{{ $stage->id }}"
                      @if ($focus === $stage->id) data-focused="true" @endif>

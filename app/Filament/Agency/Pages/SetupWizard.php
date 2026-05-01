@@ -32,11 +32,17 @@ class SetupWizard extends Page
     protected static ?int $navigationSort = -1; // pin to top of nav
     protected string $view = 'filament.agency.pages.setup-wizard';
 
+    /** Livewire-safe scalar props (these CAN round-trip to the browser). */
     public ?int $brand = null;
     public ?string $focus = null;
 
-    public ?WorkspaceReadiness $workspaceReadiness = null;
-    public ?BrandReadiness $brandReadiness = null;
+    /**
+     * Livewire v4 refuses to serialise complex objects in public state. We keep
+     * the readiness objects protected and recompute on every render — both
+     * mount() and any wire:click action will redundantly call refreshReadiness().
+     */
+    protected ?WorkspaceReadiness $workspaceReadiness = null;
+    protected ?BrandReadiness $brandReadiness = null;
 
     public function mount(): void
     {
@@ -73,6 +79,23 @@ class SetupWizard extends Page
         // Default: first incomplete brand, or first brand
         $this->brandReadiness = $this->workspaceReadiness->nextActionableBrand()
             ?? $this->workspaceReadiness->primaryBrand;
+    }
+
+    /** Public accessors used by the Blade view. */
+    public function workspaceReadiness(): ?WorkspaceReadiness
+    {
+        if ($this->workspaceReadiness === null) {
+            $this->refreshReadiness();
+        }
+        return $this->workspaceReadiness;
+    }
+
+    public function brandReadiness(): ?BrandReadiness
+    {
+        if ($this->brandReadiness === null && $this->workspaceReadiness === null) {
+            $this->refreshReadiness();
+        }
+        return $this->brandReadiness;
     }
 
     public function getHeading(): string|Htmlable
