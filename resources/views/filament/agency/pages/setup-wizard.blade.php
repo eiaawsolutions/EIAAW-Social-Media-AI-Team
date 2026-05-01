@@ -162,7 +162,7 @@
             <div class="wizard-empty">
                 <h3>You haven't added a brand yet.</h3>
                 <p>EIAAW Social Media Team works one brand at a time. Each brand gets its own voice synthesis, content calendar, and audit trail. You can add more brands once your first one is running.</p>
-                <a href="{{ url('/agency/brands/create') }}" class="wizard-cta">
+                <a href="{{ url('/agency/brands?action=create') }}" class="wizard-cta">
                     Add your first brand
                     <span aria-hidden="true">→</span>
                 </a>
