@@ -11,6 +11,7 @@ use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Forms;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables;
@@ -33,7 +34,7 @@ class BrandResource extends Resource
                     ->required()
                     ->maxLength(120)
                     ->live(onBlur: true)
-                    ->afterStateUpdated(function (?string $state, Forms\Set $set, ?Brand $record) {
+                    ->afterStateUpdated(function (?string $state, Set $set, ?Brand $record) {
                         if (! $record && $state) {
                             $set('slug', \Illuminate\Support\Str::slug($state));
                         }
