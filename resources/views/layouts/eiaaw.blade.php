@@ -22,27 +22,25 @@
 </head>
 <body class="@yield('body_class')">
 
-<nav class="nav">
-  <div class="wrap" style="display: flex; align-items: center; justify-content: space-between;">
-    <a href="/" class="nav-logo">
-      <img src="/brand/shield.png" alt="EIAAW Solutions shield">
-      <span class="nav-logo-text">
-        <strong>EIAAW SOLUTIONS</strong>
-        <small>Social Media Team</small>
-      </span>
-    </a>
-    <div class="nav-links">
-      <a href="#how">How it works</a>
-      <a href="#agents">The team</a>
-      <a href="#receipts">Receipts</a>
-      <a href="#pricing">Pricing</a>
-      @auth
-        <a href="{{ url('/agency') }}" class="btn btn-primary">Open dashboard <span class="arrow">&rarr;</span></a>
-      @else
-        <a href="{{ url('/login') }}" class="btn btn-outline">Log in</a>
-        <a href="{{ url('/register') }}" class="btn btn-primary">Start free <span class="arrow">&rarr;</span></a>
-      @endauth
-    </div>
+<nav class="nav" id="siteNav">
+  <a href="/" class="nav-logo">
+    <img src="/brand/shield.png" alt="EIAAW Solutions shield">
+    <span class="nav-logo-text">
+      <strong>EIAAW SOLUTIONS</strong>
+      <small>Social Media Team</small>
+    </span>
+  </a>
+  <div class="nav-links">
+    <a href="#how">How it works</a>
+    <a href="#agents">The team</a>
+    <a href="#receipts">Receipts</a>
+    <a href="#pricing">Pricing</a>
+    @auth
+      <a href="{{ url('/agency') }}" class="btn btn-primary">Open dashboard <span class="arrow">&rarr;</span></a>
+    @else
+      <a href="{{ url('/login') }}" class="btn btn-outline">Log in</a>
+      <a href="{{ url('/register') }}" class="btn btn-primary">Start free <span class="arrow">&rarr;</span></a>
+    @endauth
   </div>
 </nav>
 
