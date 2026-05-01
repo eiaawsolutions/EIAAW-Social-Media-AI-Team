@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "php",
+  "buildAptPackages": ["libpq-dev", "libicu-dev", "libonig-dev", "zlib1g-dev", "libpng-dev", "libjpeg-dev", "libwebp-dev", "libfreetype6-dev"],
+  "phpExtensions": [
+    "bcmath",
+    "ctype",
+    "curl",
+    "dom",
+    "fileinfo",
+    "filter",
+    "gd",
+    "hash",
+    "intl",
+    "mbstring",
+    "openssl",
+    "pcntl",
+    "pcre",
+    "pdo",
+    "pdo_pgsql",
+    "posix",
+    "session",
+    "tokenizer",
+    "xml",
+    "zip"
+  ],
+  "deploy": {
+    "startCommand": "php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache && php artisan serve --host=0.0.0.0 --port=$PORT"
+  }
+}
