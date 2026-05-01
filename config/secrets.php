@@ -52,6 +52,11 @@ return [
         'services.stripe.key',
         'services.stripe.secret',
         'services.stripe.webhook_secret',
+        // Cashier reads its own config block — keep these in sync with services.stripe.*
+        // so $cashier->stripe() and any direct Cashier helpers see resolved values.
+        'cashier.key',
+        'cashier.secret',
+        'cashier.webhook.secret',
         'services.billplz.api_key',
         'services.billplz.x_signature',
 
