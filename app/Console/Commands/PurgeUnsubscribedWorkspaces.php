@@ -5,10 +5,16 @@ namespace App\Console\Commands;
 use App\Models\Workspace;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
- * PurgeUnsubscribedWorkspaces — operator command to wipe non-active test
- * workspaces during the launch window.
+ * PurgeUnsubscribedWorkspaces — transitional cleanup for any workspace rows
+ * created BEFORE the Stripe-Checkout signup flow (BillingController) became
+ * the only path. Under that flow no User/Workspace can be created without
+ * a completed checkout, so this command exists to wipe the trialing-only
+ * test rows that already exist; afterwards it's effectively a no-op
+ * forever.
  *
  * Selection rule (deliberately conservative):
  *   - subscription_status IN (trialing, none, canceled, past_due)
@@ -18,6 +24,10 @@ use Illuminate\Support\Facades\DB;
  * The `eiaaw_internal` plan and the `active` status are NEVER purged
  * regardless of flags — defense-in-depth against an accidentally-broad
  * purge wiping a real subscriber.
+ *
+ * Pass --purge-stripe-customers to also delete the Stripe customer record
+ * for each purged workspace (otherwise they linger forever in Stripe even
+ * after the DB row is gone — minor housekeeping; safe to skip).
  *
  * Why we need an audit-log escape:
  *   The audit_log table has BEFORE DELETE / BEFORE UPDATE triggers that
@@ -35,13 +45,15 @@ class PurgeUnsubscribedWorkspaces extends Command
 {
     protected $signature = 'workspaces:purge-unsubscribed
         {--apply : Actually perform deletes (default is dry-run)}
-        {--keep-emails=eiaawsolutions@gmail.com : Comma-separated owner emails to always keep}';
+        {--keep-emails=eiaawsolutions@gmail.com : Comma-separated owner emails to always keep}
+        {--purge-stripe-customers : Also delete the Stripe customer record for each purged workspace}';
 
     protected $description = 'Delete test workspaces that never converted to a paid subscription. Always preserves eiaaw_internal + active subscribers.';
 
     public function handle(): int
     {
         $apply = (bool) $this->option('apply');
+        $purgeStripe = (bool) $this->option('purge-stripe-customers');
         $keepEmails = collect(explode(',', (string) $this->option('keep-emails')))
             ->map(fn ($e) => strtolower(trim($e)))
             ->filter()
@@ -94,6 +106,11 @@ class PurgeUnsubscribedWorkspaces extends Command
         }
 
         $ids = $candidates->pluck('id')->all();
+        $stripeCustomerIds = $candidates
+            ->pluck('stripe_customer_id')
+            ->filter()
+            ->values()
+            ->all();
 
         try {
             DB::transaction(function () use ($ids) {
@@ -159,6 +176,35 @@ class PurgeUnsubscribedWorkspaces extends Command
         }
 
         $this->info('Purged ' . count($ids) . ' workspace(s) and all related rows.');
+
+        if ($purgeStripe && ! empty($stripeCustomerIds)) {
+            $this->newLine();
+            $this->info('Deleting ' . count($stripeCustomerIds) . ' Stripe customer record(s)...');
+            $secret = (string) env('STRIPE_SECRET');
+            if ($secret === '') {
+                $this->warn('STRIPE_SECRET is not set — skipping Stripe customer deletion.');
+                return self::SUCCESS;
+            }
+            $deleted = 0;
+            foreach ($stripeCustomerIds as $cid) {
+                try {
+                    $resp = Http::withBasicAuth($secret, '')
+                        ->timeout(15)
+                        ->delete('https://api.stripe.com/v1/customers/' . urlencode($cid));
+                    if ($resp->successful()) {
+                        $deleted++;
+                        $this->line('  deleted ' . $cid);
+                    } else {
+                        $this->warn('  failed ' . $cid . ': ' . $resp->status() . ' ' . substr($resp->body(), 0, 120));
+                    }
+                } catch (\Throwable $e) {
+                    Log::error('Stripe customer delete failed', ['cid' => $cid, 'error' => $e->getMessage()]);
+                    $this->warn('  failed ' . $cid . ': ' . $e->getMessage());
+                }
+            }
+            $this->info('Stripe customers deleted: ' . $deleted . ' / ' . count($stripeCustomerIds));
+        }
+
         return self::SUCCESS;
     }
 }

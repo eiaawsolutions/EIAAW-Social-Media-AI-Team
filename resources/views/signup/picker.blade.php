@@ -10,9 +10,9 @@
     <div class="section-head">
       <div class="label"><span class="eyebrow">Sign up &middot; step 1 of 2</span></div>
       <h1 class="title section-h">
-        Pick your plan. <em>14 days free. No card upfront.</em>
+        Pick your plan. <em>14 days free.</em>
       </h1>
-      <div class="aside">All tiers include the full 6-agent team and complete receipts.</div>
+      <div class="aside">Card required &middot; you won't be charged until your trial ends. All tiers include the full 6-agent team and complete receipts.</div>
     </div>
 
     @if (session('error'))

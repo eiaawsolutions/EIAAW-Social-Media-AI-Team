@@ -3,6 +3,7 @@
 namespace App\Filament\Agency\Pages;
 
 use App\Models\Workspace;
+use App\Services\StripePriceCache;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
@@ -14,15 +15,10 @@ use Illuminate\Support\Facades\Log;
  * this route) so an expired-trial workspace can subscribe and unstick itself.
  *
  * Stripe Checkout is created on the fly via Cashier — we never store the
- * session URL anywhere. Price IDs come from env (populated via Infisical
- * per EIAAW Deploy Contract):
- *
- *   STRIPE_PRICE_SOLO_MYR_MONTHLY     STRIPE_PRICE_SOLO_MYR_ANNUAL
- *   STRIPE_PRICE_STUDIO_MYR_MONTHLY   STRIPE_PRICE_STUDIO_MYR_ANNUAL
- *   STRIPE_PRICE_AGENCY_MYR_MONTHLY   STRIPE_PRICE_AGENCY_MYR_ANNUAL
- *
- * If a price ID is missing the action will surface a clear error to the
- * user (rather than letting Cashier throw an unhelpful API error).
+ * session URL anywhere. Stripe Product/Price IDs are lazy-created on first
+ * checkout per plan via App\Services\StripePriceCache and cached in the
+ * stripe_prices table. No STRIPE_PRICE_* env vars exist anymore — all plan
+ * data lives in config/billing.php.
  */
 class Billing extends Page
 {
@@ -116,16 +112,24 @@ class Billing extends Page
             return null;
         }
 
-        $priceId = $this->resolvePriceId($this->workspace->plan, $period);
-        if (! $priceId) {
-            Log::warning('Stripe price id missing', [
+        if ($this->workspace->plan === 'eiaaw_internal') {
+            $this->failNotification('EIAAW internal workspaces are not billed.');
+            return null;
+        }
+
+        // 'monthly' / 'annual' from the action → Stripe interval
+        $interval = $period === 'annual' ? 'year' : 'month';
+
+        try {
+            $priceId = app(StripePriceCache::class)->getOrCreate($this->workspace->plan, $interval);
+        } catch (\Throwable $e) {
+            Log::error('StripePriceCache::getOrCreate failed', [
                 'workspace_id' => $this->workspace->id,
                 'plan' => $this->workspace->plan,
-                'period' => $period,
+                'interval' => $interval,
+                'error' => $e->getMessage(),
             ]);
-            $this->failNotification(
-                'This plan is not yet available for self-serve checkout. Please email eiaawsolutions@gmail.com and we\'ll set up billing for you within the day.'
-            );
+            $this->failNotification('Could not resolve price for this plan. Please contact support — error: '.$e->getMessage());
             return null;
         }
 
@@ -165,15 +169,6 @@ class Billing extends Page
             $this->failNotification('Could not open billing portal: ' . $e->getMessage());
             return null;
         }
-    }
-
-    private function resolvePriceId(string $plan, string $period): ?string
-    {
-        $key = strtoupper("STRIPE_PRICE_{$plan}_MYR_{$period}");
-        $value = config('services.stripe.prices.' . strtolower("{$plan}_myr_{$period}"))
-            ?? env($key);
-
-        return is_string($value) && $value !== '' ? $value : null;
     }
 
     private function failNotification(string $body): void

@@ -4,56 +4,62 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Route;
 use Illuminate\View\View;
 
 /**
- * Public signup funnel. The landing CTAs all route here, NOT directly to
- * Filament's /agency/register, because we want a plan-first flow:
+ * Public signup funnel — plan-first, then a lightweight details capture,
+ * then Stripe Checkout. Mirrors the Sales-marketing-agent flow.
  *
- *   /signup           → tier picker (Solo / Studio / Agency)
- *   /signup/{plan}    → set plan in session, redirect to /agency/register
+ *   /signup           → tier picker (3 plans)
+ *   /signup/{plan}    → renders the name+email+workspace_name form
+ *   POST /billing/checkout/{plan}  → BillingController::checkout (Stripe redirect)
+ *   /billing/success?session_id    → BillingController::success (provisions account)
  *
- * The chosen plan is stashed in session under 'signup.plan' and consumed by
- * App\Filament\Agency\Auth\Register inside the registration transaction —
- * the user never has a chance to register without a plan attached, even if
- * they navigate to /agency/register directly (we default to 'solo').
+ * No DB writes happen here. The user record is created only after
+ * Stripe Checkout completes (success URL handler).
  */
 class SignupController extends Controller
 {
     public const ALLOWED_PLANS = ['solo', 'studio', 'agency'];
 
-    public function picker(): View
+    public function picker(Request $request): View
     {
         return view('signup.picker', [
             'tiers' => $this->tiers(),
+            'canceled' => $request->boolean('canceled'),
         ]);
     }
 
-    public function selectPlan(Request $request, string $plan): RedirectResponse
+    public function selectPlan(Request $request, string $plan): View|RedirectResponse
     {
         if (! in_array($plan, self::ALLOWED_PLANS, true)) {
             return redirect()->route('signup.picker')
                 ->with('error', 'That plan does not exist. Please choose one below.');
         }
 
-        $request->session()->put('signup.plan', $plan);
-
-        // If the user is already logged in and just wants to start a NEW
-        // workspace, send them straight to the panel (the registration flow
-        // is for net-new accounts only). The trial-guard middleware will
-        // pick up the new workspace from there.
+        // Logged-in users hit /agency directly — they're not signing up,
+        // they're navigating. The trial-guard middleware decides what to
+        // render once they arrive.
         if ($request->user()) {
             return redirect('/agency');
         }
 
-        return redirect('/agency/register');
+        $plans = config('billing.plans', []);
+        $planConfig = $plans[$plan] ?? null;
+        if (! $planConfig) {
+            return redirect()->route('signup.picker')
+                ->with('error', 'That plan is not available right now.');
+        }
+
+        return view('signup.details', [
+            'plan' => array_merge(['key' => $plan], $planConfig),
+        ]);
     }
 
     /**
-     * The 3 tiers shown on the picker page. Mirrors the pricing block in
-     * resources/views/landing.blade.php — keep these in sync until they're
-     * extracted into a shared partial or config.
+     * Tier card data shown on the picker page. Mirrors the pricing block in
+     * the landing page; keep both pointing at the same SOURCE OF TRUTH
+     * (config/billing.php) when copy iteration ramps up.
      */
     private function tiers(): array
     {

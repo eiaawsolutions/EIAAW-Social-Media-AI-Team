@@ -4,8 +4,8 @@ namespace App\Providers\Filament;
 
 use App\Filament\Agency\Pages\SetupWizard;
 use App\Filament\Agency\Widgets\ReadinessHeader;
+use App\Filament\Agency\Widgets\WelcomeBannerWidget;
 use App\Http\Middleware\RedirectToSetupIfIncomplete;
-use App\Filament\Agency\Auth\Register;
 use App\Filament\Agency\Pages\Billing;
 use App\Filament\Agency\Pages\TrialExpired;
 use App\Http\Middleware\EnforceTrialOrSubscription;
@@ -37,7 +37,10 @@ class AgencyPanelProvider extends PanelProvider
             ->id('agency')
             ->path('agency')
             ->login()
-            ->registration(Register::class)
+            // Public registration via Stripe Checkout — see BillingController.
+            // The old Filament Register page (App\Filament\Agency\Auth\Register)
+            // is dormant and reserved for future invitation-based team-seat
+            // sign-ups. Public traffic never hits /agency/register.
             ->passwordReset()
             ->emailVerification()
             ->profile()
@@ -61,6 +64,7 @@ class AgencyPanelProvider extends PanelProvider
             ])
             ->discoverWidgets(in: app_path('Filament/Agency/Widgets'), for: 'App\\Filament\\Agency\\Widgets')
             ->widgets([
+                WelcomeBannerWidget::class,
                 ReadinessHeader::class,
             ])
             ->middleware([
@@ -82,19 +86,15 @@ class AgencyPanelProvider extends PanelProvider
             ->renderHook(
                 PanelsRenderHook::HEAD_END,
                 fn (): string => Blade::render('<link rel="stylesheet" href="' . asset('brand/auth.css') . '?v=' . filemtime(public_path('brand/auth.css')) . '">'),
-                scopes: [Login::class, Register::class, RequestPasswordReset::class, ResetPassword::class],
+                scopes: [Login::class, RequestPasswordReset::class, ResetPassword::class],
             )
             ->renderHook(
                 PanelsRenderHook::SIMPLE_LAYOUT_START,
                 fn (): string => view('filament.agency.auth.hero')->render(),
-                scopes: [Login::class, Register::class, RequestPasswordReset::class, ResetPassword::class],
+                scopes: [Login::class, RequestPasswordReset::class, ResetPassword::class],
             )
             ->renderHook(
                 PanelsRenderHook::AUTH_LOGIN_FORM_BEFORE,
-                fn (): string => view('filament.agency.auth.return-link')->render(),
-            )
-            ->renderHook(
-                PanelsRenderHook::AUTH_REGISTER_FORM_BEFORE,
                 fn (): string => view('filament.agency.auth.return-link')->render(),
             )
             ->renderHook(

@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\TrialEndingSoon;
 use App\Models\SubscriptionEvent;
 use App\Models\Workspace;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Laravel\Cashier\Http\Controllers\WebhookController as CashierWebhookController;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -122,6 +124,53 @@ class StripeWebhookController extends CashierWebhookController
                     'canceled_at' => $workspace->canceled_at ?? now(),
                 ]);
                 Log::info("Workspace {$workspace->slug} subscription canceled — 30-day read-only grace begins.");
+                break;
+
+            case 'customer.subscription.updated':
+                // Race-safety net: when Stripe transitions a trialing sub to
+                // active without a corresponding invoice.payment_succeeded
+                // (e.g., zero-amount add-on edits, manual transitions), still
+                // settle the workspace flags.
+                $sub = $payload['data']['object'] ?? [];
+                $stripeStatus = $sub['status'] ?? null;
+                $trialEnd = $sub['trial_end'] ?? null;
+                if ($stripeStatus === 'active' && empty($trialEnd) && $workspace->subscription_status !== 'active') {
+                    $workspace->update([
+                        'subscription_status' => 'active',
+                        'past_due_at' => null,
+                        'trial_ends_at' => null,
+                    ]);
+                    Log::info("Workspace {$workspace->slug} subscription went active via subscription.updated.");
+                }
+                break;
+
+            case 'customer.subscription.trial_will_end':
+                // Stripe fires this T-3 days before trial_end. Queue a
+                // friendly reminder. Idempotent because subscription_events
+                // dedupes on stripe_event_id.
+                if ($workspace->owner) {
+                    try {
+                        Mail::to($workspace->owner->email)->queue(new TrialEndingSoon($workspace));
+                        Log::info("Workspace {$workspace->slug} — trial-ending reminder queued.");
+                    } catch (\Throwable $e) {
+                        Log::error("Workspace {$workspace->slug} — trial reminder queue failed: ".$e->getMessage());
+                    }
+                }
+                break;
+
+            case 'checkout.session.completed':
+                // No-op for the signup flow — BillingController::success has
+                // already provisioned the account synchronously by the time
+                // the webhook lands. Reserved for future panel-side upgrade
+                // flows that set metadata.intent='upgrade' and pass the
+                // target plan; idempotency keeps it safe to re-process.
+                $session = $payload['data']['object'] ?? [];
+                $intent = $session['metadata']['intent'] ?? null;
+                $newPlan = $session['metadata']['plan'] ?? null;
+                if ($intent === 'upgrade' && $newPlan && $workspace->plan !== $newPlan) {
+                    $workspace->update(['plan' => $newPlan]);
+                    Log::info("Workspace {$workspace->slug} upgraded to plan={$newPlan} via checkout.session.completed.");
+                }
                 break;
         }
     }

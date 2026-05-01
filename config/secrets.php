@@ -49,6 +49,7 @@ return [
         'database.redis.default.password',
 
         // Billing
+        'services.stripe.key',
         'services.stripe.secret',
         'services.stripe.webhook_secret',
         'services.billplz.api_key',
