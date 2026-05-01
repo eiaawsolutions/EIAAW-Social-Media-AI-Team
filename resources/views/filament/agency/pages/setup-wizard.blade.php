@@ -225,7 +225,23 @@
                             <a href="{{ $stage->ctaUrl }}" class="wizard-cta wizard-cta-ghost">{{ $stage->ctaLabel }}</a>
                         @elseif ($stage->blockedBy)
                             <span class="wizard-cta wizard-cta-disabled">{{ $stage->ctaLabel }}</span>
+                        @elseif (in_array($stage->id, ['brand_style', 'calendar_generated']))
+                            {{-- Stages with one-click agent triggers --}}
+                            <button type="button"
+                                    class="wizard-cta"
+                                    wire:click="runStage('{{ $stage->id }}')"
+                                    wire:loading.attr="disabled"
+                                    wire:target="runStage">
+                                <span wire:loading.remove wire:target="runStage('{{ $stage->id }}')">
+                                    {{ $stage->ctaLabel }}
+                                    <span aria-hidden="true">→</span>
+                                </span>
+                                <span wire:loading wire:target="runStage('{{ $stage->id }}')">
+                                    Working…
+                                </span>
+                            </button>
                         @else
+                            {{-- Stages where the user takes action elsewhere (forms / OAuth / uploads) --}}
                             <a href="{{ $stage->ctaUrl }}" class="wizard-cta">
                                 {{ $stage->ctaLabel }}
                                 <span aria-hidden="true">→</span>

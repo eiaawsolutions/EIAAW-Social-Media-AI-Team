@@ -31,6 +31,7 @@ return [
         // AI providers
         'services.anthropic.api_key',
         'services.fal.api_key',
+        'services.voyage.api_key',
 
         // Publishing
         'services.blotato.api_key',

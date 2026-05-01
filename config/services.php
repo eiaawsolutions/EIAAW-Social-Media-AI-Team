@@ -28,6 +28,12 @@ return [
         'request_timeout' => (int) env('FAL_REQUEST_TIMEOUT', 180),
     ],
 
+    'voyage' => [
+        // Voyage-3 embeddings (1024 dim) for brand-voice RAG.
+        'api_key' => env('VOYAGE_API_KEY'),
+        'model' => env('VOYAGE_MODEL', 'voyage-3'),
+    ],
+
     // ─── Publishing ─────────────────────────────────────────────────
     'blotato' => [
         'api_key' => env('BLOTATO_API_KEY'),

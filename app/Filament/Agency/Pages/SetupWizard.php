@@ -2,11 +2,15 @@
 
 namespace App\Filament\Agency\Pages;
 
+use App\Agents\OnboardingAgent;
+use App\Agents\StrategistAgent;
+use App\Exceptions\AgentPrerequisiteMissing;
 use App\Models\Brand;
 use App\Models\Workspace;
 use App\Services\Readiness\BrandReadiness;
 use App\Services\Readiness\SetupReadiness;
 use App\Services\Readiness\WorkspaceReadiness;
+use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Contracts\Support\Htmlable;
 
@@ -112,6 +116,87 @@ class SetupWizard extends Page
             'done' => '✓',
             'blocked' => '·',
             default => '○',
+        };
+    }
+
+    /**
+     * Livewire entry point — wired from the Blade CTA buttons.
+     * Dispatches the right agent based on the stage id, surfaces a
+     * Filament notification with the result, then refreshes readiness.
+     */
+    public function runStage(string $stageId): void
+    {
+        if (! $this->brandReadiness) {
+            Notification::make()->title('No brand selected')->danger()->send();
+            return;
+        }
+
+        $brand = $this->brandReadiness->brand;
+
+        try {
+            $result = match ($stageId) {
+                'brand_style' => app(OnboardingAgent::class)->run($brand),
+                'calendar_generated' => app(StrategistAgent::class)->run($brand),
+                default => null,
+            };
+
+            if ($result === null) {
+                Notification::make()
+                    ->title('Coming soon')
+                    ->body("Stage \"$stageId\" doesn't have a one-click agent yet — finish the prerequisite stages first.")
+                    ->warning()
+                    ->send();
+                return;
+            }
+
+            if ($result->ok) {
+                Notification::make()
+                    ->title('Done — '.$stageId.' complete')
+                    ->body($this->summariseResult($stageId, $result))
+                    ->success()
+                    ->send();
+            } else {
+                Notification::make()
+                    ->title('Could not complete stage')
+                    ->body($result->errorMessage ?: 'The agent returned no result. Try again.')
+                    ->danger()
+                    ->persistent()
+                    ->send();
+            }
+        } catch (AgentPrerequisiteMissing $e) {
+            Notification::make()
+                ->title('Missing prerequisite')
+                ->body('Complete stage "'.($e->missingStage() ?? 'unknown').'" first.')
+                ->warning()
+                ->send();
+        } catch (\Throwable $e) {
+            Notification::make()
+                ->title('Agent crashed')
+                ->body(substr($e->getMessage(), 0, 300))
+                ->danger()
+                ->persistent()
+                ->send();
+        }
+
+        $this->refreshReadiness();
+    }
+
+    private function summariseResult(string $stageId, \App\Agents\AgentResult $result): string
+    {
+        $data = $result->data;
+        return match ($stageId) {
+            'brand_style' => sprintf(
+                'Brand voice synthesised — v%d, %d words, %d evidence quotes.',
+                $data['version'] ?? 1,
+                $data['word_count'] ?? 0,
+                $data['evidence_count'] ?? 0,
+            ),
+            'calendar_generated' => sprintf(
+                '%s calendar built — %d entries.',
+                $data['label'] ?? 'Month',
+                $data['entry_count'] ?? 0,
+            ),
+            default => 'Stage completed.',
         };
     }
 }
