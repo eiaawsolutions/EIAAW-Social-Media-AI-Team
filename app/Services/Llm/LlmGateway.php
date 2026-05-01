@@ -144,7 +144,7 @@ class LlmGateway
             outputTokens: $usage['output'],
             latencyMs: $latencyMs,
             costUsd: $costUsd,
-            stopReason: $response->stopReason ?? null,
+            stopReason: $this->extractStopReason($response),
             rawResponse: [],
         );
     }
@@ -195,6 +195,19 @@ class LlmGateway
             Log::warning('LlmGateway: structured output requested but response was not parseable', [
                 'sample' => substr($trimmed, 0, 200),
             ]);
+            return null;
+        }
+    }
+
+    /**
+     * Anthropic SDK's BaseModel overrides ->stopReason / ->model in some
+     * cases — array access is the safe path. Fall back gracefully.
+     */
+    private function extractStopReason(object $response): ?string
+    {
+        try {
+            return $response['stop_reason'] ?? $response->stopReason ?? null;
+        } catch (\Throwable) {
             return null;
         }
     }

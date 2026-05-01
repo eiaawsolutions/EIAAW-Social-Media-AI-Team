@@ -61,7 +61,8 @@ class VerifyInfisical extends Command
                 );
                 $text = $response->content[0]->text ?? '(no text)';
                 $tokens = ($response->usage->inputTokens ?? 0) + ($response->usage->outputTokens ?? 0);
-                $this->info("  Anthropic OK — model={$response->model}, tokens={$tokens}, reply=\"".trim($text).'"');
+                $modelId = $response['model'] ?? 'unknown';
+                $this->info("  Anthropic OK — model={$modelId}, tokens={$tokens}, reply=\"".trim($text).'"');
             } catch (\Throwable $e) {
                 $this->error('  Anthropic call FAILED: '.$e->getMessage());
                 return self::FAILURE;
