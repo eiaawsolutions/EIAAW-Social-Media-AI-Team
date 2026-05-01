@@ -4,7 +4,6 @@ namespace App\Services\Secrets;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
@@ -12,6 +11,18 @@ class InfisicalResolver
 {
     private ?string $accessToken = null;
     private int $accessTokenExpiresAt = 0;
+
+    /**
+     * In-memory per-instance cache of resolved secrets. The resolver is a
+     * singleton — one instance per request — so this is effectively
+     * per-request memoization. We deliberately avoid Cache::remember()
+     * because it requires the cache backend (Redis/database) to be reachable
+     * during boot, and during `php artisan config:cache` the cache backend
+     * is being initialised by the very config we're trying to resolve.
+     *
+     * @var array<string, string>
+     */
+    private array $resolvedCache = [];
 
     /**
      * @param  array<string, mixed>  $config  Values from config('secrets.infisical')
@@ -30,26 +41,27 @@ class InfisicalResolver
             return $handle;
         }
 
+        if (isset($this->resolvedCache[$handle])) {
+            return $this->resolvedCache[$handle];
+        }
+
         $parsed = self::parseHandle($handle);
         if ($parsed === null) {
             Log::warning('InfisicalResolver: malformed handle', ['handle' => $handle]);
             return $handle;
         }
 
-        $ttl = (int) ($this->config['cache_ttl'] ?? 300);
-        $cacheKey = 'infisical:'.md5($handle);
-
-        return Cache::remember($cacheKey, $ttl, function () use ($parsed, $handle) {
-            try {
-                return $this->fetch($parsed['environment'], $parsed['path'], $parsed['name']);
-            } catch (\Throwable $e) {
-                Log::error('InfisicalResolver: fetch failed', [
-                    'handle' => $handle,
-                    'error' => $e->getMessage(),
-                ]);
-                throw $e;
-            }
-        });
+        try {
+            $value = $this->fetch($parsed['environment'], $parsed['path'], $parsed['name']);
+            $this->resolvedCache[$handle] = $value;
+            return $value;
+        } catch (\Throwable $e) {
+            Log::error('InfisicalResolver: fetch failed', [
+                'handle' => $handle,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
     }
 
     /**

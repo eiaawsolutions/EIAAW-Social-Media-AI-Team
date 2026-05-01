@@ -47,6 +47,27 @@ class VerifyInfisical extends Command
             $this->line("  $path: $tag ({$prefix}... ".strlen($value)." chars)");
         }
 
+        // Real Claude ping — proves the resolved key actually works end-to-end.
+        $apiKey = (string) config('services.anthropic.api_key');
+        if (str_starts_with($apiKey, 'sk-ant-')) {
+            $this->newLine();
+            $this->line('Pinging Anthropic with resolved key...');
+            try {
+                $client = new \Anthropic\Client(apiKey: $apiKey);
+                $response = $client->messages->create(
+                    maxTokens: 50,
+                    messages: [['role' => 'user', 'content' => 'Reply with the single word OK.']],
+                    model: 'claude-haiku-4-5-20251001',
+                );
+                $text = $response->content[0]->text ?? '(no text)';
+                $tokens = ($response->usage->inputTokens ?? 0) + ($response->usage->outputTokens ?? 0);
+                $this->info("  Anthropic OK — model={$response->model}, tokens={$tokens}, reply=\"".trim($text).'"');
+            } catch (\Throwable $e) {
+                $this->error('  Anthropic call FAILED: '.$e->getMessage());
+                return self::FAILURE;
+            }
+        }
+
         return self::SUCCESS;
     }
 }
