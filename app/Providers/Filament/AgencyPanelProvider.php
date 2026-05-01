@@ -5,6 +5,13 @@ namespace App\Providers\Filament;
 use App\Filament\Agency\Pages\SetupWizard;
 use App\Filament\Agency\Widgets\ReadinessHeader;
 use App\Http\Middleware\RedirectToSetupIfIncomplete;
+use App\Filament\Agency\Auth\Register;
+use App\Filament\Agency\Pages\Billing;
+use App\Filament\Agency\Pages\TrialExpired;
+use App\Http\Middleware\EnforceTrialOrSubscription;
+use Filament\Auth\Pages\Login;
+use Filament\Auth\Pages\PasswordReset\RequestPasswordReset;
+use Filament\Auth\Pages\PasswordReset\ResetPassword;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -13,11 +20,13 @@ use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
+use Filament\View\PanelsRenderHook;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 
 class AgencyPanelProvider extends PanelProvider
@@ -28,7 +37,7 @@ class AgencyPanelProvider extends PanelProvider
             ->id('agency')
             ->path('agency')
             ->login()
-            ->registration()
+            ->registration(Register::class)
             ->passwordReset()
             ->emailVerification()
             ->profile()
@@ -46,6 +55,8 @@ class AgencyPanelProvider extends PanelProvider
             ->discoverPages(in: app_path('Filament/Agency/Pages'), for: 'App\\Filament\\Agency\\Pages')
             ->pages([
                 SetupWizard::class,
+                Billing::class,
+                TrialExpired::class,
                 Dashboard::class,
             ])
             ->discoverWidgets(in: app_path('Filament/Agency/Widgets'), for: 'App\\Filament\\Agency\\Widgets')
@@ -66,6 +77,33 @@ class AgencyPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
-            ]);
+                EnforceTrialOrSubscription::class,
+            ])
+            ->renderHook(
+                PanelsRenderHook::HEAD_END,
+                fn (): string => Blade::render('<link rel="stylesheet" href="' . asset('brand/auth.css') . '?v=' . filemtime(public_path('brand/auth.css')) . '">'),
+                scopes: [Login::class, Register::class, RequestPasswordReset::class, ResetPassword::class],
+            )
+            ->renderHook(
+                PanelsRenderHook::SIMPLE_LAYOUT_START,
+                fn (): string => view('filament.agency.auth.hero')->render(),
+                scopes: [Login::class, Register::class, RequestPasswordReset::class, ResetPassword::class],
+            )
+            ->renderHook(
+                PanelsRenderHook::AUTH_LOGIN_FORM_BEFORE,
+                fn (): string => view('filament.agency.auth.return-link')->render(),
+            )
+            ->renderHook(
+                PanelsRenderHook::AUTH_REGISTER_FORM_BEFORE,
+                fn (): string => view('filament.agency.auth.return-link')->render(),
+            )
+            ->renderHook(
+                PanelsRenderHook::AUTH_PASSWORD_RESET_REQUEST_FORM_BEFORE,
+                fn (): string => view('filament.agency.auth.return-link')->render(),
+            )
+            ->renderHook(
+                PanelsRenderHook::AUTH_PASSWORD_RESET_RESET_FORM_BEFORE,
+                fn (): string => view('filament.agency.auth.return-link')->render(),
+            );
     }
 }

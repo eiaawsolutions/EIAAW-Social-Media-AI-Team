@@ -20,6 +20,12 @@ return Application::configure(basePath: dirname(__DIR__))
                 | Request::HEADER_X_FORWARDED_PROTO
                 | Request::HEADER_X_FORWARDED_AWS_ELB,
         );
+
+        // Stripe webhook: signature is verified by Cashier's middleware
+        // instead of CSRF (Stripe doesn't see our session).
+        $middleware->validateCsrfTokens(except: [
+            'stripe/webhook',
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         //

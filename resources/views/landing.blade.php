@@ -24,7 +24,7 @@
           Every other tool in the category ships a generic caption, a hit-or-miss prediction, or an off-brand image — then bills you to regenerate it. EIAAW Social Media Team is built differently. <strong>Every post comes with receipts</strong>: which brand evidence grounded each phrase, which prior post the angle was modelled on, which compliance check it passed, what it cost to produce.
         </p>
         <div class="rvl" style="margin-top: 44px; display: flex; gap: 18px; flex-wrap: wrap;">
-          <a href="{{ url('/register') }}" class="btn btn-primary btn-lg">Start free for 14 days <span class="arrow">&rarr;</span></a>
+          <a href="{{ url('/signup') }}" class="btn btn-primary btn-lg">Start free for 14 days <span class="arrow">&rarr;</span></a>
           <a href="#how" class="btn btn-ghost btn-lg">See how it works</a>
         </div>
         <div class="rvl" style="margin-top: 28px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute);">
@@ -257,7 +257,7 @@
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: {{ $t['whitelabel'] ? 'var(--ink-2)' : 'var(--mute)' }};"><span style="width: 4px; height: 4px; border-radius: 50%; background: {{ $t['whitelabel'] ? 'var(--primary)' : 'var(--mute)' }};"></span>{{ $t['whitelabel'] ? 'White-label client portal' : 'No white-label (upgrade to Studio)' }}</li>
           </ul>
           <p style="margin-top: 20px; font-size: 13px; color: var(--ink-2); line-height: 1.5; font-style: italic;">{{ $t['best'] }}</p>
-          <a href="{{ url('/register?plan=' . strtolower($t['name'])) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Start free for 14 days <span class="arrow">&rarr;</span></a>
+          <a href="{{ url('/signup/' . strtolower($t['name'])) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Start free for 14 days <span class="arrow">&rarr;</span></a>
         </div>
       @endforeach
     </div>
@@ -280,7 +280,7 @@
           We run this on our own brands first — EIAAW Workforce, Sales Marketing Agent, EIAAW AI ADS Agency, Claritas, SAINS CRM. If it doesn't deliver real results we measure ourselves, we don't ship it to you.
         </p>
         <div class="rvl" style="margin-top: 36px; display: flex; gap: 18px; flex-wrap: wrap;">
-          <a href="{{ url('/register') }}" class="btn btn-primary btn-lg">Start your 14-day trial <span class="arrow">&rarr;</span></a>
+          <a href="{{ url('/signup') }}" class="btn btn-primary btn-lg">Start your 14-day trial <span class="arrow">&rarr;</span></a>
           <a href="mailto:eiaawsolutions@gmail.com" class="btn btn-ghost btn-lg">Talk to a human</a>
         </div>
       </div>

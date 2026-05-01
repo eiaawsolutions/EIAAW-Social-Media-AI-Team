@@ -1,0 +1,295 @@
+/* ============================================================
+   EIAAW SOCIAL MEDIA TEAM — Auth (login/register/reset) skin
+   Split layout: brand hero (left) + Filament form panel (right).
+   Themed against eiaaw.css design tokens — kept token-equivalent
+   here so this stylesheet can stand alone inside the Filament
+   layout without depending on the marketing CSS.
+   ============================================================ */
+
+:root {
+  --eiaaw-bg: #FAF7F2;
+  --eiaaw-bg-warm: #F3EDE0;
+  --eiaaw-surface: #FFFFFF;
+  --eiaaw-ink: #0F1A1D;
+  --eiaaw-ink-2: #2A3438;
+  --eiaaw-mute: #6B7A7F;
+  --eiaaw-line: #D9CFBC;
+  --eiaaw-line-soft: #E8DFCC;
+  --eiaaw-primary: #1FA896;
+  --eiaaw-primary-dark: #11766A;
+  --eiaaw-primary-tint: #E5F4F1;
+  --eiaaw-serif: 'Instrument Serif', 'Times New Roman', serif;
+  --eiaaw-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --eiaaw-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, monospace;
+}
+
+/* Page-level wash */
+html, body { background: var(--eiaaw-bg); }
+body { font-family: var(--eiaaw-sans); color: var(--eiaaw-ink); }
+
+/* ---------- Split layout ---------- */
+.fi-simple-layout {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  background: var(--eiaaw-bg);
+}
+@media (max-width: 1023px) {
+  .fi-simple-layout { grid-template-columns: 1fr; }
+}
+
+/* Hero panel — injected via SIMPLE_LAYOUT_START render hook */
+.eiaaw-auth-hero {
+  position: relative;
+  overflow: hidden;
+  min-height: 360px;
+  background:
+    linear-gradient(135deg, rgba(15,26,29,0.55), rgba(17,118,106,0.25)),
+    url('/brand/auth-hero.svg') center/cover no-repeat,
+    #0F1A1D;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(28px, 4vw, 56px);
+  color: var(--eiaaw-bg);
+  isolation: isolate;
+}
+.eiaaw-auth-hero::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(rgba(250,247,242,0.04) 1px, transparent 1px);
+  background-size: 3px 3px;
+  pointer-events: none;
+  z-index: 0;
+}
+.eiaaw-auth-hero > * { position: relative; z-index: 1; }
+
+.eiaaw-auth-hero-top {
+  display: flex; align-items: center; gap: 14px;
+}
+.eiaaw-auth-hero-top img {
+  width: 36px; height: 36px;
+  filter: drop-shadow(0 4px 12px rgba(0,0,0,0.25));
+}
+.eiaaw-auth-hero-top .lockup {
+  display: flex; flex-direction: column; line-height: 1.05;
+}
+.eiaaw-auth-hero-top .lockup strong {
+  font-family: var(--eiaaw-sans);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--eiaaw-bg);
+}
+.eiaaw-auth-hero-top .lockup small {
+  font-family: var(--eiaaw-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(250,247,242,0.7);
+  margin-top: 4px;
+}
+
+.eiaaw-auth-hero-bottom {
+  max-width: 28ch;
+}
+.eiaaw-auth-hero-bottom .eyebrow {
+  font-family: var(--eiaaw-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(250,247,242,0.75);
+  display: inline-flex; align-items: center; gap: 10px;
+  margin-bottom: 18px;
+}
+.eiaaw-auth-hero-bottom .eyebrow::before {
+  content: ''; width: 24px; height: 1px; background: currentColor; opacity: 0.6;
+}
+.eiaaw-auth-hero-bottom h2 {
+  font-family: var(--eiaaw-sans);
+  font-weight: 500;
+  font-size: clamp(28px, 3.4vw, 44px);
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  color: var(--eiaaw-bg);
+  margin: 0 0 18px;
+}
+.eiaaw-auth-hero-bottom h2 em {
+  font-family: var(--eiaaw-serif);
+  font-style: italic;
+  font-weight: 400;
+  color: #C8F0E8;
+  letter-spacing: -0.005em;
+}
+.eiaaw-auth-hero-bottom p {
+  font-size: 14px;
+  line-height: 1.55;
+  color: rgba(250,247,242,0.75);
+  margin: 0;
+  max-width: 36ch;
+}
+
+@media (max-width: 1023px) {
+  .eiaaw-auth-hero {
+    min-height: 240px;
+    padding: 28px 24px;
+  }
+  .eiaaw-auth-hero-bottom h2 { font-size: 26px; }
+}
+
+/* ---------- Form panel ---------- */
+.fi-simple-main-ctn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--eiaaw-bg);
+  padding: clamp(40px, 6vh, 80px) clamp(20px, 4vw, 56px);
+}
+.fi-simple-main {
+  width: 100%;
+  max-width: 460px;
+  background: var(--eiaaw-surface);
+  border: 1px solid var(--eiaaw-line-soft);
+  border-radius: 18px;
+  padding: clamp(28px, 4vw, 44px) !important;
+  box-shadow: 0 24px 60px -32px rgba(15,26,29,0.18), 0 2px 6px rgba(15,26,29,0.04);
+}
+
+/* Return-to-website link — injected via AUTH_LOGIN_FORM_BEFORE */
+.eiaaw-auth-return {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--eiaaw-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--eiaaw-mute);
+  text-decoration: none;
+  margin-bottom: 20px;
+  padding: 8px 14px 8px 10px;
+  border: 1px solid var(--eiaaw-line);
+  border-radius: 999px;
+  background: var(--eiaaw-bg);
+  transition: all 0.2s cubic-bezier(.2,.7,.2,1);
+  width: fit-content;
+}
+.eiaaw-auth-return:hover {
+  color: var(--eiaaw-primary-dark);
+  border-color: var(--eiaaw-primary-dark);
+  background: var(--eiaaw-primary-tint);
+  transform: translateX(-2px);
+}
+.eiaaw-auth-return svg { width: 14px; height: 14px; }
+
+/* Heading + subheading */
+.fi-simple-header { text-align: left !important; align-items: flex-start !important; }
+.fi-simple-header-logo,
+.fi-logo { display: none !important; } /* hide duplicate panel logo (we have hero + page logo) */
+.fi-simple-header-heading,
+h1.fi-header-heading {
+  font-family: var(--eiaaw-sans) !important;
+  font-weight: 500 !important;
+  font-size: 32px !important;
+  letter-spacing: -0.025em !important;
+  color: var(--eiaaw-ink) !important;
+  margin: 0 0 6px !important;
+}
+.fi-simple-header-subheading,
+.fi-header-subheading {
+  font-family: var(--eiaaw-sans) !important;
+  font-size: 14px !important;
+  color: var(--eiaaw-ink-2) !important;
+  margin-bottom: 8px !important;
+}
+.fi-simple-header-subheading a,
+.fi-header-subheading a { color: var(--eiaaw-primary-dark) !important; font-weight: 500; }
+.fi-simple-header-subheading a:hover,
+.fi-header-subheading a:hover { color: var(--eiaaw-primary) !important; text-decoration: underline; }
+
+/* Form fields */
+.fi-input,
+.fi-input-wrp,
+input.fi-input {
+  background: var(--eiaaw-bg) !important;
+  border-color: var(--eiaaw-line) !important;
+  border-radius: 10px !important;
+  color: var(--eiaaw-ink) !important;
+}
+.fi-input-wrp:focus-within,
+.fi-input:focus {
+  border-color: var(--eiaaw-primary-dark) !important;
+  box-shadow: 0 0 0 3px var(--eiaaw-primary-tint) !important;
+  outline: none !important;
+}
+.fi-fo-field-lbl-text,
+label .fi-fo-field-lbl,
+.fi-fo-field-lbl {
+  font-family: var(--eiaaw-sans) !important;
+  font-weight: 500 !important;
+  color: var(--eiaaw-ink) !important;
+  font-size: 13px !important;
+}
+
+/* Hint links (Forgot password) */
+.fi-fo-field-wrp-hint a,
+.fi-link {
+  color: var(--eiaaw-primary-dark) !important;
+  font-weight: 500;
+}
+.fi-link:hover { color: var(--eiaaw-primary) !important; }
+
+/* Primary button */
+.fi-btn-color-primary,
+button.fi-btn[data-color="primary"] {
+  background: var(--eiaaw-primary-dark) !important;
+  border-color: var(--eiaaw-primary-dark) !important;
+  color: #FAF7F2 !important;
+  font-family: var(--eiaaw-sans) !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+  border-radius: 10px !important;
+  padding: 12px 18px !important;
+  transition: all 0.2s cubic-bezier(.2,.7,.2,1) !important;
+  box-shadow: 0 8px 20px -8px rgba(17,118,106,0.45) !important;
+}
+.fi-btn-color-primary:hover,
+button.fi-btn[data-color="primary"]:hover {
+  background: var(--eiaaw-ink) !important;
+  border-color: var(--eiaaw-ink) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px -10px rgba(15,26,29,0.45) !important;
+}
+
+/* Checkbox accent */
+.fi-checkbox-input:checked,
+input[type="checkbox"]:checked {
+  background-color: var(--eiaaw-primary-dark) !important;
+  border-color: var(--eiaaw-primary-dark) !important;
+}
+
+/* Footer underneath the form panel */
+.eiaaw-auth-footer {
+  margin-top: 22px;
+  font-family: var(--eiaaw-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--eiaaw-mute);
+  text-align: center;
+}
+.eiaaw-auth-footer a { color: var(--eiaaw-mute); text-decoration: none; }
+.eiaaw-auth-footer a:hover { color: var(--eiaaw-primary-dark); }
+
+/* Hide the Filament topbar on auth pages (no logged-in user, but defensive) */
+.fi-simple-layout-header { display: none !important; }
+
+/* Keep the SimplePage main aligned to the form panel area on desktop */
+@media (min-width: 1024px) {
+  .fi-simple-main-ctn { grid-column: 2; }
+  .eiaaw-auth-hero { grid-column: 1; grid-row: 1; }
+  .fi-simple-main-ctn { grid-row: 1; }
+}

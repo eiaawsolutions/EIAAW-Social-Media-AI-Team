@@ -39,7 +39,7 @@
       <a href="{{ url('/agency') }}" class="btn btn-primary">Open dashboard <span class="arrow">&rarr;</span></a>
     @else
       <a href="{{ url('/login') }}" class="btn btn-outline">Log in</a>
-      <a href="{{ url('/register') }}" class="btn btn-primary">Start free <span class="arrow">&rarr;</span></a>
+      <a href="{{ url('/signup') }}" class="btn btn-primary">Start free <span class="arrow">&rarr;</span></a>
     @endauth
   </div>
 </nav>

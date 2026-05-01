@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 1000" preserveAspectRatio="xMidYMid slice" role="img" aria-label="EIAAW Social Media Team — a post with receipts">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0F1A1D"/>
+      <stop offset="55%" stop-color="#11766A"/>
+      <stop offset="100%" stop-color="#22B8A5"/>
+    </linearGradient>
+    <linearGradient id="paperGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FAF7F2"/>
+      <stop offset="100%" stop-color="#F3EDE0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.3" r="0.7">
+      <stop offset="0%" stop-color="#22B8A5" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#22B8A5" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grain" width="3" height="3" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="0.5" fill="#FAF7F2" opacity="0.04"/>
+    </pattern>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dx="0" dy="18"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.28"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="800" height="1000" fill="url(#bgGrad)"/>
+  <rect width="800" height="1000" fill="url(#glow)"/>
+  <rect width="800" height="1000" fill="url(#grain)"/>
+
+  <g opacity="0.18" stroke="#FAF7F2" stroke-width="1" fill="none">
+    <path d="M -40 720 Q 200 600 420 700 T 880 660"/>
+    <path d="M -40 760 Q 200 640 420 740 T 880 700"/>
+    <path d="M -40 800 Q 200 680 420 780 T 880 740"/>
+  </g>
+
+  <g font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, monospace" font-size="11" fill="#FAF7F2" opacity="0.55" letter-spacing="2">
+    <text x="56" y="80">EIAAW · SOCIAL MEDIA TEAM</text>
+    <text x="56" y="100" opacity="0.7">RECEIPT · v1 · CLAUDE-SONNET-4-6</text>
+  </g>
+
+  <g font-family="'Instrument Serif', 'Times New Roman', serif" fill="#FAF7F2">
+    <text x="56" y="200" font-size="56" font-style="italic" letter-spacing="-1">Every post,</text>
+    <text x="56" y="262" font-size="56" font-style="italic" letter-spacing="-1">with receipts.</text>
+  </g>
+
+  <g font-family="'Inter', -apple-system, sans-serif" fill="#FAF7F2" opacity="0.78" font-size="15">
+    <text x="56" y="312">Six specialised agents. One hard compliance gate.</text>
+    <text x="56" y="334">Brand-voice scored. Sources cited. Cost shown.</text>
+  </g>
+
+  <g transform="translate(440 420) rotate(-4)" filter="url(#softShadow)">
+    <rect x="0" y="0" width="320" height="440" rx="14" fill="url(#paperGrad)"/>
+    <path d="M 0 0 L 320 0 L 320 440 L 0 440 Z M 0 0 L 320 0" stroke="#D9CFBC" stroke-width="1" fill="none"/>
+
+    <g transform="translate(24 24)">
+      <rect width="6" height="6" rx="3" fill="#1FA896"/>
+      <text x="14" y="6" font-family="'JetBrains Mono', monospace" font-size="9" fill="#11766A" letter-spacing="2" font-weight="500">A REAL RECEIPT</text>
+    </g>
+
+    <foreignObject x="24" y="56" width="272" height="160">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Instrument Serif', Times, serif; font-style: italic; font-size: 22px; line-height: 1.32; color: #0F1A1D; letter-spacing: -0.01em;">
+        “Most agencies are <em style="color:#11766A">quietly</em> using AI but won’t admit it because the output is generic.”
+      </div>
+    </foreignObject>
+
+    <line x1="24" y1="232" x2="296" y2="232" stroke="#D9CFBC" stroke-dasharray="3 4"/>
+
+    <g font-family="'Inter', sans-serif" font-size="11" fill="#2A3438">
+      <text x="24" y="256"><tspan font-weight="600" fill="#0F1A1D">Grounded in:</tspan>  Q4 manifesto post</text>
+      <text x="24" y="276" fill="#11766A" text-decoration="underline">→ engagement 4.2× baseline</text>
+    </g>
+
+    <g transform="translate(24 296)">
+      <rect width="120" height="22" rx="11" fill="#E5F4F1"/>
+      <text x="12" y="15" font-family="'JetBrains Mono', monospace" font-size="9" fill="#11766A" letter-spacing="1.5">VOICE 0.91 / 0.85</text>
+    </g>
+    <g transform="translate(150 296)">
+      <rect width="120" height="22" rx="11" fill="#E5F4F1"/>
+      <text x="12" y="15" font-family="'JetBrains Mono', monospace" font-size="9" fill="#11766A" letter-spacing="1.5">COMPLIANCE 5/5</text>
+    </g>
+
+    <g transform="translate(24 332)">
+      <rect width="272" height="22" rx="11" fill="#FAF7F2" stroke="#D9CFBC"/>
+      <text x="12" y="15" font-family="'JetBrains Mono', monospace" font-size="9" fill="#2A3438" letter-spacing="1.5">WRITER · CLAUDE-SONNET-4-6 · 0.041 USD</text>
+    </g>
+
+    <line x1="24" y1="376" x2="296" y2="376" stroke="#D9CFBC" stroke-dasharray="3 4"/>
+
+    <g transform="translate(24 392)" font-family="'Inter', sans-serif" font-size="10" fill="#6B7A7F">
+      <text>Approved · Green lane · Auto-published Tue 09:00 MYT</text>
+    </g>
+
+    <g transform="translate(112 200)">
+      <circle cx="0" cy="0" r="32" fill="#11766A"/>
+      <path d="M -10 -2 L -2 6 L 12 -10" stroke="#FAF7F2" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+
+  <g transform="translate(80 540) rotate(3)" opacity="0.96" filter="url(#softShadow)">
+    <rect x="0" y="0" width="280" height="120" rx="14" fill="#FAF7F2"/>
+    <g transform="translate(20 22)">
+      <rect width="6" height="6" rx="3" fill="#1FA896"/>
+      <text x="14" y="6" font-family="'JetBrains Mono', monospace" font-size="9" fill="#11766A" letter-spacing="2" font-weight="500">CITATION CHIP · 03</text>
+    </g>
+    <g transform="translate(20 42)" font-family="'Inter', sans-serif" font-size="13" fill="#0F1A1D">
+      <text y="14" font-weight="500">“…shows you the receipts”</text>
+      <text y="36" font-size="11" fill="#2A3438">grounded in: brand-style.md §2.4</text>
+      <text y="54" font-size="11" fill="#11766A">→ prior post · 2025-12-11 · 8.4k saves</text>
+      <text y="72" font-size="10" fill="#6B7A7F">confidence: high · n=42 comparables</text>
+    </g>
+  </g>
+
+  <g transform="translate(60 880)" opacity="0.55" font-family="'JetBrains Mono', monospace" font-size="10" fill="#FAF7F2" letter-spacing="2">
+    <text>NO HALLUCINATED METRICS  ·  NO FABRICATED PREDICTIONS  ·  WORK YOU CAN AUDIT</text>
+  </g>
+</svg>
