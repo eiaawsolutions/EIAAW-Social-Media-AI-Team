@@ -58,8 +58,11 @@ PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources fi
                 'hashtags' => [
                     'type' => 'array',
                     'items' => ['type' => 'string'],
-                    'description' => 'No # prefix. Just the words.',
-                    'maxItems' => 30,
+                    // Anthropic's structured-output validator rejects bounded
+                    // maxItems on some array types — keep the cap in the
+                    // system prompt ("max 30 hashtags") and trim in PHP
+                    // before persisting to the draft if the model overruns.
+                    'description' => 'No # prefix. Just the words. Max 30.',
                 ],
                 'mentions' => [
                     'type' => 'array',

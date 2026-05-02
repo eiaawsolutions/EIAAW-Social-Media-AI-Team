@@ -101,7 +101,10 @@ class WriterAgent extends BaseAgent
                 'platform' => $platform,
                 'content_type' => 'caption',
                 'body' => $payload['body'],
-                'hashtags' => $payload['hashtags'] ?? [],
+                // Cap at 30 hashtags here — schema-side maxItems was removed
+                // because Anthropic's validator rejected it. Same pattern as
+                // StrategistAgent's entry-count enforcement.
+                'hashtags' => array_slice($payload['hashtags'] ?? [], 0, 30),
                 'mentions' => $payload['mentions'] ?? [],
                 // Provenance
                 'agent_role' => $this->role(),
