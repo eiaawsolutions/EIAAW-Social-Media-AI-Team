@@ -25,6 +25,6 @@
     "zip"
   ],
   "deploy": {
-    "startCommand": "php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache && (php artisan queue:work --queue=publishing,default --tries=1 --timeout=120 --sleep=3 >> /tmp/queue-worker.log 2>&1 &) && (while true; do php artisan schedule:run --no-interaction >> /tmp/scheduler.log 2>&1; sleep 60; done &) && php artisan serve --host=0.0.0.0 --port=$PORT"
+    "startCommand": "php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache && (php artisan queue:work --queue=publishing,drafting,metrics,default --tries=1 --timeout=300 --sleep=3 >> /tmp/queue-worker.log 2>&1 &) && (while true; do php artisan schedule:run --no-interaction >> /tmp/scheduler.log 2>&1; sleep 60; done &) && php artisan serve --host=0.0.0.0 --port=$PORT"
   }
 }

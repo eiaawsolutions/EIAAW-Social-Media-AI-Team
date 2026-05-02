@@ -372,7 +372,10 @@ class SetupReadiness
                 ?? $wizardFallback('first_draft_passed'),
             'schedule' => $tryRoute('filament.agency.resources.scheduled-posts.index', ['brand' => $brandId])
                 ?? $wizardFallback('post_scheduled'),
-            'performance' => $wizardFallback('metrics_recorded'),
+            // Real /agency/performance page — surfaces post_metrics +
+            // ai_costs aggregates with 7/30/90 day windows.
+            'performance' => $tryRoute('filament.agency.pages.performance', ['brand' => $brandId])
+                ?? $wizardFallback('metrics_recorded'),
             default => $wizardFallback($action),
         };
     }

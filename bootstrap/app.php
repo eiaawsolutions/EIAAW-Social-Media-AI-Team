@@ -23,6 +23,23 @@ return Application::configure(basePath: dirname(__DIR__))
             ->everyMinute()
             ->withoutOverlapping()
             ->runInBackground();
+
+        // Metrics collection — tiered sampling (every 30min for hot posts,
+        // 6h for warm, 24h for cold). The command itself enforces tiering;
+        // we just make sure it runs every 30 min so each tier gets a chance.
+        $schedule->command('metrics:collect')
+            ->everyThirtyMinutes()
+            ->withoutOverlapping()
+            ->runInBackground();
+
+        // Optimizer: weekly recompute of the per-brand recommendation that
+        // the Strategist consumes on its next calendar build. Runs Mondays
+        // 02:00 UTC so by Monday morning the operator's brief reflects last
+        // week's performance.
+        $schedule->command('optimizer:run')
+            ->weekly()->mondays()->at('02:00')
+            ->withoutOverlapping()
+            ->runInBackground();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(

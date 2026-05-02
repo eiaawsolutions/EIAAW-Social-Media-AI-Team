@@ -4,6 +4,7 @@ namespace App\Providers\Filament;
 
 use App\Filament\Agency\Pages\AutonomyLane;
 use App\Filament\Agency\Pages\BrandCorpusSeed;
+use App\Filament\Agency\Pages\Performance;
 use App\Filament\Agency\Pages\SetupWizard;
 use App\Filament\Agency\Widgets\ReadinessHeader;
 use App\Filament\Agency\Widgets\WelcomeBannerWidget;
@@ -62,6 +63,7 @@ class AgencyPanelProvider extends PanelProvider
                 SetupWizard::class,
                 BrandCorpusSeed::class,
                 AutonomyLane::class,
+                Performance::class,
                 Billing::class,
                 TrialExpired::class,
                 Dashboard::class,

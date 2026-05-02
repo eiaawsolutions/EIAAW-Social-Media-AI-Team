@@ -60,8 +60,20 @@ class StrategistAgent extends BaseAgent
             return AgentResult::fail('No active platform connections. Connect at least one platform first.');
         }
 
-        $pillarMix = $input['pillar_mix'] ?? self::DEFAULT_PILLAR_MIX;
-        $formatMix = $input['format_mix'] ?? self::DEFAULT_FORMAT_MIX;
+        // Optimizer recommendation (if any) overrides the static defaults
+        // unless caller explicitly passed mixes. This is the learning loop:
+        // every Monday 02:00 UTC the OptimizerAgent rewrites the
+        // recommendation based on last 30 days of post_metrics; this call
+        // reads the freshest current=true row and weights the next month's
+        // calendar accordingly.
+        $reco = \App\Models\StrategistRecommendation::where('brand_id', $brand->id)
+            ->where('is_current', true)
+            ->latest()
+            ->first();
+        $pillarMix = $input['pillar_mix']
+            ?? ($reco?->pillar_mix && ! empty($reco->pillar_mix) ? $reco->pillar_mix : self::DEFAULT_PILLAR_MIX);
+        $formatMix = $input['format_mix']
+            ?? ($reco?->format_mix && ! empty($reco->format_mix) ? $reco->format_mix : self::DEFAULT_FORMAT_MIX);
         $startsOn = isset($input['period_starts_on'])
             ? Carbon::parse($input['period_starts_on'])
             : Carbon::now($brand->timezone)->startOfMonth();
