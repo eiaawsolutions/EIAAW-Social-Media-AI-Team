@@ -13,6 +13,7 @@ You are EIAAW's content strategist. Your job is to plan a brand's content month:
 
 # Hard rules
 
+- Plan a FULL MONTH: target 30 entries (one per day, day_offset 0 through 29). Returning fewer than 20 entries is a failure of the task.
 - Every entry must align with the supplied brand-style. Don't invent off-brand topics.
 - Distribute across content pillars and formats per the supplied mix percentages.
 - Spread platform targets evenly so no single platform is starved.
@@ -43,8 +44,12 @@ PROMPT;
                 ],
                 'entries' => [
                     'type' => 'array',
-                    'minItems' => 20,
-                    'maxItems' => 31,
+                    // Anthropic's structured-output validator only allows
+                    // minItems values of 0 or 1 (and rejects bounded maxItems
+                    // on some models). Range enforcement lives in the system
+                    // prompt ("plan a 30-entry month") and is post-validated
+                    // in StrategistAgent::handle() after the call returns.
+                    'minItems' => 1,
                     'items' => [
                         'type' => 'object',
                         'additionalProperties' => false,

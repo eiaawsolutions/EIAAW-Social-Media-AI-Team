@@ -86,6 +86,19 @@ class StrategistAgent extends BaseAgent
             return AgentResult::fail('Calendar synthesis came back empty. Try again.');
         }
 
+        // Range enforcement lives here, not in the JSON schema, because
+        // Anthropic's structured-output validator only allows minItems of
+        // 0 or 1 (and rejects bounded maxItems on some models). The system
+        // prompt asks for 30 entries; we accept anything ≥10 as a usable
+        // calendar and reject thinner responses as a failed plan.
+        $entryCount = count($payload['entries']);
+        if ($entryCount < 10) {
+            return AgentResult::fail(sprintf(
+                'Strategist returned only %d entries — a usable monthly plan needs at least 10. Try again.',
+                $entryCount,
+            ));
+        }
+
         $calendar = DB::transaction(function () use ($brand, $payload, $pillarMix, $formatMix, $activePlatforms, $startsOn, $endsOn) {
             $calendar = ContentCalendar::create([
                 'brand_id' => $brand->id,
