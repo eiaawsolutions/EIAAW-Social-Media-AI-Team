@@ -96,6 +96,15 @@ class StripeWebhookController extends CashierWebhookController
     private function applySaaSSideEffects(string $eventType, array $payload, Workspace $workspace): void
     {
         switch ($eventType) {
+            // Cashier's parent handler updated the subscriptions row before we got here.
+            // Mirror its state onto the workspace's denormalised columns. Source of truth
+            // is the Cashier row, which Cashier wrote from the actual Stripe payload.
+            case 'customer.subscription.created':
+            case 'customer.subscription.updated':
+            case 'invoice.payment_succeeded':
+                $this->syncWorkspaceFromCashier($workspace, $eventType);
+                break;
+
             case 'invoice.payment_failed':
                 $workspace->update([
                     'subscription_status' => 'past_due',
@@ -104,44 +113,12 @@ class StripeWebhookController extends CashierWebhookController
                 Log::warning("Workspace {$workspace->slug} payment failed — past_due flag set.");
                 break;
 
-            case 'invoice.payment_succeeded':
-                $updates = [
-                    'subscription_status' => 'active',
-                    'past_due_at' => null,
-                    'trial_ends_at' => null, // first paid invoice ends the trial
-                ];
-                if ($workspace->isSuspended) {
-                    $updates['suspended_at'] = null;
-                    $updates['suspended_reason'] = null;
-                    Log::info("Workspace {$workspace->slug} un-suspended after payment.");
-                }
-                $workspace->update($updates);
-                break;
-
             case 'customer.subscription.deleted':
                 $workspace->update([
                     'subscription_status' => 'canceled',
                     'canceled_at' => $workspace->canceled_at ?? now(),
                 ]);
                 Log::info("Workspace {$workspace->slug} subscription canceled — 30-day read-only grace begins.");
-                break;
-
-            case 'customer.subscription.updated':
-                // Race-safety net: when Stripe transitions a trialing sub to
-                // active without a corresponding invoice.payment_succeeded
-                // (e.g., zero-amount add-on edits, manual transitions), still
-                // settle the workspace flags.
-                $sub = $payload['data']['object'] ?? [];
-                $stripeStatus = $sub['status'] ?? null;
-                $trialEnd = $sub['trial_end'] ?? null;
-                if ($stripeStatus === 'active' && empty($trialEnd) && $workspace->subscription_status !== 'active') {
-                    $workspace->update([
-                        'subscription_status' => 'active',
-                        'past_due_at' => null,
-                        'trial_ends_at' => null,
-                    ]);
-                    Log::info("Workspace {$workspace->slug} subscription went active via subscription.updated.");
-                }
                 break;
 
             case 'customer.subscription.trial_will_end':
@@ -173,5 +150,58 @@ class StripeWebhookController extends CashierWebhookController
                 }
                 break;
         }
+    }
+
+    /**
+     * Mirror the Cashier subscriptions row onto the workspace columns.
+     *
+     * The Cashier row is updated by the parent webhook handler from the actual
+     * Stripe event payload. The workspace columns are a denormalised cache
+     * for fast hasActiveAccess() lookups in middleware. Keeping them in sync
+     * is THE invariant the middleware depends on.
+     *
+     * Crucial detail: do NOT clear trial_ends_at on invoice.payment_succeeded
+     * if the underlying Stripe subscription is still trialing. Stripe sends
+     * a $0 invoice.payment_succeeded at the START of a trial when the
+     * subscription was created with a coupon that zeroes the first invoice
+     * (e.g., the founder coupon). The trial isn't over — the customer is
+     * just starting. Only flip to active+null trial_ends_at when the
+     * underlying subscription has actually transitioned to 'active'.
+     */
+    private function syncWorkspaceFromCashier(Workspace $workspace, string $eventType): void
+    {
+        $sub = $workspace->subscriptions()
+            ->where('type', 'default')
+            ->orderByDesc('id')
+            ->first();
+
+        if (! $sub) {
+            Log::warning("syncWorkspaceFromCashier: no Cashier subscription for workspace {$workspace->slug} on {$eventType} — skipping.");
+            return;
+        }
+
+        $newStatus = match ($sub->stripe_status) {
+            'trialing' => 'trialing',
+            'active' => 'active',
+            'past_due' => 'past_due',
+            'canceled', 'unpaid', 'incomplete_expired' => 'canceled',
+            default => $workspace->subscription_status, // unknown statuses → leave as-is
+        };
+
+        $updates = [
+            'subscription_status' => $newStatus,
+            'trial_ends_at' => $sub->trial_ends_at,
+            'past_due_at' => $newStatus === 'past_due' ? ($workspace->past_due_at ?? now()) : null,
+            'canceled_at' => $newStatus === 'canceled' ? ($workspace->canceled_at ?? now()) : null,
+        ];
+
+        if ($workspace->isSuspended && in_array($newStatus, ['trialing', 'active'], true)) {
+            $updates['suspended_at'] = null;
+            $updates['suspended_reason'] = null;
+            Log::info("Workspace {$workspace->slug} un-suspended after subscription returned to {$newStatus}.");
+        }
+
+        $workspace->update($updates);
+        Log::info("Workspace {$workspace->slug} synced from Cashier on {$eventType}: status={$newStatus}, trial_ends_at=" . ($sub->trial_ends_at?->toIso8601String() ?? 'null'));
     }
 }
