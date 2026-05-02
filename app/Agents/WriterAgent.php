@@ -187,9 +187,14 @@ class WriterAgent extends BaseAgent
 
     private function buildUserMessage(Brand $brand, string $brandStyleMd, CalendarEntry $entry, array $similar, string $platform): string
     {
+        // Each similar post is rendered with its real BrandCorpusItem id so the
+        // Writer can cite source_id="<id>" against source_type=historical_post —
+        // ComplianceAgent's factual_grounding check uses that id to verify the
+        // citation maps to a real row. Without this, the Writer has no way to
+        // know what id to cite and the check fails by default.
         $similarBlock = empty($similar)
             ? "(no historical posts indexed yet — ground in brand-style only)"
-            : collect($similar)->map(fn ($s, $i) => "[".($i+1)."] ".$s['content'])->implode("\n\n---\n\n");
+            : collect($similar)->map(fn ($s) => "[id={$s['id']}] {$s['content']}")->implode("\n\n---\n\n");
 
         return <<<MSG
 BRAND: {$brand->name}

@@ -341,10 +341,27 @@ class ComplianceAgent extends BaseAgent
                     }
                     break;
                 case 'historical_post':
+                    // Prefer source_id when the Writer cited one; fall back to
+                    // substring match against any of the brand's corpus items
+                    // when source_id is absent or doesn't resolve. Same lenient
+                    // contract as brand_style / evidence_quote so citations
+                    // aren't penalised when the model forgets the id field.
+                    $matched = false;
                     if (! empty($src['source_id'])) {
-                        if (BrandCorpusItem::where('id', $src['source_id'])->where('brand_id', $brand->id)->exists()) {
-                            $verified++;
+                        $matched = BrandCorpusItem::where('id', $src['source_id'])
+                            ->where('brand_id', $brand->id)
+                            ->exists();
+                    }
+                    if (! $matched) {
+                        $excerpt = substr($src['source_excerpt'] ?? '', 0, 30);
+                        if (mb_strlen($excerpt) >= 10) {
+                            $matched = BrandCorpusItem::where('brand_id', $brand->id)
+                                ->where('content', 'ILIKE', '%' . str_replace('%', '\\%', $excerpt) . '%')
+                                ->exists();
                         }
+                    }
+                    if ($matched) {
+                        $verified++;
                     }
                     break;
                 case 'calendar_entry':
