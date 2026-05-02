@@ -2,13 +2,11 @@
 
 namespace App\Console\Commands;
 
-use App\Filament\Agency\Pages\BrandCorpusSeed;
 use App\Models\Brand;
 use App\Models\BrandCorpusItem;
 use App\Services\Embeddings\EmbeddingService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 /**
  * Diagnostic for the BrandCorpusSeed page actions. Reproduces the
@@ -115,7 +113,7 @@ class DebugCorpus extends Command
                 foreach ($chunks as $i => $text) {
                     BrandCorpusItem::create([
                         'brand_id' => $brand->id,
-                        'source_type' => 'website_chunk',
+                        'source_type' => 'website_page',
                         'source_url' => $brand->website_url,
                         'source_label' => 'Website chunk ' . ($i + 1),
                         'content' => $text,
