@@ -45,6 +45,7 @@ class PurgeUnsubscribedWorkspaces extends Command
 {
     protected $signature = 'workspaces:purge-unsubscribed
         {--apply : Actually perform deletes (default is dry-run)}
+        {--force : Skip the interactive confirmation prompt (required for non-interactive use, e.g. railway ssh)}
         {--keep-emails=eiaawsolutions@gmail.com : Comma-separated owner emails to always keep}
         {--purge-stripe-customers : Also delete the Stripe customer record for each purged workspace}';
 
@@ -122,9 +123,11 @@ class PurgeUnsubscribedWorkspaces extends Command
             return self::SUCCESS;
         }
 
-        if (! $this->confirm('Proceed with the deletion above?', false)) {
-            $this->line('Aborted.');
-            return self::SUCCESS;
+        if (! $this->option('force')) {
+            if (! $this->confirm('Proceed with the deletion above?', false)) {
+                $this->line('Aborted.');
+                return self::SUCCESS;
+            }
         }
 
         $ids = $candidates->pluck('id')->all();
