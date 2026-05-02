@@ -2,8 +2,11 @@
 
 namespace App\Filament\Agency\Pages;
 
+use App\Agents\ComplianceAgent;
 use App\Agents\OnboardingAgent;
 use App\Agents\StrategistAgent;
+use App\Agents\WriterAgent;
+use App\Models\CalendarEntry;
 use App\Exceptions\AgentPrerequisiteMissing;
 use App\Models\Brand;
 use App\Models\Workspace;
@@ -174,6 +177,7 @@ class SetupWizard extends Page
             $result = match ($stageId) {
                 'brand_style' => app(OnboardingAgent::class)->run($brand),
                 'calendar_generated' => app(StrategistAgent::class)->run($brand),
+                'first_draft_passed' => $this->runFirstDraft($brand),
                 default => null,
             };
 
@@ -233,7 +237,83 @@ class SetupWizard extends Page
                 $data['label'] ?? 'Month',
                 $data['entry_count'] ?? 0,
             ),
+            'first_draft_passed' => sprintf(
+                'First draft written and passed Compliance — %s on %s (%s lane).',
+                substr($data['body_preview'] ?? '', 0, 80),
+                $data['platform'] ?? '?',
+                $data['lane'] ?? '?',
+            ),
             default => 'Stage completed.',
         };
+    }
+
+    /**
+     * Stage 07 wiring — picks the first calendar entry, runs Writer on the
+     * entry's first targeted platform, then runs Compliance on the resulting
+     * draft. The detector flips to done when a draft reaches status
+     * awaiting_approval / approved / scheduled / published. Compliance
+     * failures surface with their reason so the user can iterate.
+     */
+    private function runFirstDraft(\App\Models\Brand $brand): \App\Agents\AgentResult
+    {
+        $entry = CalendarEntry::where('brand_id', $brand->id)
+            ->orderBy('scheduled_date')
+            ->orderBy('id')
+            ->first();
+
+        if (! $entry) {
+            return \App\Agents\AgentResult::fail('No calendar entries yet — run the Strategist first.');
+        }
+
+        $platforms = is_array($entry->platforms) ? $entry->platforms : [];
+        $platform = $platforms[0] ?? null;
+        if (! $platform) {
+            return \App\Agents\AgentResult::fail('Calendar entry has no platforms — re-run the Strategist.');
+        }
+
+        $writerResult = app(WriterAgent::class)->run($brand, [
+            'calendar_entry_id' => $entry->id,
+            'platform' => $platform,
+        ]);
+
+        if (! $writerResult->ok) {
+            return $writerResult;
+        }
+
+        $draftId = $writerResult->data['draft_id'] ?? null;
+        if (! $draftId) {
+            return \App\Agents\AgentResult::fail('Writer returned no draft id.');
+        }
+
+        $complianceResult = app(ComplianceAgent::class)->run($brand, [
+            'draft_id' => $draftId,
+        ]);
+
+        // If compliance failed, surface its reason. The Writer draft still
+        // exists in compliance_failed — user can iterate, but Stage 07 does
+        // not flip until a draft passes.
+        if (! $complianceResult->ok) {
+            return \App\Agents\AgentResult::fail(
+                'Draft written but Compliance errored: ' . ($complianceResult->errorMessage ?? 'unknown'),
+            );
+        }
+
+        if (empty($complianceResult->data['all_passed'])) {
+            $failed = collect($complianceResult->data['checks'] ?? [])
+                ->where('result', 'fail')
+                ->pluck('type')
+                ->implode(', ');
+            return \App\Agents\AgentResult::fail(
+                'Draft written but failed Compliance: ' . ($failed ?: 'unknown') . '. Iterate and try again.',
+            );
+        }
+
+        return \App\Agents\AgentResult::ok(
+            array_merge($writerResult->data, [
+                'lane' => $writerResult->data['lane'] ?? 'amber',
+                'compliance_status' => $complianceResult->data['new_status'] ?? 'awaiting_approval',
+            ]),
+            $writerResult->meta,
+        );
     }
 }
