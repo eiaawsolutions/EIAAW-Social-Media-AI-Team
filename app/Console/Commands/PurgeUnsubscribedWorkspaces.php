@@ -64,14 +64,36 @@ class PurgeUnsubscribedWorkspaces extends Command
         $this->line('Keeping owner emails: ' . implode(', ', $keepEmails));
         $this->newLine();
 
+        // Strict-checkout invariant: a workspace is a candidate for purge if
+        // it has NO Cashier subscriptions row, regardless of subscription_status.
+        // The only legitimate way to get a subscriptions row is via
+        // BillingController::success after a real Stripe Checkout. Anything
+        // without one is an orphan from before this rule landed.
+        //
+        // The keep-emails list ONLY protects accounts that have a real
+        // subscription — it does NOT shield orphans. So if eiaawsolutions@gmail.com
+        // owns a workspace with no subscriptions row, it still gets purged
+        // so the founder can re-signup through the public checkout flow.
         $candidates = Workspace::with('owner')
-            ->whereIn('subscription_status', ['trialing', 'none', 'canceled', 'past_due'])
             ->where('plan', '!=', 'eiaaw_internal')
-            ->get()
-            ->reject(function (Workspace $w) use ($keepEmails) {
-                $email = strtolower((string) ($w->owner->email ?? ''));
-                return in_array($email, $keepEmails, true);
-            });
+            ->whereDoesntHave('subscriptions')
+            ->get();
+
+        $kept = $candidates->filter(function (Workspace $w) use ($keepEmails) {
+            $email = strtolower((string) ($w->owner->email ?? ''));
+            return in_array($email, $keepEmails, true);
+        });
+        if ($kept->isNotEmpty()) {
+            $this->warn(
+                'Note: ' . $kept->count() . ' workspace(s) owned by keep-emails ALSO have no Cashier subscription:'
+            );
+            foreach ($kept as $w) {
+                $this->line('  - #' . $w->id . ' ' . $w->slug . ' owner=' . ($w->owner->email ?? '?'));
+            }
+            $this->warn('These will be PURGED too because the strict-checkout invariant overrides keep-emails.');
+            $this->warn('Re-create them via public /signup flow after the purge — coupon EIAAW_FOUNDER (or whatever you set) at the Stripe Checkout step gives you the founder account at $0.');
+            $this->newLine();
+        }
 
         if ($candidates->isEmpty()) {
             $this->info('Nothing to purge — no workspaces matched.');
