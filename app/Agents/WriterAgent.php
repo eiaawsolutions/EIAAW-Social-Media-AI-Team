@@ -190,11 +190,14 @@ class WriterAgent extends BaseAgent
         // Each similar post is rendered with its real BrandCorpusItem id so the
         // Writer can cite source_id="<id>" against source_type=historical_post —
         // ComplianceAgent's factual_grounding check uses that id to verify the
-        // citation maps to a real row. Without this, the Writer has no way to
-        // know what id to cite and the check fails by default.
+        // citation maps to a real row. CRITICAL: the Writer must NOT invent
+        // IDs (the model defaults to '1', '2', '3' otherwise) — the prompt
+        // below pins it to "use ONLY these IDs verbatim".
+        $allowedIds = collect($similar)->pluck('id')->implode(', ');
         $similarBlock = empty($similar)
             ? "(no historical posts indexed yet — ground in brand-style only)"
-            : collect($similar)->map(fn ($s) => "[id={$s['id']}] {$s['content']}")->implode("\n\n---\n\n");
+            : "VALID source_id values you may cite (use ONLY these, never invent IDs): {$allowedIds}\n\n"
+                . collect($similar)->map(fn ($s) => "[id={$s['id']}] {$s['content']}")->implode("\n\n---\n\n");
 
         return <<<MSG
 BRAND: {$brand->name}

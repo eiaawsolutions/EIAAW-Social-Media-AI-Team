@@ -341,11 +341,11 @@ class ComplianceAgent extends BaseAgent
                     }
                     break;
                 case 'historical_post':
-                    // Prefer source_id when the Writer cited one; fall back to
+                    // Prefer source_id when the Writer cited one. Fall back to
                     // substring match against any of the brand's corpus items
-                    // when source_id is absent or doesn't resolve. Same lenient
-                    // contract as brand_style / evidence_quote so citations
-                    // aren't penalised when the model forgets the id field.
+                    // when source_id is absent OR didn't resolve (the Writer
+                    // sometimes hallucinates small IDs like "1", "2", "3"
+                    // even when the prompt shows real ones).
                     $matched = false;
                     if (! empty($src['source_id'])) {
                         $matched = BrandCorpusItem::where('id', $src['source_id'])
@@ -353,11 +353,22 @@ class ComplianceAgent extends BaseAgent
                             ->exists();
                     }
                     if (! $matched) {
-                        $excerpt = substr($src['source_excerpt'] ?? '', 0, 30);
-                        if (mb_strlen($excerpt) >= 10) {
+                        $excerpt = (string) ($src['source_excerpt'] ?? '');
+                        // Try a few windows: full string up to 80 chars, then
+                        // first 40, then first 20. As soon as any window matches
+                        // any corpus row's content (or the corpus row's content
+                        // is contained in the excerpt — covers tight paraphrases
+                        // of short corpus chunks), we count it as verified.
+                        foreach ([80, 40, 20] as $len) {
+                            $needle = mb_substr($excerpt, 0, $len);
+                            if (mb_strlen($needle) < 15) continue;
+                            $escaped = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $needle);
                             $matched = BrandCorpusItem::where('brand_id', $brand->id)
-                                ->where('content', 'ILIKE', '%' . str_replace('%', '\\%', $excerpt) . '%')
+                                ->where(function ($q) use ($escaped) {
+                                    $q->where('content', 'ILIKE', '%' . $escaped . '%');
+                                })
                                 ->exists();
+                            if ($matched) break;
                         }
                     }
                     if ($matched) {
