@@ -139,7 +139,15 @@ class BillingController extends Controller
             return redirect()->route('signup.picker', ['payment_failed' => 1]);
         }
 
-        $metadata = (array) ($session->metadata ?? []);
+        // Stripe metadata arrives as a \Stripe\StripeObject. PHP's (array)
+        // cast on a StripeObject exposes private properties with mangled
+        // keys instead of the actual metadata values — even though Stripe
+        // stores everything correctly. Use ->toArray() (Stripe's helper)
+        // so the keys are the real metadata field names.
+        $rawMetadata = $session->metadata ?? null;
+        $metadata = $rawMetadata && method_exists($rawMetadata, 'toArray')
+            ? $rawMetadata->toArray()
+            : (is_array($rawMetadata) ? $rawMetadata : []);
         $email = strtolower($metadata['email'] ?? ($session->customer_email ?? ''));
         $name  = $metadata['name'] ?? null;
         $workspaceName = $metadata['workspace_name'] ?? null;
