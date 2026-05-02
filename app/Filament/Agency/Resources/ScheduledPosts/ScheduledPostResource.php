@@ -108,8 +108,8 @@ class ScheduledPostResource extends Resource
                         'cancelled' => 'Cancelled',
                     ]),
             ])
-            ->actions([
-                Tables\Actions\Action::make('reschedule')
+            ->recordActions([
+                \Filament\Actions\Action::make('reschedule')
                     ->label('Reschedule')
                     ->icon('heroicon-o-clock')
                     ->color('gray')
@@ -131,7 +131,7 @@ class ScheduledPostResource extends Resource
                             ->send();
                     }),
 
-                Tables\Actions\Action::make('cancel')
+                \Filament\Actions\Action::make('cancel')
                     ->label('Cancel')
                     ->icon('heroicon-o-x-circle')
                     ->color('danger')
@@ -152,7 +152,7 @@ class ScheduledPostResource extends Resource
                             ->send();
                     }),
 
-                Tables\Actions\Action::make('retry')
+                \Filament\Actions\Action::make('retry')
                     ->label('Retry')
                     ->icon('heroicon-o-arrow-path')
                     ->color('warning')

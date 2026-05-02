@@ -122,8 +122,8 @@ class DraftResource extends Resource
                         'youtube' => 'YouTube',
                     ]),
             ])
-            ->actions([
-                Tables\Actions\Action::make('view')
+            ->recordActions([
+                \Filament\Actions\Action::make('view')
                     ->label('View')
                     ->icon('heroicon-o-eye')
                     ->color('gray')
@@ -134,7 +134,7 @@ class DraftResource extends Resource
                         'draft' => $r,
                     ])),
 
-                Tables\Actions\Action::make('approve')
+                \Filament\Actions\Action::make('approve')
                     ->label('Approve')
                     ->icon('heroicon-o-check-circle')
                     ->color('success')
@@ -153,7 +153,7 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                Tables\Actions\Action::make('reject')
+                \Filament\Actions\Action::make('reject')
                     ->label('Reject')
                     ->icon('heroicon-o-x-circle')
                     ->color('danger')
@@ -178,7 +178,7 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                Tables\Actions\Action::make('schedule')
+                \Filament\Actions\Action::make('schedule')
                     ->label('Schedule')
                     ->icon('heroicon-o-clock')
                     ->color('primary')
@@ -234,7 +234,7 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                Tables\Actions\Action::make('rerunCompliance')
+                \Filament\Actions\Action::make('rerunCompliance')
                     ->label('Re-run Compliance')
                     ->icon('heroicon-o-shield-check')
                     ->color('gray')

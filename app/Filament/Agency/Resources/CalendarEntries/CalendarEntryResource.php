@@ -86,8 +86,8 @@ class CalendarEntryResource extends Resource
                     ->badge()
                     ->color(fn (int $state) => $state > 0 ? 'success' : 'gray'),
             ])
-            ->actions([
-                Tables\Actions\Action::make('runWriter')
+            ->recordActions([
+                \Filament\Actions\Action::make('runWriter')
                     ->label('Draft this')
                     ->icon('heroicon-o-pencil-square')
                     ->color('primary')
