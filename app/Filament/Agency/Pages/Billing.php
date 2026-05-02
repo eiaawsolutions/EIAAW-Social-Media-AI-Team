@@ -109,7 +109,15 @@ class Billing extends Page
             ->action(fn () => $this->openCustomerPortal());
     }
 
-    private function openCheckout(string $period): ?RedirectResponse
+    /**
+     * Returns a redirect (or null on error after a notification).
+     * No strict return type: when called inside a Filament/Livewire action,
+     * redirect(...) returns Livewire\Features\SupportRedirects\Redirector,
+     * not Illuminate\Http\RedirectResponse — a strict type triggers a
+     * "Return value must be of type ?RedirectResponse, Redirector returned"
+     * fatal at the framework boundary.
+     */
+    private function openCheckout(string $period)
     {
         if (! $this->workspace) {
             $this->failNotification('No workspace found for your account.');
@@ -156,7 +164,8 @@ class Billing extends Page
         }
     }
 
-    private function openCustomerPortal(): ?RedirectResponse
+    /** @see openCheckout() — same return-type rationale. */
+    private function openCustomerPortal()
     {
         if (! $this->workspace) {
             return null;
