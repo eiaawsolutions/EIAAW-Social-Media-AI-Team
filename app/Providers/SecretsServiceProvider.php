@@ -52,5 +52,25 @@ class SecretsServiceProvider extends ServiceProvider
                 ]);
             }
         }
+
+        // Mirror Stripe credentials into Cashier's own config block. Cashier 16
+        // reads config('cashier.secret') / config('cashier.key') /
+        // config('cashier.webhook.secret') at runtime (see Cashier::stripe()
+        // line 123), and its vendor config snapshots env('STRIPE_SECRET') at
+        // config-load time — which is the literal `secret://...` handle when
+        // we use the Infisical resolver. Resolving services.stripe.* alone is
+        // not enough; copy the resolved values across so Cashier sees real
+        // keys instead of empty strings or unresolved handles.
+        $stripeMirrors = [
+            'services.stripe.key' => 'cashier.key',
+            'services.stripe.secret' => 'cashier.secret',
+            'services.stripe.webhook_secret' => 'cashier.webhook.secret',
+        ];
+        foreach ($stripeMirrors as $source => $dest) {
+            $value = config($source);
+            if (is_string($value) && $value !== '' && ! str_starts_with($value, 'secret://')) {
+                config([$dest => $value]);
+            }
+        }
     }
 }

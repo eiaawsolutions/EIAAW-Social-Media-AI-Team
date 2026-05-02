@@ -29,6 +29,16 @@ class VerifyInfisical extends Command
             'services.voyage.api_key' => '',
             'services.fal.api_key' => '',
             'services.blotato.api_key' => '',
+            // Stripe — resolver writes services.stripe.*; SecretsServiceProvider
+            // mirrors into cashier.* so Cashier 16's config('cashier.secret')
+            // reader sees real values. Both sides checked so a regression in
+            // either is caught here.
+            'services.stripe.key' => 'pk_',
+            'services.stripe.secret' => 'sk_',
+            'services.stripe.webhook_secret' => 'whsec_',
+            'cashier.key' => 'pk_',
+            'cashier.secret' => 'sk_',
+            'cashier.webhook.secret' => 'whsec_',
         ];
 
         foreach ($checks as $path => $expectedPrefix) {
