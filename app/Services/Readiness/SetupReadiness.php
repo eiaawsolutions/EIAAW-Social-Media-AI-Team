@@ -346,7 +346,12 @@ class SetupReadiness
             'brand_onboarding' => $wizardFallback('brand_style'),
             'brand_style_view' => $wizardFallback('brand_style'),
             'corpus' => $wizardFallback('corpus_seeded'),
-            'platforms' => $wizardFallback('platform_connected'),
+            // Real /agency/platforms page exists (Filament resource:
+            // PlatformConnectionResource). Deep-link with ?brand=N so the
+            // Sync action targets the right brand. If the route name lookup
+            // fails we fall back to the wizard so the user is never stranded.
+            'platforms' => $tryRoute('filament.agency.resources.platform-connections.index', ['brand' => $brandId])
+                ?? $wizardFallback('platform_connected'),
             'autonomy' => $wizardFallback('autonomy_decided'),
             'calendar' => $wizardFallback('calendar_generated'),
             'drafts' => $wizardFallback('first_draft_passed'),
