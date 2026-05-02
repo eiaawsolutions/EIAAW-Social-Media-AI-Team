@@ -28,8 +28,10 @@ use Illuminate\Support\Facades\Log;
  *
  *   2. Website fallback: the brand's website_url is fetched, split into
  *      paragraph chunks, and each chunk is embedded as
- *      source_type='website_chunk'. Lower-quality grounding than real posts
- *      but unblocks the wizard for brands that have not yet posted publicly.
+ *      source_type='website_page' (the schema's canonical vocabulary —
+ *      brand_corpus_source_type_check enumerates the legal values). Lower-
+ *      quality grounding than real posts but unblocks the wizard for
+ *      brands that have not yet posted publicly.
  *
  * Both actions lift set_time_limit(180) — same FPM-timeout fix we applied to
  * SetupWizard::runStage. The OnboardingAgent fix proved a 30s FPM ceiling
@@ -228,11 +230,16 @@ class BrandCorpusSeed extends Page
             return;
         }
 
+        // source_type uses the schema's canonical vocabulary — the
+        // brand_corpus_source_type_check constraint allows only
+        // {historical_post, website_page, style_guide, product_doc, manual_note}.
+        // We're chunking the website, so 'website_page' is the right value;
+        // 'website_chunk' would violate the CHECK constraint.
         DB::transaction(function () use ($brand, $chunks, $vectors): void {
             foreach ($chunks as $i => $text) {
                 BrandCorpusItem::create([
                     'brand_id' => $brand->id,
-                    'source_type' => 'website_chunk',
+                    'source_type' => 'website_page',
                     'source_url' => $brand->website_url,
                     'source_label' => 'Website chunk ' . ($i + 1),
                     'content' => $text,
