@@ -31,6 +31,10 @@ return [
         // AI providers
         'services.anthropic.api_key',
         'services.fal.api_key',
+        // Daily caps are configured via Infisical so an operator can
+        // raise them without a deploy. Numeric handles (cast in services.fal).
+        'services.fal.daily_cap_usd',
+        'services.fal.video_daily_cap_usd',
         'services.voyage.api_key',
 
         // Publishing

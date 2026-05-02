@@ -4,7 +4,9 @@ namespace App\Jobs;
 
 use App\Agents\ComplianceAgent;
 use App\Agents\DesignerAgent;
+use App\Agents\VideoAgent;
 use App\Agents\WriterAgent;
+use App\Services\Imagery\FalAiClient;
 use App\Models\CalendarEntry;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -78,7 +80,9 @@ class DraftCalendarEntry implements ShouldQueue
         $draftId = $writer->data['draft_id'] ?? null;
         if (! $draftId) return;
 
-        // Designer is best-effort; text-only drafts are still useful.
+        // Designer always runs — even for video formats, the still becomes
+        // the keyframe for image-to-video (better brand consistency).
+        // Soft-fail: text-only drafts still pass through.
         try {
             app(DesignerAgent::class)->run($brand, ['draft_id' => $draftId]);
         } catch (\Throwable $e) {
@@ -86,6 +90,23 @@ class DraftCalendarEntry implements ShouldQueue
                 'draft_id' => $draftId,
                 'error' => $e->getMessage(),
             ]);
+        }
+
+        // Video gate: format requires video AND platform accepts video.
+        // Skips text-only platforms and non-video formats. Video cap is
+        // separate from image cap so 30 stills fit in $1.20 / day budget
+        // even with a few videos mixed in.
+        $needsVideo = in_array((string) ($entry->format ?? ''), ['reel', 'video', 'story'], true)
+            && FalAiClient::platformAcceptsVideo($this->platform);
+        if ($needsVideo) {
+            try {
+                app(VideoAgent::class)->run($brand, ['draft_id' => $draftId]);
+            } catch (\Throwable $e) {
+                Log::warning('DraftCalendarEntry: VideoAgent crashed (kept still)', [
+                    'draft_id' => $draftId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         try {

@@ -138,6 +138,23 @@ class CalendarEntryResource extends Resource
                             ]);
                         }
 
+                        // Video gate: format is reel/video/story AND platform
+                        // accepts video. The still becomes the i2v keyframe.
+                        $needsVideo = in_array((string) ($r->format ?? ''), ['reel', 'video', 'story'], true)
+                            && \App\Services\Imagery\FalAiClient::platformAcceptsVideo($platform);
+                        if ($needsVideo) {
+                            try {
+                                app(\App\Agents\VideoAgent::class)->run($r->brand, [
+                                    'draft_id' => $writer->data['draft_id'],
+                                ]);
+                            } catch (\Throwable $e) {
+                                \Illuminate\Support\Facades\Log::warning('Calendar: VideoAgent crashed', [
+                                    'draft_id' => $writer->data['draft_id'],
+                                    'error' => $e->getMessage(),
+                                ]);
+                            }
+                        }
+
                         // Hand off to Compliance so the draft lands in a usable
                         // state on the Drafts page (awaiting_approval /
                         // approved / compliance_failed).

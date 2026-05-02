@@ -25,7 +25,17 @@ return [
         // FAL.AI gateway for image generation (Flux Pro 1.1, Wan video, etc.)
         'api_key' => env('FAL_API_KEY'),
         'image_model' => env('FAL_IMAGE_MODEL', 'fal-ai/flux-pro/v1.1'),
+        // Wan 2.6 i2v is the Q2 2026 quality leader for short-form vertical
+        // ($0.50/clip, 5s 720p). Wan 2.6 t2v is the fallback when no still
+        // exists yet. Veo 3 sits at higher quality + price; switch later.
+        'video_model_image' => env('FAL_VIDEO_MODEL_IMAGE', 'fal-ai/wan-25-preview/image-to-video'),
+        'video_model_text' => env('FAL_VIDEO_MODEL_TEXT', 'fal-ai/wan-25-preview/text-to-video'),
         'request_timeout' => (int) env('FAL_REQUEST_TIMEOUT', 180),
+        'video_request_timeout' => (int) env('FAL_VIDEO_REQUEST_TIMEOUT', 360),
+        // Per-workspace daily caps. Video is 10x image so kept separate
+        // and operator can lift either independently via Infisical.
+        'daily_cap_usd' => (float) env('FAL_DAILY_CAP_USD', 0.50),
+        'video_daily_cap_usd' => (float) env('FAL_VIDEO_DAILY_CAP_USD', 2.00),
     ],
 
     'voyage' => [

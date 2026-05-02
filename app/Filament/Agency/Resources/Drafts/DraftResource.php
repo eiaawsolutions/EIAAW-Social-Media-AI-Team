@@ -287,6 +287,51 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
+                \Filament\Actions\Action::make('generateVideo')
+                    ->label('Generate video')
+                    ->icon('heroicon-o-film')
+                    ->color('gray')
+                    ->visible(fn (Draft $r) => \App\Services\Imagery\FalAiClient::platformAcceptsVideo($r->platform)
+                        && ! in_array($r->status, ['published', 'rejected']))
+                    ->requiresConfirmation()
+                    ->modalDescription(fn (Draft $r) => empty($r->asset_url)
+                        ? 'Run VideoAgent (FAL Wan 2.6 text-to-video, ~$0.50, ~30s).'
+                        : 'Use the current still as keyframe and generate a 5s vertical video around it (FAL Wan 2.6 image-to-video, ~$0.50, ~30s). Old still moves into asset_urls history.')
+                    ->action(function (Draft $r): void {
+                        @set_time_limit(420);
+                        try {
+                            $result = app(\App\Agents\VideoAgent::class)->run($r->brand, [
+                                'draft_id' => $r->id,
+                            ]);
+                        } catch (\Throwable $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('VideoAgent crashed')
+                                ->body(substr($e->getMessage(), 0, 240))
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+                        if (! $result->ok) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Could not generate video')
+                                ->body($result->errorMessage ?: 'unknown')
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+                        \Filament\Notifications\Notification::make()
+                            ->title('Video ready')
+                            ->body(sprintf(
+                                '$%.2f · %dms · %ss · %s',
+                                $result->data['cost_usd'] ?? 0,
+                                $result->data['latency_ms'] ?? 0,
+                                $result->data['duration_seconds'] ?? '?',
+                                ($result->data['used_keyframe'] ?? false) ? 'i2v' : 't2v',
+                            ))
+                            ->success()
+                            ->send();
+                    }),
+
                 \Filament\Actions\Action::make('rerunCompliance')
                     ->label('Re-run Compliance')
                     ->icon('heroicon-o-shield-check')

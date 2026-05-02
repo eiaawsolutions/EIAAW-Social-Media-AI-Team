@@ -6,7 +6,9 @@ use App\Agents\ComplianceAgent;
 use App\Agents\DesignerAgent;
 use App\Agents\OnboardingAgent;
 use App\Agents\StrategistAgent;
+use App\Agents\VideoAgent;
 use App\Agents\WriterAgent;
+use App\Services\Imagery\FalAiClient;
 use App\Models\CalendarEntry;
 use App\Models\Draft;
 use App\Models\PlatformConnection;
@@ -307,6 +309,22 @@ class SetupWizard extends Page
                 'draft_id' => $draftId,
                 'error' => $e->getMessage(),
             ]);
+        }
+
+        // Video gate — only for entries whose Strategist-assigned format
+        // is reel/video/story AND the platform accepts vertical short-form.
+        // Image-to-video uses the still as keyframe for brand consistency.
+        $needsVideo = in_array((string) ($entry->format ?? ''), ['reel', 'video', 'story'], true)
+            && FalAiClient::platformAcceptsVideo($platform);
+        if ($needsVideo) {
+            try {
+                app(VideoAgent::class)->run($brand, ['draft_id' => $draftId]);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('SetupWizard: VideoAgent crashed (kept still)', [
+                    'draft_id' => $draftId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         $complianceResult = app(ComplianceAgent::class)->run($brand, [

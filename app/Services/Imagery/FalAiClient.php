@@ -30,6 +30,9 @@ class FalAiClient
         private readonly string $apiKey,
         private readonly string $imageModel,
         private readonly int $timeout = 180,
+        private readonly ?string $videoModelImage = null,
+        private readonly ?string $videoModelText = null,
+        private readonly int $videoTimeout = 360,
     ) {
         if ($apiKey === '') {
             throw new RuntimeException(
@@ -44,6 +47,9 @@ class FalAiClient
             apiKey: (string) config('services.fal.api_key'),
             imageModel: (string) config('services.fal.image_model', 'fal-ai/flux-pro/v1.1'),
             timeout: (int) config('services.fal.request_timeout', 180),
+            videoModelImage: (string) config('services.fal.video_model_image', 'fal-ai/wan-25-preview/image-to-video'),
+            videoModelText: (string) config('services.fal.video_model_text', 'fal-ai/wan-25-preview/text-to-video'),
+            videoTimeout: (int) config('services.fal.video_request_timeout', 360),
         );
     }
 
@@ -125,5 +131,94 @@ class FalAiClient
             'youtube' => 'landscape_16_9',
             default => 'square_hd',
         };
+    }
+
+    private function videoClient(): PendingRequest
+    {
+        return Http::withHeaders([
+                'authorization' => 'Key ' . $this->apiKey,
+                'accept' => 'application/json',
+                'content-type' => 'application/json',
+            ])
+            ->baseUrl('https://fal.run')
+            ->timeout($this->videoTimeout);
+    }
+
+    /**
+     * Generate a short-form video. If image_url is provided, runs the
+     * image-to-video model (better brand consistency: the still becomes
+     * the keyframe). Otherwise text-to-video.
+     *
+     * @param array{
+     *   image_url?: string,
+     *   aspect_ratio?: string,        // '9:16' default for vertical
+     *   resolution?: string,          // '720p' default
+     *   duration?: int,               // seconds, model-specific cap
+     *   negative_prompt?: string,
+     *   seed?: int,
+     * } $options
+     *
+     * @return array{url:string, model:string, latency_ms:int, prompt:string, content_type:?string}
+     */
+    public function generateVideo(string $prompt, array $options = []): array
+    {
+        $hasImage = ! empty($options['image_url']);
+        $model = $hasImage ? $this->videoModelImage : $this->videoModelText;
+
+        if (empty($model)) {
+            throw new RuntimeException('FAL video model not configured.');
+        }
+
+        $payload = array_merge([
+            'prompt' => $prompt,
+            'aspect_ratio' => '9:16',
+            'resolution' => '720p',
+            'duration' => 5,
+        ], $options);
+
+        $startedAt = (int) (microtime(true) * 1000);
+
+        $response = $this->videoClient()->post('/' . ltrim($model, '/'), $payload);
+
+        if (! $response->successful()) {
+            throw new RuntimeException(sprintf(
+                'FAL.AI %s failed: HTTP %d — %s',
+                $model,
+                $response->status(),
+                substr($response->body(), 0, 400),
+            ));
+        }
+
+        $body = $response->json();
+        // Wan / Veo response shape: { video: { url, content_type } } usually.
+        $url = $body['video']['url']
+            ?? $body['videos'][0]['url']
+            ?? $body['output']['video']['url']
+            ?? null;
+        if (! is_string($url) || $url === '') {
+            throw new RuntimeException('FAL.AI video response missing video.url. Body: ' . substr($response->body(), 0, 400));
+        }
+
+        return [
+            'url' => $url,
+            'model' => $model,
+            'latency_ms' => (int) ((microtime(true) * 1000) - $startedAt),
+            'prompt' => $prompt,
+            'content_type' => $body['video']['content_type']
+                ?? $body['videos'][0]['content_type']
+                ?? 'video/mp4',
+        ];
+    }
+
+    /**
+     * Returns true if the platform routinely accepts short-form video
+     * (Reels, Shorts, TikTok, etc.) at all. Used to gate VideoAgent so
+     * we don't spend video credit on text-only platforms.
+     */
+    public static function platformAcceptsVideo(string $platform): bool
+    {
+        return in_array($platform, [
+            'instagram', 'facebook', 'tiktok', 'threads', 'youtube', 'linkedin',
+        ], true);
     }
 }

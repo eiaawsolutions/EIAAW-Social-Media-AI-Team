@@ -11,9 +11,25 @@
         @endif
     </div>
 
-    @if (! empty($draft->asset_url))
+    @php
+        $assetUrl = (string) ($draft->asset_url ?? '');
+        $isVideo = $assetUrl !== '' && (
+            str_ends_with(strtolower($assetUrl), '.mp4')
+            || str_ends_with(strtolower($assetUrl), '.mov')
+            || str_ends_with(strtolower($assetUrl), '.webm')
+            || str_contains($assetUrl, '/video/')
+        );
+    @endphp
+    @if ($assetUrl !== '' && $isVideo)
         <div style="margin-bottom: 14px;">
-            <img src="{{ $draft->asset_url }}"
+            <video src="{{ $assetUrl }}"
+                   controls
+                   playsinline
+                   style="max-width: 100%; max-height: 480px; border-radius: 10px; border: 1px solid #D9CFBC; display: block; background: #000;"></video>
+        </div>
+    @elseif ($assetUrl !== '')
+        <div style="margin-bottom: 14px;">
+            <img src="{{ $assetUrl }}"
                  alt="Draft asset"
                  style="max-width: 100%; max-height: 420px; border-radius: 10px; border: 1px solid #D9CFBC; display: block;" />
         </div>
