@@ -6,6 +6,7 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\Draft;
 use App\Services\Blotato\BlotatoClient;
+use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -47,7 +48,7 @@ class VideoAgent extends BaseAgent
     private const FAL_WAN_USD_PER_VIDEO = 0.50;
 
     public function role(): string { return 'video'; }
-    public function promptVersion(): string { return 'video.v1.0'; }
+    public function promptVersion(): string { return 'video.v1.1'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -218,6 +219,31 @@ class VideoAgent extends BaseAgent
         $direction = trim((string) ($entry->visual_direction ?? ''));
         $directionHint = $direction !== '' ? " Visual brief: {$direction}." : '';
 
+        // EIAAW-internal workspace: pace to the house editorial motion contract,
+        // override platform "fast cuts" defaults that would violate brand.
+        if (EiaawBrandLock::appliesTo($brand)) {
+            $platformHint = match ($draft->platform) {
+                'tiktok' => 'TikTok-native vertical 9:16, hook in first 1.5s but resolved through composition not jump cuts',
+                'instagram' => 'Instagram Reel vertical 9:16, slow editorial pacing, deliberate final beat',
+                'youtube' => 'YouTube Shorts vertical 9:16, opening frame works as a still thumbnail',
+                'threads' => 'Threads short vertical 9:16, lo-fi authentic, single-take feel',
+                'facebook' => 'Facebook Reel vertical 9:16, slightly slower pacing',
+                'linkedin' => 'LinkedIn-native short vertical 9:16, professional, no music swells',
+                default => 'Short-form vertical 9:16',
+            };
+
+            return sprintf(
+                '%d-second short-form vertical video for EIAAW Solutions on %s. %s. %s%s Subject: %s. No on-screen text, no captions, no watermarks baked in.',
+                5,
+                ucfirst($draft->platform),
+                $platformHint,
+                EiaawBrandLock::videoDirective(),
+                $directionHint,
+                $bodyLead,
+            );
+        }
+
+        // Client workspace path — original platform-aesthetic mapping.
         $platformHint = match ($draft->platform) {
             'tiktok' => 'TikTok-native: hook in first 1.5s, fast cuts, energetic but not chaotic, 9:16 vertical',
             'instagram' => 'Instagram Reel: clean editorial pacing, brand-consistent palette, 9:16 vertical, end on a strong final beat',

@@ -42,8 +42,14 @@ class ScheduledPostResource extends Resource
             ->defaultSort('scheduled_for')
             ->columns([
                 Tables\Columns\TextColumn::make('scheduled_for')
-                    ->label('When')
-                    ->dateTime('M j · H:i')
+                    ->label('When (brand TZ)')
+                    ->formatStateUsing(function ($state, ScheduledPost $r) {
+                        if (! $state) return '—';
+                        $tz = $r->brand?->timezone ?: 'UTC';
+                        return \Illuminate\Support\Carbon::parse($state)
+                            ->setTimezone($tz)
+                            ->format('M j · H:i') . ' ' . substr($tz, strrpos($tz, '/') + 1);
+                    })
                     ->fontFamily('mono')
                     ->color('gray')
                     ->size('sm')
@@ -116,17 +122,26 @@ class ScheduledPostResource extends Resource
                     ->visible(fn (ScheduledPost $r) => $r->status === 'queued')
                     ->schema([
                         \Filament\Forms\Components\DateTimePicker::make('scheduled_for')
-                            ->label('Publish at')
+                            ->label(fn (ScheduledPost $r) => 'Publish at (' . ($r->brand?->timezone ?: 'UTC') . ')')
+                            ->helperText(fn (ScheduledPost $r) => 'Brand timezone: ' . ($r->brand?->timezone ?: 'UTC') . '. Stored as UTC.')
                             ->seconds(false)
+                            ->timezone(fn (ScheduledPost $r) => $r->brand?->timezone ?: 'UTC')
                             ->default(fn (ScheduledPost $r) => $r->scheduled_for)
-                            ->minDate(now())
+                            ->minDate(fn (ScheduledPost $r) => now($r->brand?->timezone ?: 'UTC'))
                             ->required(),
                     ])
                     ->action(function (ScheduledPost $r, array $data): void {
-                        $r->update(['scheduled_for' => $data['scheduled_for']]);
+                        $newAt = \Illuminate\Support\Carbon::parse($data['scheduled_for']);
+                        $brandTz = $r->brand?->timezone ?: 'UTC';
+                        $r->update(['scheduled_for' => $newAt]);
                         \Filament\Notifications\Notification::make()
                             ->title('Rescheduled')
-                            ->body('Now publishing at ' . \Illuminate\Support\Carbon::parse($data['scheduled_for'])->format('M j, H:i'))
+                            ->body(sprintf(
+                                'Now publishing at %s %s (= %s UTC).',
+                                $newAt->copy()->setTimezone($brandTz)->format('M j, H:i'),
+                                $brandTz,
+                                $newAt->format('M j, H:i'),
+                            ))
                             ->success()
                             ->send();
                     }),

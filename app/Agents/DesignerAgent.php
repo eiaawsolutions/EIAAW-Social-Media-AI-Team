@@ -6,6 +6,7 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\Draft;
 use App\Services\Blotato\BlotatoClient;
+use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -46,7 +47,7 @@ class DesignerAgent extends BaseAgent
     private const FAL_FLUX_PRO_USD_PER_IMAGE = 0.04;
 
     public function role(): string { return 'designer'; }
-    public function promptVersion(): string { return 'designer.v1.0'; }
+    public function promptVersion(): string { return 'designer.v1.1'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -173,9 +174,38 @@ class DesignerAgent extends BaseAgent
     private function buildPrompt(Brand $brand, Draft $draft): string
     {
         $entry = $draft->calendarEntry;
-        $style = $brand->currentStyle;
         $bodyLead = (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 24, ' …');
 
+        $direction = trim((string) ($entry->visual_direction ?? ''));
+        $directionHint = $direction !== '' ? " Visual direction from strategist: {$direction}." : '';
+
+        $platformComposition = match ($draft->platform) {
+            'instagram', 'facebook' => 'square 1:1 composition, generous negative space',
+            'linkedin' => 'square 1:1, professional B2B feel without stock-photo clichés',
+            'tiktok', 'threads' => 'vertical 9:16 composition with a strong focal subject',
+            'youtube' => 'cinematic 16:9 landscape, hero subject readable at small thumbnail size',
+            'pinterest' => 'tall 2:3 pinnable composition, lifestyle-document aesthetic',
+            'x' => 'sharp graphic with a single high-contrast focal point',
+            default => 'clean platform-appropriate composition',
+        };
+
+        // EIAAW-internal workspace: anchor to the locked house style instead
+        // of the generic palette/aesthetic hint. Source of truth:
+        // ~/.claude/skills/full-stack-engineer/references/eiaaw-design-system.md.
+        if (EiaawBrandLock::appliesTo($brand)) {
+            return sprintf(
+                'High-quality social media post image for EIAAW Solutions on %s. %s. %s %s%s Topic: %s. NO TEXT, captions, or watermarks baked into the image.',
+                ucfirst($draft->platform),
+                $platformComposition,
+                EiaawBrandLock::imageDirective(),
+                EiaawBrandLock::typographyHint(),
+                $directionHint,
+                $bodyLead,
+            );
+        }
+
+        // Client workspace path — uses the brand's own palette + voice.
+        $style = $brand->currentStyle;
         $paletteHint = '';
         if ($style && is_array($style->palette) && ! empty($style->palette)) {
             $hexes = collect($style->palette)
@@ -197,9 +227,6 @@ class DesignerAgent extends BaseAgent
             'x' => 'sharp graphic, high contrast, single focal point',
             default => 'clean and brand-aligned',
         };
-
-        $direction = trim((string) ($entry->visual_direction ?? ''));
-        $directionHint = $direction !== '' ? " Visual direction from strategist: {$direction}." : '';
 
         return sprintf(
             'High-quality social media post image for the brand "%s" on %s. %s.%s%s Topic: %s. NO TEXT or watermarks in the image. Photographic or stylised illustration appropriate to the brand. Anti-slop: avoid generic gradient backgrounds, stock-photo poses, and clip-art icons.',

@@ -51,13 +51,30 @@ class Performance extends Page
             ?? $user->ownedWorkspaces()->first();
     }
 
+    /**
+     * Brand timezone used for window cutoffs and display formatting.
+     * Falls back to the first non-archived brand of the workspace; UTC
+     * if neither resolves.
+     */
+    public function brandTimezone(): string
+    {
+        $ws = $this->workspace();
+        if (! $ws) return 'UTC';
+        $brand = Brand::where('workspace_id', $ws->id)
+            ->whereNull('archived_at')
+            ->orderBy('id')
+            ->first();
+        return $brand?->timezone ?: 'UTC';
+    }
+
     /** @return array<string,mixed> */
     public function summary(): array
     {
         $ws = $this->workspace();
         if (! $ws) return $this->emptySummary();
 
-        $since = Carbon::now()->subDays($this->window);
+        $tz = $this->brandTimezone();
+        $since = Carbon::now($tz)->subDays($this->window)->utc();
         $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
 
         $publishedCount = ScheduledPost::whereIn('brand_id', $brandIds)
@@ -100,7 +117,7 @@ class Performance extends Page
 
         return [
             'window_days' => $this->window,
-            'since' => $since->toDateString(),
+            'since' => $since->copy()->setTimezone($tz)->toDateString(),
             'published' => $publishedCount,
             'queued' => $queuedCount,
             'failed' => $failedCount,
@@ -124,7 +141,8 @@ class Performance extends Page
     {
         $ws = $this->workspace();
         if (! $ws) return [];
-        $since = Carbon::now()->subDays($this->window);
+        $tz = $this->brandTimezone();
+        $since = Carbon::now($tz)->subDays($this->window)->utc();
         $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
 
         $latestMetricIds = \DB::table('post_metrics')
@@ -162,7 +180,8 @@ class Performance extends Page
     {
         $ws = $this->workspace();
         if (! $ws) return [];
-        $since = Carbon::now()->subDays($this->window);
+        $tz = $this->brandTimezone();
+        $since = Carbon::now($tz)->subDays($this->window)->utc();
         $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
 
         // Latest metric per post — order by engagement desc.
@@ -200,14 +219,15 @@ class Performance extends Page
     {
         $ws = $this->workspace();
         if (! $ws) return null;
-        return $ws->name . ' · every number is a real reading or sourced upload, no fabricated metrics';
+        $tz = $this->brandTimezone();
+        return $ws->name . ' · ' . $tz . ' · every number is a real reading or sourced upload, no fabricated metrics';
     }
 
     private function emptySummary(): array
     {
         return [
             'window_days' => $this->window,
-            'since' => Carbon::now()->subDays($this->window)->toDateString(),
+            'since' => Carbon::now($this->brandTimezone())->subDays($this->window)->toDateString(),
             'published' => 0,
             'queued' => 0,
             'failed' => 0,

@@ -190,10 +190,15 @@ class DraftResource extends Resource
                     ->visible(fn (Draft $r) => in_array($r->status, ['approved', 'awaiting_approval']))
                     ->schema([
                         \Filament\Forms\Components\DateTimePicker::make('scheduled_for')
-                            ->label('Publish at')
+                            ->label(fn (Draft $r) => 'Publish at (' . ($r->brand?->timezone ?: 'UTC') . ')')
+                            ->helperText(fn (Draft $r) => 'Pick a time in your brand timezone (' . ($r->brand?->timezone ?: 'UTC') . '). The system stores it as UTC internally.')
                             ->seconds(false)
-                            ->default(now()->addHour())
-                            ->minDate(now())
+                            // Filament v5 timezone(): the picker reads/writes datetimes
+                            // in this timezone, while the action handler still receives
+                            // a UTC-equivalent string ($data['scheduled_for']).
+                            ->timezone(fn (Draft $r) => $r->brand?->timezone ?: 'UTC')
+                            ->default(fn (Draft $r) => now($r->brand?->timezone ?: 'UTC')->addHour())
+                            ->minDate(fn (Draft $r) => now($r->brand?->timezone ?: 'UTC'))
                             ->required(),
                     ])
                     ->action(function (Draft $r, array $data): void {
@@ -222,11 +227,19 @@ class DraftResource extends Resource
                             return;
                         }
 
+                        // Filament's DateTimePicker with ->timezone() returns the
+                        // picked datetime as a UTC-equivalent string already, so
+                        // we wrap in Carbon (which is UTC) and let Eloquent's
+                        // datetime cast persist it as UTC. Display formatting
+                        // converts to brand timezone for the operator.
+                        $scheduledForUtc = \Illuminate\Support\Carbon::parse($data['scheduled_for']);
+                        $brandTz = $r->brand?->timezone ?: 'UTC';
+
                         ScheduledPost::create([
                             'draft_id' => $r->id,
                             'brand_id' => $r->brand_id,
                             'platform_connection_id' => $connection->id,
-                            'scheduled_for' => $data['scheduled_for'],
+                            'scheduled_for' => $scheduledForUtc,
                             'status' => 'queued',
                             'attempt_count' => 0,
                         ]);
@@ -234,7 +247,13 @@ class DraftResource extends Resource
 
                         \Filament\Notifications\Notification::make()
                             ->title('Scheduled')
-                            ->body("Draft #{$r->id} queued for " . \Illuminate\Support\Carbon::parse($data['scheduled_for'])->format('M j, H:i'))
+                            ->body(sprintf(
+                                'Draft #%d queued for %s %s (= %s UTC).',
+                                $r->id,
+                                $scheduledForUtc->copy()->setTimezone($brandTz)->format('M j, H:i'),
+                                $brandTz,
+                                $scheduledForUtc->format('M j, H:i'),
+                            ))
                             ->success()
                             ->send();
                     }),
