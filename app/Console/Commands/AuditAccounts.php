@@ -87,6 +87,27 @@ class AuditAccounts extends Command
         $this->table(['id', 'slug', 'workspace'], $brandRows);
 
         $this->newLine();
+        $platformConnectionTotal = \App\Models\PlatformConnection::count();
+        $this->info("=== PLATFORM CONNECTIONS ({$platformConnectionTotal} total) ===");
+        $pcRows = \App\Models\PlatformConnection::with('brand')
+            ->orderBy('brand_id')
+            ->orderBy('platform')
+            ->get()
+            ->map(fn ($p) => [
+                $p->id,
+                $p->brand?->slug ?? "(brand #{$p->brand_id})",
+                $p->platform,
+                $p->display_handle ? '@' . $p->display_handle : '-',
+                $p->blotato_account_id ?? '-',
+                $p->status,
+            ])
+            ->all();
+        $this->table(
+            ['id', 'brand', 'platform', 'handle', 'blotato_id', 'status'],
+            $pcRows,
+        );
+
+        $this->newLine();
         $this->info('=== SUBSCRIPTION EVENTS (' . SubscriptionEvent::count() . ' total) ===');
         $events = SubscriptionEvent::orderByDesc('id')->limit(10)->get();
         $eventRows = $events->map(fn (SubscriptionEvent $e) => [
