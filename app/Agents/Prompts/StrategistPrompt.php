@@ -57,9 +57,11 @@ PROMPT;
                         'properties' => [
                             'day_offset' => [
                                 'type' => 'integer',
-                                'minimum' => 0,
-                                'maximum' => 30,
-                                'description' => 'Days from period_starts_on (0 = first day).',
+                                // Anthropic's structured-output validator
+                                // rejects minimum/maximum on integer types.
+                                // Range (0–30) is enforced via the prompt and
+                                // clamped in StrategistAgent before insert.
+                                'description' => 'Days from period_starts_on, integer 0–30 (0 = first day).',
                             ],
                             'topic' => ['type' => 'string'],
                             'angle' => ['type' => 'string', 'description' => 'The hook / specific take.'],

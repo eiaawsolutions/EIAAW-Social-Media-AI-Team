@@ -116,10 +116,18 @@ class StrategistAgent extends BaseAgent
                 $platforms = array_values(array_intersect($entry['platforms'] ?? [], $activePlatforms))
                     ?: [$activePlatforms[0]];
 
+                // Clamp day_offset to [0, daysInMonth-1]. Schema-side
+                // minimum/maximum was removed (Anthropic rejects them on
+                // integer types) so we enforce the range here.
+                $offset = max(0, min(
+                    $startsOn->daysInMonth - 1,
+                    (int) ($entry['day_offset'] ?? 0),
+                ));
+
                 CalendarEntry::create([
                     'content_calendar_id' => $calendar->id,
                     'brand_id' => $brand->id,
-                    'scheduled_date' => $startsOn->copy()->addDays((int) ($entry['day_offset'] ?? 0)),
+                    'scheduled_date' => $startsOn->copy()->addDays($offset),
                     'scheduled_time' => null,
                     'topic' => substr($entry['topic'] ?? 'Untitled', 0, 250),
                     'angle' => $entry['angle'] ?? '',

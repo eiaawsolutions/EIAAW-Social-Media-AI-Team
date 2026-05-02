@@ -31,9 +31,12 @@ PROMPT;
             'additionalProperties' => false,
             'required' => ['score', 'tone_score', 'audience_score', 'reasoning'],
             'properties' => [
-                'score' => ['type' => 'number', 'minimum' => 0, 'maximum' => 1],
-                'tone_score' => ['type' => 'number', 'minimum' => 0, 'maximum' => 1],
-                'audience_score' => ['type' => 'number', 'minimum' => 0, 'maximum' => 1],
+                // Anthropic's structured-output validator rejects
+                // minimum/maximum on number types. The 0.0–1.0 range is
+                // enforced via the prompt and clamped in ComplianceAgent.
+                'score' => ['type' => 'number', 'description' => 'Float in [0.0, 1.0]. 1.0 = indistinguishable from brand.'],
+                'tone_score' => ['type' => 'number', 'description' => 'Float in [0.0, 1.0]. Tone match component.'],
+                'audience_score' => ['type' => 'number', 'description' => 'Float in [0.0, 1.0]. Audience fit component.'],
                 'reasoning' => ['type' => 'string', 'description' => 'Plain English, max 2 sentences. Cite specific phrases.'],
                 'concerns' => [
                     'type' => 'array',

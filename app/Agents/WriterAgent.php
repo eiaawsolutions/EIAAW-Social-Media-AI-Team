@@ -100,7 +100,14 @@ class WriterAgent extends BaseAgent
                 'calendar_entry_id' => $entry->id,
                 'platform' => $platform,
                 'content_type' => 'caption',
-                'body' => $payload['body'],
+                // Truncate body to the platform's hard char cap. Schema-side
+                // maxLength was removed because Anthropic's validator rejected
+                // it on string types.
+                'body' => mb_substr(
+                    (string) ($payload['body'] ?? ''),
+                    0,
+                    \App\Agents\Prompts\WriterPrompt::PLATFORM_LIMITS[$platform] ?? 1000,
+                ),
                 // Cap at 30 hashtags here — schema-side maxItems was removed
                 // because Anthropic's validator rejected it. Same pattern as
                 // StrategistAgent's entry-count enforcement.

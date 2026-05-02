@@ -53,7 +53,11 @@ PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources fi
             'properties' => [
                 'body' => [
                     'type' => 'string',
-                    'maxLength' => $limit,
+                    // Anthropic's structured-output validator rejects
+                    // maxLength on string types. Per-platform cap ($limit)
+                    // is enforced in the system prompt and truncated in
+                    // WriterAgent before persisting to drafts.
+                    'description' => "Caption body. Hard cap: {$limit} chars for {$platform}.",
                 ],
                 'hashtags' => [
                     'type' => 'array',
