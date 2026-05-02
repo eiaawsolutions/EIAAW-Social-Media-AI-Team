@@ -2,6 +2,7 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Agency\Pages\BrandCorpusSeed;
 use App\Filament\Agency\Pages\SetupWizard;
 use App\Filament\Agency\Widgets\ReadinessHeader;
 use App\Filament\Agency\Widgets\WelcomeBannerWidget;
@@ -58,6 +59,7 @@ class AgencyPanelProvider extends PanelProvider
             ->discoverPages(in: app_path('Filament/Agency/Pages'), for: 'App\\Filament\\Agency\\Pages')
             ->pages([
                 SetupWizard::class,
+                BrandCorpusSeed::class,
                 Billing::class,
                 TrialExpired::class,
                 Dashboard::class,

@@ -345,7 +345,11 @@ class SetupReadiness
                 ?? $wizardFallback('brand_created'),
             'brand_onboarding' => $wizardFallback('brand_style'),
             'brand_style_view' => $wizardFallback('brand_style'),
-            'corpus' => $wizardFallback('corpus_seeded'),
+            // Real /agency/brand-corpus page (BrandCorpusSeed). Customer
+            // pastes historical posts or seeds from website. Deep-link with
+            // ?brand=N so the page loads the focused brand directly.
+            'corpus' => $tryRoute('filament.agency.pages.brand-corpus-seed', ['brand' => $brandId])
+                ?? $wizardFallback('corpus_seeded'),
             // Real /agency/platforms page exists (Filament resource:
             // PlatformConnectionResource). Deep-link with ?brand=N so the
             // Sync action targets the right brand. If the route name lookup
