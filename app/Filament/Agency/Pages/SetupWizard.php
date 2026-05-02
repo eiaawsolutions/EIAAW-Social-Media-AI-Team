@@ -149,6 +149,13 @@ class SetupWizard extends Page
      */
     public function runStage(string $stageId): void
     {
+        // Agents make outbound HTTP (website scrape + Claude + embeddings) that
+        // can total >30s. PHP-FPM's default max_execution_time of 30s kills the
+        // request mid-flight — Livewire then can't deserialize the partial
+        // response and the browser shows "Error while loading page" instead of
+        // any real notification. Lift the wall-clock for this action only.
+        @set_time_limit(180);
+
         // Livewire v4 doesn't rehydrate `protected` readiness objects between
         // requests (per the class-level comment on $brandReadiness). mount()
         // only fires on the initial page load — wire:click actions skip it.

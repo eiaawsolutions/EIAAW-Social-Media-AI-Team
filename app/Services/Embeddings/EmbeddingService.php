@@ -61,10 +61,13 @@ class EmbeddingService
     ): array {
         if (empty($texts)) return [];
 
-        $apiKey = env('VOYAGE_API_KEY');
-        if (empty($apiKey)) {
+        // Read via config(), not env(): config:cache freezes env() at build time,
+        // and our Infisical resolver rewrites config('services.voyage.api_key')
+        // from a `secret://...` handle to the live value at boot.
+        $apiKey = (string) config('services.voyage.api_key');
+        if ($apiKey === '') {
             throw new RuntimeException(
-                'Voyage API key not configured. Set VOYAGE_API_KEY in your env (or via Infisical handle).'
+                'Voyage API key not configured. Set services.voyage.api_key (Infisical handle: secret://eiaaw-smt-prod/prod/VOYAGE_API_KEY).'
             );
         }
 
