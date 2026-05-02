@@ -225,7 +225,7 @@
                             <a href="{{ $stage->ctaUrl }}" class="wizard-cta wizard-cta-ghost">{{ $stage->ctaLabel }}</a>
                         @elseif ($stage->blockedBy)
                             <span class="wizard-cta wizard-cta-disabled">{{ $stage->ctaLabel }}</span>
-                        @elseif (in_array($stage->id, ['brand_style', 'calendar_generated', 'first_draft_passed']))
+                        @elseif (in_array($stage->id, ['brand_style', 'calendar_generated', 'first_draft_passed', 'post_scheduled']))
                             {{-- Stages with one-click agent triggers --}}
                             <button type="button"
                                     class="wizard-cta"
