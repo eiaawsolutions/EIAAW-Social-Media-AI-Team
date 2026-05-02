@@ -149,6 +149,13 @@ class SetupWizard extends Page
      */
     public function runStage(string $stageId): void
     {
+        // Livewire v4 doesn't rehydrate `protected` readiness objects between
+        // requests (per the class-level comment on $brandReadiness). mount()
+        // only fires on the initial page load — wire:click actions skip it.
+        // Recompute readiness here so we can resolve the focused brand from
+        // the public $brand id that Livewire DOES round-trip.
+        $this->refreshReadiness();
+
         if (! $this->brandReadiness) {
             Notification::make()->title('No brand selected')->danger()->send();
             return;
