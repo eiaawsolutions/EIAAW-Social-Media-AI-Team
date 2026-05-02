@@ -101,10 +101,6 @@ class BrandResource extends Resource
                     ->sortable()
                     ->color('gray'),
             ])
-            ->modifyQueryUsing(fn (Builder $q) => $q
-                ->whereNull('archived_at')
-                ->where('workspace_id', auth()->user()->current_workspace_id
-                    ?? auth()->user()->ownedWorkspaces()->value('id')))
             ->recordActions([
                 EditAction::make(),
                 DeleteAction::make(),
@@ -121,5 +117,30 @@ class BrandResource extends Resource
         return [
             'index' => ManageBrands::route('/'),
         ];
+    }
+
+    /**
+     * Constrain every query (list, summary, single-record lookup, edit form
+     * record resolution) to the current user's workspace. Filament calls this
+     * to construct the base table query, the summary aggregate query, and
+     * record-resolution queries for actions — putting the workspace scope
+     * here guarantees the constraint is honored everywhere, not just in
+     * modifyQueryUsing on the table.
+     *
+     * Previously: a workspace_id filter inside modifyQueryUsing leaked through
+     * to the summary path, where Filament's HasFilters ran where(closure) on
+     * a builder whose underlying query had been mutated in a way that left
+     * $this->model null — Eloquent then threw "Call to a member function
+     * newQueryWithoutRelationships() on null" at Builder.php:325.
+     */
+    public static function getEloquentQuery(): \Illuminate\Database\Eloquent\Builder
+    {
+        $user = auth()->user();
+        $workspaceId = $user?->current_workspace_id
+            ?? $user?->ownedWorkspaces()->value('id');
+
+        return parent::getEloquentQuery()
+            ->whereNull('archived_at')
+            ->when($workspaceId, fn (Builder $q) => $q->where('workspace_id', $workspaceId));
     }
 }
