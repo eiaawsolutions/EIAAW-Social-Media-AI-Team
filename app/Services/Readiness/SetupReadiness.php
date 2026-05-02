@@ -364,9 +364,14 @@ class SetupReadiness
             // `autonomy` because the page sets $slug = 'autonomy'.
             'autonomy' => $tryRoute('filament.agency.pages.autonomy', ['brand' => $brandId])
                 ?? $wizardFallback('autonomy_decided'),
-            'calendar' => $wizardFallback('calendar_generated'),
-            'drafts' => $wizardFallback('first_draft_passed'),
-            'schedule' => $wizardFallback('post_scheduled'),
+            // Real Filament Resource pages — auto-discovered, route names
+            // follow the {plural-kebab} pattern.
+            'calendar' => $tryRoute('filament.agency.resources.calendar-entries.index', ['brand' => $brandId])
+                ?? $wizardFallback('calendar_generated'),
+            'drafts' => $tryRoute('filament.agency.resources.drafts.index', ['brand' => $brandId])
+                ?? $wizardFallback('first_draft_passed'),
+            'schedule' => $tryRoute('filament.agency.resources.scheduled-posts.index', ['brand' => $brandId])
+                ?? $wizardFallback('post_scheduled'),
             'performance' => $wizardFallback('metrics_recorded'),
             default => $wizardFallback($action),
         };
