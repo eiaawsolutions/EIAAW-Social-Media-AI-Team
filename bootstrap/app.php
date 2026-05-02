@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -12,6 +13,17 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
+    ->withSchedule(function (Schedule $schedule): void {
+        // Publish path: every minute, dispatch jobs for queued / pollable /
+        // retryable scheduled posts. The Job itself is idempotent so even if
+        // the cron fires twice in the same minute, we won't double-publish.
+        // withoutOverlapping() guards against long-running dispatches piling
+        // up if the queue is slow.
+        $schedule->command('posts:dispatch-due')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->runInBackground();
+    })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(
             at: '*',
