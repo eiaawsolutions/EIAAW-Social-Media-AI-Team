@@ -359,7 +359,11 @@ class SetupReadiness
             // fails we fall back to the wizard so the user is never stranded.
             'platforms' => $tryRoute('filament.agency.resources.platform-connections.index', ['brand' => $brandId])
                 ?? $wizardFallback('platform_connected'),
-            'autonomy' => $wizardFallback('autonomy_decided'),
+            // Real /agency/autonomy page (AutonomyLane). Customer picks
+            // green / amber / red as the brand's default lane. Route name is
+            // `autonomy` because the page sets $slug = 'autonomy'.
+            'autonomy' => $tryRoute('filament.agency.pages.autonomy', ['brand' => $brandId])
+                ?? $wizardFallback('autonomy_decided'),
             'calendar' => $wizardFallback('calendar_generated'),
             'drafts' => $wizardFallback('first_draft_passed'),
             'schedule' => $wizardFallback('post_scheduled'),
