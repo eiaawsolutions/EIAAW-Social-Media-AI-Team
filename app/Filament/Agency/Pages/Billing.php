@@ -65,7 +65,11 @@ class Billing extends Page
         if ($this->workspace->subscription_status === 'trialing'
             && $this->workspace->trial_ends_at
         ) {
-            $days = now()->diffInDays($this->workspace->trial_ends_at, false);
+            // Carbon 3 (Laravel 11) returns a float from diffInDays; cast/ceil
+            // so the user sees "Trial ends in 14 days", not "13.98... days".
+            // Use ceil so a 13.98-day-remaining trial reads as "14 days" until
+            // the moment it actually ticks past midnight to 13.0.
+            $days = (int) ceil(now()->diffInDays($this->workspace->trial_ends_at, false));
             $this->trialBadge = $days > 0
                 ? "Trial ends in {$days} day" . ($days === 1 ? '' : 's')
                 : 'Trial ending today';
