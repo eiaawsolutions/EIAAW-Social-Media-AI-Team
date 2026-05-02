@@ -348,7 +348,10 @@ class SetupReadiness
             // Real /agency/brand-corpus page (BrandCorpusSeed). Customer
             // pastes historical posts or seeds from website. Deep-link with
             // ?brand=N so the page loads the focused brand directly.
-            'corpus' => $tryRoute('filament.agency.pages.brand-corpus-seed', ['brand' => $brandId])
+            // Route name is `brand-corpus` (no -seed suffix) because the
+            // page sets $slug = 'brand-corpus' which Filament uses to
+            // derive both URL and route name.
+            'corpus' => $tryRoute('filament.agency.pages.brand-corpus', ['brand' => $brandId])
                 ?? $wizardFallback('corpus_seeded'),
             // Real /agency/platforms page exists (Filament resource:
             // PlatformConnectionResource). Deep-link with ?brand=N so the
