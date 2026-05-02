@@ -114,7 +114,7 @@ class ScheduledPostResource extends Resource
                     ->icon('heroicon-o-clock')
                     ->color('gray')
                     ->visible(fn (ScheduledPost $r) => $r->status === 'queued')
-                    ->form([
+                    ->schema([
                         \Filament\Forms\Components\DateTimePicker::make('scheduled_for')
                             ->label('Publish at')
                             ->seconds(false)

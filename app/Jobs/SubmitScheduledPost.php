@@ -61,6 +61,18 @@ class SubmitScheduledPost implements ShouldQueue
             return;
         }
 
+        // Per-workspace kill switch — refuse to publish without marking
+        // the row failed (so it stays queued for resume).
+        $brand = $post->brand;
+        if ($brand && $brand->workspace && $brand->workspace->publishing_paused) {
+            Log::info('SubmitScheduledPost: publishing paused for workspace', [
+                'id' => $post->id,
+                'workspace_id' => $brand->workspace_id,
+                'reason' => $brand->workspace->publishing_paused_reason,
+            ]);
+            return; // stays in 'queued', will be picked up after resume
+        }
+
         if ($post->platformConnection->status !== 'active') {
             $this->markFailed($post, 'Platform connection is not active (status=' . $post->platformConnection->status . ').');
             return;

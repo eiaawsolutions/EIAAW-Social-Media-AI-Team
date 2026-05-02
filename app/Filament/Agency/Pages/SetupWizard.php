@@ -3,6 +3,7 @@
 namespace App\Filament\Agency\Pages;
 
 use App\Agents\ComplianceAgent;
+use App\Agents\DesignerAgent;
 use App\Agents\OnboardingAgent;
 use App\Agents\StrategistAgent;
 use App\Agents\WriterAgent;
@@ -294,6 +295,18 @@ class SetupWizard extends Page
         $draftId = $writerResult->data['draft_id'] ?? null;
         if (! $draftId) {
             return \App\Agents\AgentResult::fail('Writer returned no draft id.');
+        }
+
+        // Generate the image. Soft-fail: if FAL/Blotato errors, the draft
+        // still exists as text-only and the user can regenerate later via
+        // /agency/drafts. Stage 07 doesn't gate on imagery.
+        try {
+            app(DesignerAgent::class)->run($brand, ['draft_id' => $draftId]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('SetupWizard: Designer crashed (draft kept as text-only)', [
+                'draft_id' => $draftId,
+                'error' => $e->getMessage(),
+            ]);
         }
 
         $complianceResult = app(ComplianceAgent::class)->run($brand, [

@@ -11,6 +11,14 @@
         @endif
     </div>
 
+    @if (! empty($draft->asset_url))
+        <div style="margin-bottom: 14px;">
+            <img src="{{ $draft->asset_url }}"
+                 alt="Draft asset"
+                 style="max-width: 100%; max-height: 420px; border-radius: 10px; border: 1px solid #D9CFBC; display: block;" />
+        </div>
+    @endif
+
     <div style="background: #FAF7F2; border: 1px solid #D9CFBC; border-radius: 10px; padding: 18px 20px; margin-bottom: 18px; white-space: pre-wrap; font-size: 14px; color: #0F1A1D;">{{ $draft->body }}</div>
 
     @if (! empty($draft->hashtags))

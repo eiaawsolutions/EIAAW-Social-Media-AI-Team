@@ -124,8 +124,22 @@ class CalendarEntryResource extends Resource
                                 ->send();
                             return;
                         }
-                        // Hand off to Compliance immediately so the draft lands in
-                        // a usable state on the Drafts page (awaiting_approval /
+                        // Generate the image. Soft-fail: if Designer errors,
+                        // the draft survives as text-only and the user can
+                        // re-run from /agency/drafts.
+                        try {
+                            app(\App\Agents\DesignerAgent::class)->run($r->brand, [
+                                'draft_id' => $writer->data['draft_id'],
+                            ]);
+                        } catch (\Throwable $e) {
+                            \Illuminate\Support\Facades\Log::warning('Calendar: Designer crashed', [
+                                'draft_id' => $writer->data['draft_id'],
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+
+                        // Hand off to Compliance so the draft lands in a usable
+                        // state on the Drafts page (awaiting_approval /
                         // approved / compliance_failed).
                         try {
                             $compl = app(\App\Agents\ComplianceAgent::class)->run($r->brand, [

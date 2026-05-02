@@ -49,6 +49,9 @@ class Workspace extends Model
         'settings',
         'suspended_at',
         'suspended_reason',
+        'publishing_paused',
+        'publishing_paused_at',
+        'publishing_paused_reason',
     ];
 
     protected function casts(): array
@@ -58,6 +61,8 @@ class Workspace extends Model
             'past_due_at' => 'datetime',
             'canceled_at' => 'datetime',
             'suspended_at' => 'datetime',
+            'publishing_paused' => 'boolean',
+            'publishing_paused_at' => 'datetime',
             'settings' => 'array',
         ];
     }

@@ -48,6 +48,11 @@ class DraftResource extends Resource
                     ->color('gray')
                     ->size('sm')
                     ->sortable(),
+                Tables\Columns\ImageColumn::make('asset_url')
+                    ->label('Image')
+                    ->size(56)
+                    ->square()
+                    ->defaultImageUrl(fn () => null),
                 Tables\Columns\TextColumn::make('platform')
                     ->badge()
                     ->color(fn (string $state) => match ($state) {
@@ -158,7 +163,7 @@ class DraftResource extends Resource
                     ->icon('heroicon-o-x-circle')
                     ->color('danger')
                     ->visible(fn (Draft $r) => in_array($r->status, ['awaiting_approval', 'approved']))
-                    ->form([
+                    ->schema([
                         \Filament\Forms\Components\Textarea::make('rejection_reason')
                             ->label('Why?')
                             ->required()
@@ -183,7 +188,7 @@ class DraftResource extends Resource
                     ->icon('heroicon-o-clock')
                     ->color('primary')
                     ->visible(fn (Draft $r) => in_array($r->status, ['approved', 'awaiting_approval']))
-                    ->form([
+                    ->schema([
                         \Filament\Forms\Components\DateTimePicker::make('scheduled_for')
                             ->label('Publish at')
                             ->seconds(false)
@@ -230,6 +235,54 @@ class DraftResource extends Resource
                         \Filament\Notifications\Notification::make()
                             ->title('Scheduled')
                             ->body("Draft #{$r->id} queued for " . \Illuminate\Support\Carbon::parse($data['scheduled_for'])->format('M j, H:i'))
+                            ->success()
+                            ->send();
+                    }),
+
+                \Filament\Actions\Action::make('regenerateImage')
+                    ->label(fn (Draft $r) => empty($r->asset_url) ? 'Generate image' : 'Regenerate image')
+                    ->icon('heroicon-o-photo')
+                    ->color('gray')
+                    ->visible(fn (Draft $r) => ! in_array($r->status, ['published', 'rejected']))
+                    ->requiresConfirmation()
+                    ->modalDescription(fn (Draft $r) => empty($r->asset_url)
+                        ? 'Run DesignerAgent to generate a new image via FAL.AI (~$0.04, ~10s).'
+                        : 'Replace the current image. Old asset stays in asset_urls history; the new one becomes asset_url.')
+                    ->action(function (Draft $r): void {
+                        @set_time_limit(180);
+                        // Clear existing asset_url so DesignerAgent's idempotency
+                        // check doesn't no-op. asset_urls keeps the history.
+                        if (! empty($r->asset_url)) {
+                            $r->update(['asset_url' => null]);
+                        }
+                        try {
+                            $result = app(\App\Agents\DesignerAgent::class)->run($r->brand, [
+                                'draft_id' => $r->id,
+                            ]);
+                        } catch (\Throwable $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Designer crashed')
+                                ->body(substr($e->getMessage(), 0, 240))
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+                        if (! $result->ok) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Could not generate image')
+                                ->body($result->errorMessage ?: 'unknown')
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+                        \Filament\Notifications\Notification::make()
+                            ->title('Image ready')
+                            ->body(sprintf(
+                                '$%.4f · %dms · %s',
+                                $result->data['cost_usd'] ?? 0,
+                                $result->data['latency_ms'] ?? 0,
+                                $result->data['image_size'] ?? '?',
+                            ))
                             ->success()
                             ->send();
                     }),
