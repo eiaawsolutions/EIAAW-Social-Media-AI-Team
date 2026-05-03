@@ -472,3 +472,104 @@ footer {
   .display { font-size: clamp(30px, 11vw, 56px); }
   .wrap { padding: 0 16px; }
 }
+
+/* ============================================================
+   Mobile overrides for inline grid-column declarations
+   The landing page uses inline `style="grid-column: ..."`
+   which beats class rules. These overrides target the inline
+   patterns directly so the layout collapses cleanly.
+   ============================================================ */
+@media (max-width: 900px) {
+  /* Any inline grid-column on a direct child of .grid-12
+     collapses to full width on tablet and below. */
+  .grid-12 > [style*="grid-column"] {
+    grid-column: 1 / -1 !important;
+  }
+  .grid-12 > [style*="padding-top"] {
+    padding-top: 0 !important;
+  }
+
+  /* Hero: receipt card sits below the headline, full width, no offset. */
+  .elegant-figure-parent {
+    margin-top: 32px;
+  }
+  .receipt-card-inner { padding: 24px; }
+
+  /* "How it works" — agents grid becomes single column on tablet. */
+  #agents {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 14px !important;
+  }
+
+  /* Pricing — kill the negative translate on the highlighted tier
+     so cards stack flush, and tighten padding. */
+  #pricing .grid-12 > [style*="grid-column"] {
+    transform: none !important;
+    padding: 28px !important;
+  }
+
+  /* Hero top padding — nav height + breathing room, not 18vh. */
+  section.section-pad:first-of-type {
+    padding-top: 110px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  /* Stack everything to a single column on phones. */
+  #agents {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Section-head aside (right-aligned mono caption) reads as orphaned
+     on mobile — hide rather than awkwardly left-align. */
+  .section-head .aside {
+    display: none;
+  }
+
+  /* Hero CTA buttons — full width, stacked, easy thumb targets. */
+  section.section-pad:first-of-type .btn-lg,
+  section.section-pad:last-of-type .btn-lg {
+    width: 100%;
+    justify-content: center;
+  }
+  section.section-pad:first-of-type [style*="display: flex"][style*="gap"],
+  section.section-pad:last-of-type [style*="display: flex"][style*="gap"] {
+    flex-direction: column !important;
+    gap: 12px !important;
+  }
+
+  /* Receipts dark section — paragraphs were max-width 52ch which on
+     a narrow viewport is fine, but the h3 max-width 18ch forces
+     awkward wrapping on certain phrases. */
+  #receipts h3 {
+    max-width: none !important;
+    font-size: clamp(22px, 6.5vw, 28px) !important;
+  }
+
+  /* Failures section — heading max-width 24ch wraps badly on phones. */
+  section .grid-12 article h3 {
+    max-width: none !important;
+  }
+
+  /* Pricing card — tighter price, comfortable padding. */
+  #pricing [style*="font-size: 56px"] {
+    font-size: 44px !important;
+  }
+  #pricing .btn {
+    margin-top: 20px !important;
+  }
+
+  /* Receipt card on hero — kill the gentle float on mobile (less paint). */
+  .receipt-card { animation: none; }
+
+  /* Ensure no horizontal overflow from images/cards. */
+  img, .elegant-figure, .receipt-card { max-width: 100%; }
+}
+
+@media (max-width: 380px) {
+  /* Very narrow phones — even more aggressive type rein-in. */
+  section.section-pad:first-of-type { padding-top: 96px !important; }
+  .receipt-card-inner { padding: 20px; }
+  .receipt-card-inner p { font-size: 18px !important; }
+  #pricing [style*="font-size: 56px"] { font-size: 38px !important; }
+}
