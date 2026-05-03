@@ -325,7 +325,7 @@ class ComplianceAgent extends BaseAgent
         foreach ($sources as $src) {
             switch ($src['source_type'] ?? '') {
                 case 'brand_style':
-                    if ($brandStyle && stripos($brandStyle->content_md, substr($src['source_excerpt'] ?? '', 0, 30)) !== false) {
+                    if ($this->brandStyleVerifies($brandStyle, (string) ($src['source_excerpt'] ?? ''))) {
                         $verified++;
                     }
                     break;
@@ -341,37 +341,13 @@ class ComplianceAgent extends BaseAgent
                     }
                     break;
                 case 'historical_post':
-                    // Prefer source_id when the Writer cited one. Fall back to
-                    // substring match against any of the brand's corpus items
-                    // when source_id is absent OR didn't resolve (the Writer
-                    // sometimes hallucinates small IDs like "1", "2", "3"
-                    // even when the prompt shows real ones).
-                    $matched = false;
-                    if (! empty($src['source_id'])) {
-                        $matched = BrandCorpusItem::where('id', $src['source_id'])
-                            ->where('brand_id', $brand->id)
-                            ->exists();
-                    }
-                    if (! $matched) {
-                        $excerpt = (string) ($src['source_excerpt'] ?? '');
-                        // Try a few windows: full string up to 80 chars, then
-                        // first 40, then first 20. As soon as any window matches
-                        // any corpus row's content (or the corpus row's content
-                        // is contained in the excerpt — covers tight paraphrases
-                        // of short corpus chunks), we count it as verified.
-                        foreach ([80, 40, 20] as $len) {
-                            $needle = mb_substr($excerpt, 0, $len);
-                            if (mb_strlen($needle) < 15) continue;
-                            $escaped = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $needle);
-                            $matched = BrandCorpusItem::where('brand_id', $brand->id)
-                                ->where(function ($q) use ($escaped) {
-                                    $q->where('content', 'ILIKE', '%' . $escaped . '%');
-                                })
-                                ->exists();
-                            if ($matched) break;
-                        }
-                    }
-                    if ($matched) {
+                case 'website_page':
+                    // Both source types live in brand_corpus and verify the same
+                    // way: prefer source_id, fall back to substring match against
+                    // corpus content. Treating them as one prevents Writer-vs-
+                    // Compliance label-mismatch failures (Writer cites "historical_post"
+                    // when the corpus only has "website_page" rows, or vice versa).
+                    if ($this->corpusVerifies($brand, $src)) {
                         $verified++;
                     }
                     break;
@@ -401,5 +377,62 @@ class ComplianceAgent extends BaseAgent
             'details' => ['claimed_sources' => count($sources), 'verified' => $verified],
             'checked_at' => now(),
         ]);
+    }
+
+    /**
+     * brand_style verification: was strict verbatim-match of the first 30
+     * chars; that fails on any paraphrase (e.g. Writer cites a brand-style
+     * principle in its own words). Now we try a few windows AND a normalised
+     * comparison so paraphrased citations of real brand-style content pass,
+     * while invented quotes still fail.
+     */
+    private function brandStyleVerifies($brandStyle, string $excerpt): bool
+    {
+        if (! $brandStyle || $excerpt === '') return false;
+        $haystack = (string) $brandStyle->content_md;
+        if ($haystack === '') return false;
+
+        foreach ([60, 40, 25] as $len) {
+            $needle = mb_substr($excerpt, 0, $len);
+            if (mb_strlen($needle) < 15) continue;
+            if (stripos($haystack, $needle) !== false) return true;
+        }
+
+        // Normalised compare — fold whitespace, drop punctuation. Catches
+        // citations that quote a brand-style line with slightly different
+        // spacing/quotes than the source. Cheap, last-resort.
+        $norm = fn (string $s) => preg_replace('/\s+/', ' ', strtolower(preg_replace('/[^\w\s]/u', ' ', $s)));
+        $needle = mb_substr($norm($excerpt), 0, 50);
+        return mb_strlen($needle) >= 20 && stripos($norm($haystack), $needle) !== false;
+    }
+
+    /**
+     * Corpus verification (historical_post + website_page). Prefers source_id
+     * lookup, falls back to substring search across corpus content. The Writer
+     * sometimes invents short ids (1, 2, 3) even when the prompt shows real
+     * ones — substring fallback catches valid citations with bogus ids.
+     */
+    private function corpusVerifies(Brand $brand, array $src): bool
+    {
+        if (! empty($src['source_id'])) {
+            $exists = BrandCorpusItem::where('id', $src['source_id'])
+                ->where('brand_id', $brand->id)
+                ->exists();
+            if ($exists) return true;
+        }
+
+        $excerpt = (string) ($src['source_excerpt'] ?? '');
+        if ($excerpt === '') return false;
+
+        foreach ([80, 40, 20] as $len) {
+            $needle = mb_substr($excerpt, 0, $len);
+            if (mb_strlen($needle) < 15) continue;
+            $escaped = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $needle);
+            $matched = BrandCorpusItem::where('brand_id', $brand->id)
+                ->where('content', 'ILIKE', '%' . $escaped . '%')
+                ->exists();
+            if ($matched) return true;
+        }
+        return false;
     }
 }

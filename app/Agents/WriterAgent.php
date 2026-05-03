@@ -223,14 +223,39 @@ class WriterAgent extends BaseAgent
             ->whereNotNull('embedding')
             ->orderByRaw('embedding <=> ?', [(string) $vector])
             ->limit(5)
-            ->get(['id', 'content', 'source_url', 'source_label']);
+            ->get(['id', 'content', 'source_url', 'source_label', 'source_type']);
 
         return $rows->map(fn (BrandCorpusItem $r) => [
             'id' => $r->id,
             'content' => substr($r->content, 0, 800),
             'source_url' => $r->source_url,
             'source_label' => $r->source_label,
+            'source_type' => $r->source_type,
         ])->all();
+    }
+
+    /**
+     * Render the retrieval block shown to the Writer. CRITICAL: each row
+     * carries the real BrandCorpusItem id AND its real source_type so the
+     * model cites the type that ComplianceAgent will then verify against.
+     * Previously every row was implicitly "historical_post" in the prompt,
+     * but the corpus may actually hold website_page rows — the resulting
+     * mismatch failed every factual_grounding check.
+     */
+    private function renderSimilarBlock(array $similar): string
+    {
+        if (empty($similar)) {
+            return "(no corpus snippets indexed yet — ground in brand-style only)";
+        }
+
+        $allowedIds = collect($similar)->pluck('id')->implode(', ');
+        $rows = collect($similar)
+            ->map(fn ($s) => "[id={$s['id']} type=".($s['source_type'] ?? 'historical_post')."] {$s['content']}")
+            ->implode("\n\n---\n\n");
+
+        return "VALID source_id values you may cite (use ONLY these, never invent IDs): {$allowedIds}\n"
+             . "Match the source_type to the [type=...] tag for each id.\n\n"
+             . $rows;
     }
 
     /**
@@ -247,11 +272,7 @@ class WriterAgent extends BaseAgent
         string $platform,
         array $redraftContext,
     ): string {
-        $allowedIds = collect($similar)->pluck('id')->implode(', ');
-        $similarBlock = empty($similar)
-            ? "(no historical posts indexed yet — ground in brand-style only)"
-            : "VALID source_id values you may cite (use ONLY these, never invent IDs): {$allowedIds}\n\n"
-                . collect($similar)->map(fn ($s) => "[id={$s['id']}] {$s['content']}")->implode("\n\n---\n\n");
+        $similarBlock = $this->renderSimilarBlock($similar);
 
         $priorBody = (string) ($redraftContext['prior_body'] ?? '');
         $failures = $redraftContext['failures'] ?? [];
@@ -308,17 +329,7 @@ MSG;
 
     private function buildUserMessage(Brand $brand, string $brandStyleMd, CalendarEntry $entry, array $similar, string $platform): string
     {
-        // Each similar post is rendered with its real BrandCorpusItem id so the
-        // Writer can cite source_id="<id>" against source_type=historical_post —
-        // ComplianceAgent's factual_grounding check uses that id to verify the
-        // citation maps to a real row. CRITICAL: the Writer must NOT invent
-        // IDs (the model defaults to '1', '2', '3' otherwise) — the prompt
-        // below pins it to "use ONLY these IDs verbatim".
-        $allowedIds = collect($similar)->pluck('id')->implode(', ');
-        $similarBlock = empty($similar)
-            ? "(no historical posts indexed yet — ground in brand-style only)"
-            : "VALID source_id values you may cite (use ONLY these, never invent IDs): {$allowedIds}\n\n"
-                . collect($similar)->map(fn ($s) => "[id={$s['id']}] {$s['content']}")->implode("\n\n---\n\n");
+        $similarBlock = $this->renderSimilarBlock($similar);
 
         return <<<MSG
 BRAND: {$brand->name}

@@ -4,7 +4,11 @@ namespace App\Agents\Prompts;
 
 final class WriterPrompt
 {
-    public const VERSION = 'writer.v1.0';
+    // v1.1 — added website_page source_type so the Writer can cite scraped
+    // brand pages (the realistic shape of a brand corpus before historical
+    // posts are imported). Bumping the version triggers redraft eligibility
+    // for drafts that failed under v1.0 (see DraftsRedraftFailed query).
+    public const VERSION = 'writer.v1.1';
 
     /**
      * Per-platform character limits enforced both in the schema and in the
@@ -34,8 +38,9 @@ You are EIAAW's senior copywriter, writing for {$platformLabel}. Your job is to 
 - Stay in the brand's voice. The brand-style.md is the single source of truth — your output must read like the brand wrote it.
 - Ground every concrete claim in the supplied evidence. If the evidence doesn't say a metric or an outcome, don't claim it.
 - Never invent statistics, awards, customer names, or quotes.
-- When citing a historical_post in grounding_sources, source_id MUST be one of the [id=N] values shown verbatim in the user message. Do NOT invent IDs or default to "1", "2", "3" — copy the exact id from the prompt. If you can't find a fitting historical post, cite brand_style instead.
-- For source_excerpt on historical_post citations, copy a 30+ character verbatim phrase from the [id=N] block — do NOT paraphrase. Compliance verifies citations by substring match.
+- When citing a corpus snippet in grounding_sources, source_id MUST be one of the [id=N] values shown verbatim in the user message. Do NOT invent IDs or default to "1", "2", "3" — copy the exact id from the prompt. If you can't find a fitting corpus snippet, cite brand_style instead.
+- The source_type for each cited corpus snippet MUST match the [type=...] label shown next to its [id=N] in the prompt — use historical_post for posts, website_page for brand-website pages. Do NOT relabel a website_page as historical_post.
+- For source_excerpt on corpus citations (historical_post or website_page), copy a 30+ character verbatim phrase from the [id=N] block — do NOT paraphrase. Compliance verifies citations by substring match.
 - Match the platform's native format and conventions for {$platformLabel}.
 - Stay within {$limit} characters for the body (excluding hashtags + mentions).
 - Output ONLY the JSON document specified by the schema. No commentary.
@@ -84,7 +89,7 @@ PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources fi
                         'required' => ['claim', 'source_type', 'source_excerpt'],
                         'properties' => [
                             'claim' => ['type' => 'string', 'description' => 'The phrase from your body that this grounds.'],
-                            'source_type' => ['type' => 'string', 'enum' => ['brand_style', 'historical_post', 'evidence_quote', 'calendar_entry']],
+                            'source_type' => ['type' => 'string', 'enum' => ['brand_style', 'historical_post', 'website_page', 'evidence_quote', 'calendar_entry']],
                             'source_excerpt' => ['type' => 'string', 'description' => 'Short verbatim quote from the source.'],
                             'source_id' => ['type' => 'string', 'description' => 'Optional row id from brand_corpus / brand_styles / calendar_entries when known.'],
                         ],

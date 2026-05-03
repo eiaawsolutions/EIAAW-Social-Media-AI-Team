@@ -457,6 +457,29 @@ class DraftResource extends Resource
                             ->success()
                             ->send();
                     }),
+
+                \Filament\Actions\Action::make('resetAttempts')
+                    ->label('Reset attempts & retry')
+                    ->icon('heroicon-o-arrow-uturn-left')
+                    ->color('gray')
+                    ->visible(fn (Draft $r) => $r->status === 'compliance_failed'
+                        && ($r->revision_count ?? 0) >= \App\Jobs\RedraftFailedDraft::MAX_REVISIONS
+                        && (bool) $r->calendar_entry_id)
+                    ->requiresConfirmation()
+                    ->modalHeading('Reset retry counter and redraft')
+                    ->modalDescription('Use after a Writer/Compliance prompt fix or after enriching the brand corpus. Zeroes the per-draft attempt counter and queues a fresh redraft. Will run up to '.\App\Jobs\RedraftFailedDraft::MAX_REVISIONS.' more attempts.')
+                    ->action(function (Draft $r): void {
+                        $r->forceFill([
+                            'revision_count' => 0,
+                            'last_redraft_at' => null,
+                        ])->save();
+                        \App\Jobs\RedraftFailedDraft::dispatch($r->id);
+                        \Filament\Notifications\Notification::make()
+                            ->title('Counter reset, redraft queued')
+                            ->body('Refresh in ~30s.')
+                            ->success()
+                            ->send();
+                    }),
             ])
             ->emptyStateHeading('No drafts yet')
             ->emptyStateDescription('Run the Writer on a calendar entry to produce one.')
