@@ -224,20 +224,27 @@ class BlotatoClient
      */
     private function defaultTargetFor(string $platform, string $accountId, string $text, array $overrides): array
     {
+        // For LinkedIn + Facebook: Blotato's `pageId` is OPTIONAL when the
+        // connected account is a personal profile — Blotato routes to the
+        // profile automatically when pageId is absent. Setting pageId to
+        // the accountId fails with HTTP 422 "Page / subaccount not found".
+        // Operator must explicitly pass overrides.pageId for Company Pages
+        // / Facebook Pages (use the platform-side numeric id, NOT the
+        // Blotato accountId). Verified live against api 2026-05-03 with a
+        // successful publish to a personal LinkedIn profile via no-pageId.
         $base = match ($platform) {
             'linkedin' => [
                 'targetType' => 'linkedin',
-                'pageId' => $accountId,
             ],
             'facebook' => [
                 'targetType' => 'facebook',
-                'pageId' => $accountId,
             ],
             'pinterest' => [
                 'targetType' => 'pinterest',
-                // Pinterest needs a real boardId — operator must override.
-                // We pass empty so the API returns a clear "missing boardId"
-                // error instead of silently accepting and posting to wrong board.
+                // Pinterest is the one platform where boardId is genuinely
+                // required (no personal-fallback). Operator must supply via
+                // overrides; empty default surfaces a clear "missing boardId"
+                // error instead of silent wrong-board posting.
                 'boardId' => $overrides['boardId'] ?? '',
             ],
             'tiktok' => [
@@ -267,6 +274,7 @@ class BlotatoClient
             ],
             'threads' => [
                 'targetType' => 'threads',
+                'replyControl' => 'everyone', // safest default — operator restricts via overrides
             ],
             default => [
                 'targetType' => $platform,
