@@ -127,6 +127,18 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
+        // CSP violation reports — kept on its own channel so the noise from
+        // browser-quirk false positives doesn't drown out real app errors.
+        // Tail with: `tail -f storage/logs/csp.log`. 14-day rotation matches
+        // the rest of the daily channels.
+        'csp' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/csp.log'),
+            'level' => 'info',
+            'days' => 14,
+            'replace_placeholders' => true,
+        ],
+
     ],
 
 ];

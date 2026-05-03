@@ -306,12 +306,20 @@ class CalendarEntryResource extends Resource
         $workspaceId = $user?->current_workspace_id
             ?? $user?->ownedWorkspaces()->value('id');
 
+        // Tenant isolation: super admin sees everything; anyone else without a
+        // resolvable workspace sees nothing (prevents cross-tenant IDOR).
+        if ($user?->is_super_admin) {
+            return parent::getEloquentQuery()
+                ->whereHas('brand', fn (Builder $q) => $q->whereNull('archived_at'));
+        }
+
+        if (! $workspaceId) {
+            return parent::getEloquentQuery()->whereRaw('1 = 0');
+        }
+
         return parent::getEloquentQuery()
             ->whereHas('brand', function (Builder $q) use ($workspaceId) {
-                $q->whereNull('archived_at');
-                if ($workspaceId) {
-                    $q->where('workspace_id', $workspaceId);
-                }
+                $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
             });
     }
 

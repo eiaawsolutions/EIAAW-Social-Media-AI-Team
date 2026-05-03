@@ -139,8 +139,18 @@ class BrandResource extends Resource
         $workspaceId = $user?->current_workspace_id
             ?? $user?->ownedWorkspaces()->value('id');
 
-        return parent::getEloquentQuery()
-            ->whereNull('archived_at')
-            ->when($workspaceId, fn (Builder $q) => $q->where('workspace_id', $workspaceId));
+        $query = parent::getEloquentQuery()->whereNull('archived_at');
+
+        // Tenant isolation: a user with no resolvable workspace sees nothing.
+        // Super admins (EIAAW HQ) bypass the filter so they can support tenants.
+        if ($user?->is_super_admin) {
+            return $query;
+        }
+
+        if (! $workspaceId) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where('workspace_id', $workspaceId);
     }
 }

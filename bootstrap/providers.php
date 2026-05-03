@@ -6,6 +6,8 @@ return [
     App\Providers\SecretsServiceProvider::class,
 
     App\Providers\AppServiceProvider::class,
+    // Gate /horizon (queue dashboard) on is_super_admin.
+    App\Providers\HorizonServiceProvider::class,
     App\Providers\Filament\AdminPanelProvider::class,
     App\Providers\Filament\AgencyPanelProvider::class,
 ];

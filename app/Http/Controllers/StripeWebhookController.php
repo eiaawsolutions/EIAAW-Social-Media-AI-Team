@@ -33,10 +33,24 @@ class StripeWebhookController extends CashierWebhookController
     public function handleWebhook(Request $request): Response
     {
         $payload = json_decode($request->getContent(), true);
+
+        // Strict shape validation. The signature middleware already proved
+        // the body came from Stripe — these checks defend against future
+        // Stripe API changes / library bugs that could emit a malformed event.
+        if (! is_array($payload)) {
+            return new Response('Bad payload', 400);
+        }
         $eventId = $payload['id'] ?? null;
         $eventType = $payload['type'] ?? null;
-
-        if (! $eventId || ! $eventType) {
+        if (! is_string($eventId) || ! is_string($eventType)
+            || ! preg_match('/^evt_[A-Za-z0-9]+$/', $eventId)
+            || strlen($eventType) > 120
+            || ! isset($payload['data']['object']) || ! is_array($payload['data']['object'])
+        ) {
+            Log::warning('Stripe webhook: rejected malformed payload', [
+                'id_present'   => is_string($eventId),
+                'type_present' => is_string($eventType),
+            ]);
             return new Response('Bad payload', 400);
         }
 

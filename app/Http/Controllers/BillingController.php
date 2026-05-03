@@ -102,7 +102,23 @@ class BillingController extends Controller
             'allow_promotion_codes' => true,
         ]));
 
-        return redirect()->away($session->url);
+        // Defensive allow-list: Stripe controls this URL today, but a
+        // compromised SDK or a future API change shouldn't be able to push
+        // our customers to an attacker-controlled page. Reject anything that
+        // isn't a Stripe-owned host before redirecting.
+        $checkoutUrl = $session->url ?? '';
+        $host = parse_url($checkoutUrl, PHP_URL_HOST);
+        $allowedHosts = ['checkout.stripe.com', 'billing.stripe.com'];
+        if (! $host || ! in_array($host, $allowedHosts, true)) {
+            Log::error('billing.checkout: Stripe returned non-Stripe URL', [
+                'url'  => $checkoutUrl,
+                'host' => $host,
+            ]);
+            return redirect()->route('signup.picker')
+                ->with('error', 'Could not start checkout. Please try again or contact support.');
+        }
+
+        return redirect()->away($checkoutUrl);
     }
 
     /**
@@ -292,19 +308,25 @@ class BillingController extends Controller
         // Always clear the cookie on the way out — replay protection.
         Cookie::queue(Cookie::forget('eiaaw_welcome'));
 
+        // All failure paths return the SAME generic 404 body so a probe
+        // can't tell "you have no welcome cookie" from "your cookie was
+        // tampered" from "your password expired." Avoids a user-enumeration
+        // / signal channel through differing error strings.
+        $genericFailure = fn () => response()->json(['error' => 'unavailable'], 404);
+
         if (! $encrypted) {
-            return response()->json(['error' => 'no_welcome_token'], 404);
+            return $genericFailure();
         }
 
         try {
             $token = Crypt::decryptString($encrypted);
         } catch (\Throwable) {
-            return response()->json(['error' => 'invalid_welcome_token'], 404);
+            return $genericFailure();
         }
 
         $tempPassword = Cache::pull('eiaaw_welcome_temp_pwd:'.$token);
         if (! $tempPassword) {
-            return response()->json(['error' => 'expired_welcome_token'], 404);
+            return $genericFailure();
         }
 
         return response()->json([

@@ -169,7 +169,10 @@ return [
     |
     */
 
-    'secure' => env('SESSION_SECURE_COOKIE'),
+    // Default to secure cookies in non-local environments. env() override
+    // still wins when explicitly set; local dev (http://localhost) keeps
+    // working because APP_ENV=local triggers the false branch.
+    'secure' => env('SESSION_SECURE_COOKIE', env('APP_ENV', 'production') !== 'local'),
 
     /*
     |--------------------------------------------------------------------------

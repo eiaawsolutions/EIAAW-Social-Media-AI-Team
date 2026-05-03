@@ -13,6 +13,7 @@ use App\Http\Middleware\RedirectToSetupIfIncomplete;
 use App\Filament\Agency\Pages\Billing;
 use App\Filament\Agency\Pages\TrialExpired;
 use App\Http\Middleware\EnforceTrialOrSubscription;
+use Filament\Auth\MultiFactor\App\AppAuthentication;
 use Filament\Auth\Pages\Login;
 use Filament\Auth\Pages\PasswordReset\RequestPasswordReset;
 use Filament\Auth\Pages\PasswordReset\ResetPassword;
@@ -48,6 +49,20 @@ class AgencyPanelProvider extends PanelProvider
             ->passwordReset()
             ->emailVerification()
             ->profile()
+            // TOTP-based MFA. Every authenticated user can opt in via the
+            // profile page; super-admins (EIAAW staff) are FORCED through
+            // setup on their next login — the `isRequired` closure flips
+            // Filament into "you cannot use the panel until 2FA is enabled."
+            // Recovery codes are enabled so a lost authenticator doesn't
+            // permanently lock the operator out.
+            ->multiFactorAuthentication(
+                providers: [
+                    AppAuthentication::make()
+                        ->brandName(config('app.name', 'EIAAW Social Media Team'))
+                        ->recoverable(),
+                ],
+                isRequired: fn (?\App\Models\User $user): bool => (bool) ($user?->is_super_admin ?? false),
+            )
             ->brandName('EIAAW Social Media Team')
             ->brandLogo(asset('brand/shield.png'))
             ->brandLogoHeight('2rem')

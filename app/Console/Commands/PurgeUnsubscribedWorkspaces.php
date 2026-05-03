@@ -212,6 +212,13 @@ class PurgeUnsubscribedWorkspaces extends Command
             }
             $deleted = 0;
             foreach ($stripeCustomerIds as $cid) {
+                // Strict format check: a real Stripe customer ID is `cus_`
+                // followed by alphanumerics. Anything else is corrupted data
+                // or an injection attempt — never proxy it to Stripe.
+                if (! is_string($cid) || ! preg_match('/^cus_[A-Za-z0-9]+$/', $cid)) {
+                    $this->warn('  skipped (invalid id format) ' . substr((string) $cid, 0, 64));
+                    continue;
+                }
                 try {
                     $resp = Http::withBasicAuth($secret, '')
                         ->timeout(15)
