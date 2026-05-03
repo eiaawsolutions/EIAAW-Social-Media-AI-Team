@@ -14,6 +14,16 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withSchedule(function (Schedule $schedule): void {
+        // Auto-schedule path: every minute, find approved drafts (green-lane
+        // auto-approved or human-approved) that have no live ScheduledPost
+        // yet, and queue them. Closes the loop between the autonomy lane
+        // ("green = auto-publish") and the Schedule page actually filling.
+        // Idempotent + race-safe (lockForUpdate inside a transaction).
+        $schedule->command('posts:auto-schedule-approved')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->runInBackground();
+
         // Publish path: every minute, dispatch jobs for queued / pollable /
         // retryable scheduled posts. The Job itself is idempotent so even if
         // the cron fires twice in the same minute, we won't double-publish.
