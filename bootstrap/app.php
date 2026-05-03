@@ -50,6 +50,17 @@ return Application::configure(basePath: dirname(__DIR__))
             ->weekly()->mondays()->at('02:00')
             ->withoutOverlapping()
             ->runInBackground();
+
+        // Auto-redraft loop: every 5 minutes, find compliance_failed drafts
+        // under the per-draft retry cap (3) and dispatch the Writer to fix
+        // them with the failure reasons fed back. Compliance re-runs after.
+        // 5-minute cadence (not every-minute) caps LLM cost on a backlog —
+        // each redraft is ~$0.02-0.05. Cooldown enforces 10 min between
+        // attempts on the same draft so a flaky check doesn't burn budget.
+        $schedule->command('drafts:redraft-failed')
+            ->everyFiveMinutes()
+            ->withoutOverlapping()
+            ->runInBackground();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(
@@ -61,10 +72,35 @@ return Application::configure(basePath: dirname(__DIR__))
                 | Request::HEADER_X_FORWARDED_AWS_ELB,
         );
 
+        // Apply defense-in-depth response headers (CSP / HSTS / X-Frame-Options
+        // / Referrer-Policy / Permissions-Policy) to every response. Scanners
+        // grade these as quick-wins; missing them shows up as "low" findings
+        // on every pentest report.
+        $middleware->append(\App\Http\Middleware\SecurityHeaders::class);
+
+        // Trusted Host validation defends against Host-header injection
+        // (password-reset poisoning, cache poisoning). Only enforce when
+        // APP_URL is set — otherwise local dev breaks. The pattern accepts
+        // both APP_URL's host and any *.eiaawsolutions.com subdomain so the
+        // SAINS / Workforce / Claritas siblings keep resolving when sharing
+        // infra. Localhost / 127.0.0.1 always allowed for tooling.
+        $middleware->trustHosts(at: function () {
+            $hosts = ['localhost', '127.0.0.1', '^(.+\.)?eiaawsolutions\.com$'];
+            $appUrlHost = parse_url((string) config('app.url'), PHP_URL_HOST);
+            if ($appUrlHost) {
+                $hosts[] = preg_quote($appUrlHost, '/');
+            }
+            return $hosts;
+        });
+
         // Stripe webhook: signature is verified by Cashier's middleware
         // instead of CSRF (Stripe doesn't see our session).
+        // CSP report endpoint: the browser sends violation reports without
+        // our XSRF token; the handler only writes log lines, never mutates
+        // state, so the lack of CSRF is acceptable.
         $middleware->validateCsrfTokens(except: [
             'stripe/webhook',
+            'csp-report',
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

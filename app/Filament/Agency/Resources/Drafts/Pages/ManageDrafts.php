@@ -29,6 +29,61 @@ class ManageDrafts extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('redraftAllFailed')
+                ->label('Redraft all failed')
+                ->icon('heroicon-o-arrow-path')
+                ->color('warning')
+                ->modalHeading('Auto-redraft every compliance-failed draft')
+                ->modalDescription(
+                    'Dispatches the Writer to fix each compliance-failed draft (under the per-draft retry cap). '
+                    . 'Compliance re-runs automatically. The cron also runs this every 5 minutes — '
+                    . 'this button is for when you want it to happen now.'
+                )
+                ->schema([
+                    TextInput::make('limit')
+                        ->label('Max drafts to redraft (safety cap — each costs ~$0.02–0.05)')
+                        ->numeric()
+                        ->default(20)
+                        ->minValue(1)
+                        ->maxValue(100)
+                        ->required(),
+                ])
+                ->action(function (array $data): void {
+                    $ws = $this->workspace();
+                    if (! $ws) {
+                        Notification::make()->title('No workspace')->danger()->send();
+                        return;
+                    }
+                    $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+
+                    $candidates = Draft::whereIn('brand_id', $brandIds)
+                        ->where('status', 'compliance_failed')
+                        ->where('revision_count', '<', \App\Jobs\RedraftFailedDraft::MAX_REVISIONS)
+                        ->whereNotNull('calendar_entry_id')
+                        ->orderBy('id')
+                        ->limit((int) $data['limit'])
+                        ->get(['id']);
+
+                    if ($candidates->isEmpty()) {
+                        Notification::make()
+                            ->title('Nothing to redraft')
+                            ->body('No compliance-failed drafts under the retry cap.')
+                            ->warning()
+                            ->send();
+                        return;
+                    }
+
+                    foreach ($candidates as $d) {
+                        \App\Jobs\RedraftFailedDraft::dispatch($d->id);
+                    }
+
+                    Notification::make()
+                        ->title("Queued {$candidates->count()} redraft(s)")
+                        ->body('The Writer is fixing them now. Refresh in ~1–2 minutes to see results.')
+                        ->success()
+                        ->send();
+                }),
+
             Action::make('scheduleAllApproved')
                 ->label('Schedule all approved')
                 ->icon('heroicon-o-rocket-launch')

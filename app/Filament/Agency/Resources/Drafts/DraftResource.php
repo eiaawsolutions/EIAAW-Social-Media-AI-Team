@@ -433,6 +433,30 @@ class DraftResource extends Resource
                             ->color($passed ? 'success' : 'warning')
                             ->send();
                     }),
+
+                \Filament\Actions\Action::make('redraftNow')
+                    ->label('Redraft now')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('warning')
+                    ->visible(fn (Draft $r) => $r->status === 'compliance_failed'
+                        && ($r->revision_count ?? 0) < \App\Jobs\RedraftFailedDraft::MAX_REVISIONS
+                        && (bool) $r->calendar_entry_id)
+                    ->requiresConfirmation()
+                    ->modalHeading('Redraft this failed post')
+                    ->modalDescription(fn (Draft $r) => sprintf(
+                        'Asks the Writer to fix the %d failure(s) on this draft, then re-runs Compliance. Attempt %d of %d. Each attempt costs ~$0.02–0.05.',
+                        $r->complianceChecks()->where('result', 'fail')->count(),
+                        ($r->revision_count ?? 0) + 1,
+                        \App\Jobs\RedraftFailedDraft::MAX_REVISIONS,
+                    ))
+                    ->action(function (Draft $r): void {
+                        \App\Jobs\RedraftFailedDraft::dispatch($r->id);
+                        \Filament\Notifications\Notification::make()
+                            ->title('Redraft queued')
+                            ->body('The Writer is fixing the violations and Compliance will re-run. Refresh in ~30s.')
+                            ->success()
+                            ->send();
+                    }),
             ])
             ->emptyStateHeading('No drafts yet')
             ->emptyStateDescription('Run the Writer on a calendar entry to produce one.')
@@ -445,12 +469,20 @@ class DraftResource extends Resource
         $workspaceId = $user?->current_workspace_id
             ?? $user?->ownedWorkspaces()->value('id');
 
+        // Tenant isolation: super admin sees everything; anyone else without a
+        // resolvable workspace sees nothing (prevents cross-tenant IDOR).
+        if ($user?->is_super_admin) {
+            return parent::getEloquentQuery()
+                ->whereHas('brand', fn (Builder $q) => $q->whereNull('archived_at'));
+        }
+
+        if (! $workspaceId) {
+            return parent::getEloquentQuery()->whereRaw('1 = 0');
+        }
+
         return parent::getEloquentQuery()
             ->whereHas('brand', function (Builder $q) use ($workspaceId) {
-                $q->whereNull('archived_at');
-                if ($workspaceId) {
-                    $q->where('workspace_id', $workspaceId);
-                }
+                $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
             });
     }
 
@@ -477,7 +509,7 @@ class DraftResource extends Resource
 
         return match ($draft->status) {
             'compliance_pending' => 'WAIT for Compliance to finish (auto, ~30s)',
-            'compliance_failed' => 'FAIL — open View modal to see which check failed; rewrite or Re-run Compliance',
+            'compliance_failed' => 'FAIL — auto-redraft runs every 5 min (cap '.\App\Jobs\RedraftFailedDraft::MAX_REVISIONS.'). Click Redraft now to retry immediately.',
             'awaiting_approval' => 'YOU: click Approve, then Schedule',
             'approved' => $hasSchedule
                 ? 'AUTO: cron will publish on schedule'

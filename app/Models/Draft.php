@@ -20,6 +20,8 @@ class Draft extends Model
         'status', 'lane',
         'approved_by_user_id', 'approved_at',
         'rejected_by_user_id', 'rejected_at', 'rejection_reason',
+        // Auto-redraft bookkeeping
+        'revision_count', 'last_redraft_at',
     ];
 
     protected function casts(): array
@@ -35,6 +37,7 @@ class Draft extends Model
             'cost_usd' => 'decimal:6',
             'approved_at' => 'datetime',
             'rejected_at' => 'datetime',
+            'last_redraft_at' => 'datetime',
         ];
     }
 
