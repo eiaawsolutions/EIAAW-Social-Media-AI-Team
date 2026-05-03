@@ -55,7 +55,9 @@ class CalendarEntryResource extends Resource
                     ->sortable(),
                 Tables\Columns\TextColumn::make('topic')
                     ->wrap()
-                    ->limit(80)
+                    ->limit(180)
+                    ->extraHeaderAttributes(['style' => 'min-width: 320px;'])
+                    ->extraAttributes(['style' => 'max-width: 480px;'])
                     ->searchable(),
                 Tables\Columns\TextColumn::make('pillar')
                     ->badge()
@@ -180,6 +182,116 @@ class CalendarEntryResource extends Resource
                                 $compl->data['new_status'] ?? '?',
                             ))
                             ->color($passed ? 'success' : 'warning')
+                            ->send();
+                    }),
+
+                // Edit the entry's topic/angle/format/platforms in place. Lets
+                // the operator clean up a Strategist-generated entry that
+                // misread the brand before re-running the Writer.
+                \Filament\Actions\Action::make('editEntry')
+                    ->label('Edit')
+                    ->icon('heroicon-o-pencil-square')
+                    ->color('gray')
+                    ->schema([
+                        \Filament\Forms\Components\TextInput::make('topic')
+                            ->label('Topic')
+                            ->default(fn (CalendarEntry $r) => $r->topic)
+                            ->required()
+                            ->maxLength(255),
+                        \Filament\Forms\Components\Textarea::make('angle')
+                            ->label('Angle')
+                            ->default(fn (CalendarEntry $r) => $r->angle)
+                            ->rows(3),
+                        \Filament\Forms\Components\Textarea::make('visual_direction')
+                            ->label('Visual direction')
+                            ->default(fn (CalendarEntry $r) => $r->visual_direction)
+                            ->rows(3),
+                        \Filament\Forms\Components\Select::make('format')
+                            ->label('Format')
+                            ->options([
+                                'image' => 'Image',
+                                'carousel' => 'Carousel',
+                                'reel' => 'Reel',
+                                'video' => 'Video',
+                                'story' => 'Story',
+                                'text' => 'Text',
+                            ])
+                            ->default(fn (CalendarEntry $r) => $r->format)
+                            ->required(),
+                    ])
+                    ->action(function (CalendarEntry $r, array $data): void {
+                        $r->update([
+                            'topic' => $data['topic'],
+                            'angle' => $data['angle'] ?? $r->angle,
+                            'visual_direction' => $data['visual_direction'] ?? $r->visual_direction,
+                            'format' => $data['format'],
+                        ]);
+                        \Filament\Notifications\Notification::make()
+                            ->title('Entry updated')
+                            ->body('Re-run "Draft this" to regenerate with the new brief.')
+                            ->success()
+                            ->send();
+                    }),
+
+                // Re-evaluate: clear any rejected/failed-compliance drafts for
+                // this entry and re-fan-out one DraftCalendarEntry job per
+                // platform. Clean way to recover from a bad batch.
+                \Filament\Actions\Action::make('reEvaluate')
+                    ->label('Re-evaluate')
+                    ->icon('heroicon-o-sparkles')
+                    ->color('primary')
+                    ->requiresConfirmation()
+                    ->modalHeading('Re-draft this entry on every listed platform?')
+                    ->modalDescription('Existing rejected drafts get cleared first; jobs fan out one per (entry, platform). Cost: ~$0.04 per image + Writer LLM. Daily caps enforced.')
+                    ->action(function (CalendarEntry $r): void {
+                        $platforms = is_array($r->platforms) ? $r->platforms : [];
+                        if (! $platforms) {
+                            \Filament\Notifications\Notification::make()->title('Entry has no platforms')->danger()->send();
+                            return;
+                        }
+                        // Clear rejected drafts so DraftCalendarEntry's idempotency
+                        // check ('skip if a non-rejected draft exists') will
+                        // re-run; live drafts (awaiting_approval/approved/scheduled/published)
+                        // are preserved so we don't trash work in flight.
+                        $r->drafts()->where('status', 'rejected')->delete();
+
+                        $dispatched = 0;
+                        foreach ($platforms as $platform) {
+                            \App\Jobs\DraftCalendarEntry::dispatch($r->id, $platform)
+                                ->onQueue('drafting');
+                            $dispatched++;
+                        }
+                        \Filament\Notifications\Notification::make()
+                            ->title('Re-drafting')
+                            ->body("Dispatched {$dispatched} job(s); watch /agency/drafts as they land.")
+                            ->success()
+                            ->send();
+                    }),
+
+                // Delete the entry. Cascades to drafts (FK on delete cascade)
+                // and through to scheduled_posts. Use this to prune a bad
+                // Strategist plan item that doesn't deserve a re-draft.
+                \Filament\Actions\Action::make('deleteEntry')
+                    ->label('Delete')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->modalHeading('Delete this calendar entry?')
+                    ->modalDescription('Removes the entry and any drafts it spawned. Already-scheduled or published rows are preserved (only the link to this entry is severed).')
+                    ->action(function (CalendarEntry $r): void {
+                        // Detach scheduled/published drafts so they survive.
+                        $r->drafts()
+                            ->whereIn('status', ['scheduled', 'published', 'approved'])
+                            ->update(['calendar_entry_id' => null]);
+                        // Hard-delete the rest along with the entry.
+                        $r->drafts()
+                            ->whereIn('status', ['awaiting_approval', 'rejected', 'compliance_failed'])
+                            ->delete();
+                        $r->delete();
+                        \Filament\Notifications\Notification::make()
+                            ->title('Entry deleted')
+                            ->body('Live drafts preserved; planning rows removed.')
+                            ->success()
                             ->send();
                     }),
             ])

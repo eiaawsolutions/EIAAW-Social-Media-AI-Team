@@ -84,6 +84,20 @@ class DraftResource extends Resource
                         default => 'gray',
                     })
                     ->formatStateUsing(fn (string $state) => str_replace('_', ' ', $state)),
+                Tables\Columns\TextColumn::make('next_action')
+                    ->label('Next step')
+                    ->state(fn (Draft $r) => self::nextActionFor($r))
+                    ->badge()
+                    ->color(fn (string $state) => match (true) {
+                        str_starts_with($state, 'WAIT') => 'gray',
+                        str_starts_with($state, 'YOU:') => 'warning',
+                        str_starts_with($state, 'AUTO') => 'info',
+                        str_starts_with($state, 'DONE') => 'success',
+                        str_starts_with($state, 'FAIL') => 'danger',
+                        default => 'gray',
+                    })
+                    ->wrap()
+                    ->extraAttributes(['style' => 'max-width: 280px;']),
                 Tables\Columns\TextColumn::make('lane')
                     ->badge()
                     ->color(fn (?string $state) => match ($state) {
@@ -445,5 +459,33 @@ class DraftResource extends Resource
         return [
             'index' => ManageDrafts::route('/'),
         ];
+    }
+
+    /**
+     * Plain-English next step per draft. Format: '<ACTOR>: <verb>'.
+     *   YOU:  operator action required
+     *   AUTO: cron / agent will progress this on its own; nothing to do
+     *   WAIT: waiting on a system that's not us (rare)
+     *   DONE: terminal state
+     *   FAIL: terminal failure that needs operator attention
+     */
+    public static function nextActionFor(Draft $draft): string
+    {
+        $hasSchedule = $draft->scheduledPosts()
+            ->whereIn('status', ['queued', 'submitting', 'submitted', 'published'])
+            ->exists();
+
+        return match ($draft->status) {
+            'compliance_pending' => 'WAIT for Compliance to finish (auto, ~30s)',
+            'compliance_failed' => 'FAIL — open View modal to see which check failed; rewrite or Re-run Compliance',
+            'awaiting_approval' => 'YOU: click Approve, then Schedule',
+            'approved' => $hasSchedule
+                ? 'AUTO: cron will publish on schedule'
+                : 'YOU: click Schedule to queue for publishing',
+            'scheduled' => 'AUTO: cron picks this up at scheduled_for time',
+            'published' => 'DONE — view on Live feed',
+            'rejected' => 'DONE — rejected; will not publish',
+            default => '—',
+        };
     }
 }

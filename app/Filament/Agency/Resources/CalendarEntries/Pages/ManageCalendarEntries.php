@@ -9,10 +9,16 @@ use App\Models\Workspace;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ManageRecords;
+use Filament\Support\Enums\Width;
 
 class ManageCalendarEntries extends ManageRecords
 {
     protected static string $resource = CalendarEntryResource::class;
+
+    public function getMaxContentWidth(): Width
+    {
+        return Width::Full;
+    }
 
     protected function getHeaderActions(): array
     {
