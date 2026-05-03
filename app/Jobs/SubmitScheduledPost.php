@@ -121,10 +121,15 @@ class SubmitScheduledPost implements ShouldQueue
             $caption .= "\n" . implode(' ', array_map(fn ($m) => '@' . ltrim((string) $m, '@'), $mentions));
         }
 
+        // Map our internal platform enum to Blotato's expected string.
+        // We store 'x' (the modern brand name); Blotato's content.platform
+        // and target.targetType still use the legacy 'twitter'.
+        $blotatoPlatform = $post->draft->platform === 'x' ? 'twitter' : $post->draft->platform;
+
         try {
             $submissionId = $client->createPost(
                 accountId: $post->platformConnection->blotato_account_id,
-                platform: $post->draft->platform,
+                platform: $blotatoPlatform,
                 text: $caption,
                 mediaUrls: $blotatoMediaUrls,
                 scheduledTime: null, // we own scheduling — submit "now"

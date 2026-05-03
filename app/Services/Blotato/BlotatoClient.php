@@ -177,15 +177,13 @@ class BlotatoClient
                     'mediaUrls' => $mediaUrls,
                     'platform' => $platform,
                 ],
+                // Blotato REQUIRES post.target on every submission, with
+                // per-platform required fields. Build the safe default
+                // and let the caller override individual keys via
+                // $targetOverrides.
+                'target' => $this->defaultTargetFor($platform, $accountId, $text, $targetOverrides),
             ],
         ];
-
-        if ($targetOverrides !== []) {
-            $body['post']['target'] = array_merge(
-                ['targetType' => $platform],
-                $targetOverrides,
-            );
-        }
 
         if ($scheduledTime !== null) {
             $body['scheduledTime'] = $scheduledTime;
@@ -200,6 +198,92 @@ class BlotatoClient
         }
 
         return $id;
+    }
+
+    /**
+     * Per-platform `target` defaults that satisfy Blotato's required fields.
+     * Source of truth: backend.blotato.com/openapi.json (verified 2026-05-02).
+     *
+     * Required-by-platform:
+     *   linkedin   → targetType + pageId       (pageId = the Blotato account id)
+     *   facebook   → targetType + pageId       (same)
+     *   pinterest  → targetType + boardId
+     *   tiktok     → targetType + 7 flags (privacyLevel + 6 booleans)
+     *   youtube    → targetType + title + privacyStatus + shouldNotifySubscribers
+     *   instagram  → targetType only
+     *   threads    → targetType only
+     *   twitter/x  → targetType only ('twitter' is Blotato's targetType for X)
+     *
+     * Defaults for first-time posts are conservative: TikTok privacy=SELF_ONLY
+     * so test posts aren't visible to followers; YouTube privacyStatus=private.
+     * Operator overrides via $targetOverrides at the call site once they want
+     * public publishing.
+     *
+     * @param  array<string,mixed>  $overrides
+     * @return array<string,mixed>
+     */
+    private function defaultTargetFor(string $platform, string $accountId, string $text, array $overrides): array
+    {
+        $base = match ($platform) {
+            'linkedin' => [
+                'targetType' => 'linkedin',
+                'pageId' => $accountId,
+            ],
+            'facebook' => [
+                'targetType' => 'facebook',
+                'pageId' => $accountId,
+            ],
+            'pinterest' => [
+                'targetType' => 'pinterest',
+                // Pinterest needs a real boardId — operator must override.
+                // We pass empty so the API returns a clear "missing boardId"
+                // error instead of silently accepting and posting to wrong board.
+                'boardId' => $overrides['boardId'] ?? '',
+            ],
+            'tiktok' => [
+                'targetType' => 'tiktok',
+                'privacyLevel' => 'SELF_ONLY', // safest default — operator lifts to PUBLIC_TO_EVERYONE
+                'disabledComments' => false,
+                'disabledDuet' => false,
+                'disabledStitch' => false,
+                'isBrandedContent' => false,
+                'isYourBrand' => false,
+                'isAiGenerated' => true, // we ARE generating with AI; truth in compliance
+            ],
+            'youtube' => [
+                'targetType' => 'youtube',
+                'title' => $this->extractYoutubeTitle($text),
+                'privacyStatus' => 'private', // safest first run
+                'shouldNotifySubscribers' => false,
+                'isMadeForKids' => false,
+                'containsSyntheticMedia' => true, // we're posting AI-generated
+            ],
+            'twitter', 'x' => [
+                // Blotato's targetType for X is 'twitter' (legacy naming).
+                'targetType' => 'twitter',
+            ],
+            'instagram' => [
+                'targetType' => 'instagram',
+            ],
+            'threads' => [
+                'targetType' => 'threads',
+            ],
+            default => [
+                'targetType' => $platform,
+            ],
+        };
+
+        return array_merge($base, $overrides);
+    }
+
+    /**
+     * YouTube requires a title. We take the first line of the caption,
+     * truncated to 90 chars (the YouTube cap is 100; leave headroom).
+     */
+    private function extractYoutubeTitle(string $text): string
+    {
+        $first = strtok($text, "\n") ?: $text;
+        return mb_substr(trim($first), 0, 90);
     }
 
     /**
