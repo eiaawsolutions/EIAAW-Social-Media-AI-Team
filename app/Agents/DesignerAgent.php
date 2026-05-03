@@ -47,7 +47,7 @@ class DesignerAgent extends BaseAgent
     private const FAL_FLUX_PRO_USD_PER_IMAGE = 0.04;
 
     public function role(): string { return 'designer'; }
-    public function promptVersion(): string { return 'designer.v1.1'; }
+    public function promptVersion(): string { return 'designer.v1.2'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -194,7 +194,7 @@ class DesignerAgent extends BaseAgent
         // ~/.claude/skills/full-stack-engineer/references/eiaaw-design-system.md.
         if (EiaawBrandLock::appliesTo($brand)) {
             return sprintf(
-                'High-quality social media post image for EIAAW Solutions on %s. %s. %s %s%s Topic: %s. NO TEXT, captions, or watermarks baked into the image.',
+                'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for EIAAW Solutions on %s. %s. %s %s%s Topic interpretation: %s. ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If your model wants to add text, replace it with a photographic subject instead.',
                 ucfirst($draft->platform),
                 $platformComposition,
                 EiaawBrandLock::imageDirective(),
@@ -229,7 +229,7 @@ class DesignerAgent extends BaseAgent
         };
 
         return sprintf(
-            'High-quality social media post image for the brand "%s" on %s. %s.%s%s Topic: %s. NO TEXT or watermarks in the image. Photographic or stylised illustration appropriate to the brand. Anti-slop: avoid generic gradient backgrounds, stock-photo poses, and clip-art icons.',
+            'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for the brand "%s" on %s. %s.%s%s Topic interpretation: %s. ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If the model wants to add text, replace with a photographic subject instead. Anti-slop: avoid generic purple/magenta gradient backgrounds, radial glows, stock-photo poses, clip-art icons, and AI-swirl effects.',
             $brand->name,
             ucfirst($draft->platform),
             $platformAesthetic,
