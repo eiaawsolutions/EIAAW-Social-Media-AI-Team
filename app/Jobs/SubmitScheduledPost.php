@@ -108,12 +108,38 @@ class SubmitScheduledPost implements ShouldQueue
             }
         }
 
-        // Build caption (body + hashtags + mentions). Blotato treats text as
-        // free-form, so we serialize hashtags/mentions inline at the end —
-        // platform-specific formatting (LinkedIn vs X) lives in WriterAgent.
-        $caption = trim((string) $post->draft->body);
-        $hashtags = is_array($post->draft->hashtags) ? $post->draft->hashtags : [];
+        // Per-platform caps that Blotato/native APIs enforce. Source: live
+        // failures captured 2026-05-03 + Blotato 422 responses + native
+        // platform documented limits as of Q2 2026. These differ from
+        // WriterPrompt::PLATFORM_LIMITS which only covers body chars; here
+        // we cap the COMPLETE caption (body + hashtags + mentions) because
+        // that's what each platform actually counts toward its limit.
+        $platformCaps = [
+            'instagram' => ['caption' => 2200, 'hashtags' => 5],   // IG technically allows 30 but Blotato enforces 5
+            'facebook' => ['caption' => 63206, 'hashtags' => 30],
+            'linkedin' => ['caption' => 3000, 'hashtags' => 30],
+            'tiktok' => ['caption' => 2200, 'hashtags' => 30],
+            'threads' => ['caption' => 500, 'hashtags' => 10],
+            'x' => ['caption' => 280, 'hashtags' => 5],
+            'twitter' => ['caption' => 280, 'hashtags' => 5],
+            'youtube' => ['caption' => 1000, 'hashtags' => 15],
+            'pinterest' => ['caption' => 500, 'hashtags' => 20],
+        ];
+        $cap = $platformCaps[$post->draft->platform] ?? ['caption' => 1000, 'hashtags' => 10];
+
+        // Build caption: trimmed body + capped hashtags + mentions, then
+        // truncate the full assembled string if it still overflows the
+        // platform cap. Hashtags lose first (least information density),
+        // then body tail is …-truncated.
+        $body = trim((string) $post->draft->body);
+        $hashtags = array_slice(
+            is_array($post->draft->hashtags) ? $post->draft->hashtags : [],
+            0,
+            $cap['hashtags'],
+        );
         $mentions = is_array($post->draft->mentions) ? $post->draft->mentions : [];
+
+        $caption = $body;
         if ($hashtags) {
             $caption .= "\n\n" . implode(' ', array_map(fn ($t) => '#' . ltrim((string) $t, '#'), $hashtags));
         }
@@ -121,10 +147,42 @@ class SubmitScheduledPost implements ShouldQueue
             $caption .= "\n" . implode(' ', array_map(fn ($m) => '@' . ltrim((string) $m, '@'), $mentions));
         }
 
+        // Hard cap — truncate body if the full assembly is still over.
+        if (mb_strlen($caption) > $cap['caption']) {
+            // Compute how much room body has, leaving hashtag block intact
+            // when possible. If even body alone is over cap, drop hashtags
+            // entirely and trim body.
+            $hashtagBlock = $hashtags
+                ? "\n\n" . implode(' ', array_map(fn ($t) => '#' . ltrim((string) $t, '#'), $hashtags))
+                : '';
+            $mentionBlock = $mentions
+                ? "\n" . implode(' ', array_map(fn ($m) => '@' . ltrim((string) $m, '@'), $mentions))
+                : '';
+            $reserved = mb_strlen($hashtagBlock . $mentionBlock);
+            $bodyRoom = $cap['caption'] - $reserved - 1; // -1 for the …
+            if ($bodyRoom < 50) {
+                // Hashtag block too greedy — drop it.
+                $bodyRoom = $cap['caption'] - mb_strlen($mentionBlock) - 1;
+                $caption = mb_substr($body, 0, max(50, $bodyRoom)) . '…' . $mentionBlock;
+            } else {
+                $caption = mb_substr($body, 0, $bodyRoom) . '…' . $hashtagBlock . $mentionBlock;
+            }
+        }
+
         // Map our internal platform enum to Blotato's expected string.
         // We store 'x' (the modern brand name); Blotato's content.platform
         // and target.targetType still use the legacy 'twitter'.
         $blotatoPlatform = $post->draft->platform === 'x' ? 'twitter' : $post->draft->platform;
+
+        // Per-connection Blotato target overrides — empty/null for personal
+        // accounts (LinkedIn personal, Threads personal, X personal — Blotato
+        // routes to the profile by default), populated for business pages
+        // (Facebook Page pageId, LinkedIn Company pageId, Pinterest boardId,
+        // TikTok privacyLevel, YouTube privacyStatus, etc). Edit in
+        // /agency/platforms → "Target overrides" row action.
+        $targetOverrides = is_array($post->platformConnection->target_overrides)
+            ? $post->platformConnection->target_overrides
+            : [];
 
         try {
             $submissionId = $client->createPost(
@@ -133,6 +191,7 @@ class SubmitScheduledPost implements ShouldQueue
                 text: $caption,
                 mediaUrls: $blotatoMediaUrls,
                 scheduledTime: null, // we own scheduling — submit "now"
+                targetOverrides: $targetOverrides,
             );
         } catch (\Throwable $e) {
             $this->markFailed($post, 'Blotato createPost failed: ' . substr($e->getMessage(), 0, 200));

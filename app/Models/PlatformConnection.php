@@ -11,7 +11,7 @@ class PlatformConnection extends Model
     protected $fillable = [
         'brand_id', 'platform', 'platform_account_id', 'display_handle',
         'access_token_encrypted', 'refresh_token_encrypted', 'token_expires_at',
-        'scopes', 'status', 'blotato_account_id',
+        'scopes', 'status', 'blotato_account_id', 'target_overrides',
     ];
 
     protected function casts(): array
@@ -19,6 +19,7 @@ class PlatformConnection extends Model
         return [
             'token_expires_at' => 'datetime',
             'scopes' => 'array',
+            'target_overrides' => 'array',
         ];
     }
 
