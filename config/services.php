@@ -22,9 +22,18 @@ return [
     ],
 
     'fal' => [
-        // FAL.AI gateway for image generation (Flux Pro 1.1, Wan video, etc.)
+        // FAL.AI gateway for image generation (Flux Schnell default, Wan for video)
         'api_key' => env('FAL_API_KEY'),
-        'image_model' => env('FAL_IMAGE_MODEL', 'fal-ai/flux-pro/v1.1'),
+        // Flux Schnell: $0.003/image, ~2s, 13x cheaper than Pro. Quality is
+        // "good commercial" — fine for daily content, not for hero campaign
+        // shots. Lift to fal-ai/flux-pro/v1.1 (premium, $0.04) or
+        // fal-ai/recraft-v3 (best at no-text + design) per-call when needed.
+        'image_model' => env('FAL_IMAGE_MODEL', 'fal-ai/flux/schnell'),
+        // Library-first routing: if the brand has uploaded assets and the
+        // BrandAssetPicker finds a semantic match, use that asset (zero
+        // cost) instead of calling FAL. Operator can force AI generation
+        // per-draft via the 'Generate via FAL' UI action.
+        'library_first' => (bool) env('FAL_LIBRARY_FIRST', true),
         // Wan 2.6 i2v is the Q2 2026 quality leader for short-form vertical
         // ($0.50/clip, 5s 720p). Wan 2.6 t2v is the fallback when no still
         // exists yet. Veo 3 sits at higher quality + price; switch later.

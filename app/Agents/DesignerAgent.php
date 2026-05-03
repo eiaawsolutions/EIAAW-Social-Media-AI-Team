@@ -6,6 +6,7 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\Draft;
 use App\Services\Blotato\BlotatoClient;
+use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
 use Illuminate\Support\Facades\Log;
@@ -43,8 +44,23 @@ class DesignerAgent extends BaseAgent
     /** Default $0.50/workspace/day before circuit breaker trips. Overridable via config. */
     private const DEFAULT_DAILY_CAP_USD = 0.50;
 
-    /** Approx FAL flux-pro/v1.1 cost; updated when we switch model. */
-    private const FAL_FLUX_PRO_USD_PER_IMAGE = 0.04;
+    /**
+     * Per-image cost lookup keyed by FAL model id. Defaults to schnell
+     * pricing when model is unknown (errs on under-counting → operator
+     * notices on the FAL dashboard, not the other way around).
+     */
+    private const FAL_PRICING_USD = [
+        'fal-ai/flux/schnell' => 0.003,
+        'fal-ai/flux/dev' => 0.025,
+        'fal-ai/flux-pro/v1.1' => 0.04,
+        'fal-ai/recraft-v3' => 0.04,
+        'fal-ai/imagen4/preview' => 0.025,
+    ];
+
+    private static function priceFor(string $model): float
+    {
+        return self::FAL_PRICING_USD[$model] ?? 0.003;
+    }
 
     public function role(): string { return 'designer'; }
     public function promptVersion(): string { return 'designer.v1.2'; }
@@ -69,6 +85,60 @@ class DesignerAgent extends BaseAgent
                 'asset_url' => $draft->asset_url,
                 'note' => 'already-has-asset',
             ]);
+        }
+
+        // Library-first routing. If the brand has uploaded assets, semantically
+        // pick the best match before burning FAL credit. Three escape hatches
+        // for the operator to skip this and force AI generation:
+        //   - $input['force_fal'] = true        (per-call override from UI)
+        //   - $input['skip_library'] = true     (legacy alias)
+        //   - DesignerAgent\Pickerss disabled via config (services.fal.library_first = false)
+        $forceFal = ! empty($input['force_fal']) || ! empty($input['skip_library']);
+        $libraryFirst = (bool) config('services.fal.library_first', true);
+
+        if (! $forceFal && $libraryFirst) {
+            $picked = app(BrandAssetPicker::class)->pickFor($brand, $draft, 'image');
+            if ($picked) {
+                /** @var \App\Models\BrandAsset $asset */
+                $asset = $picked['asset'];
+
+                // Re-host through Blotato so /v2/posts accepts it.
+                try {
+                    $blotatoUrl = BlotatoClient::fromConfig()->uploadMediaFromUrl($asset->public_url);
+                } catch (\Throwable $e) {
+                    Log::warning('DesignerAgent: library asset Blotato upload failed; falling back to FAL', [
+                        'asset_id' => $asset->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                    $blotatoUrl = null;
+                }
+
+                if ($blotatoUrl) {
+                    $draft->update([
+                        'asset_url' => $blotatoUrl,
+                        'asset_urls' => array_values(array_unique(array_merge(
+                            is_array($draft->asset_urls) ? $draft->asset_urls : [],
+                            [$blotatoUrl, $asset->public_url],
+                        ))),
+                    ]);
+                    $asset->recordUse();
+
+                    return AgentResult::ok([
+                        'draft_id' => $draft->id,
+                        'asset_url' => $blotatoUrl,
+                        'library_asset_id' => $asset->id,
+                        'library_asset_label' => $asset->original_filename,
+                        'platform' => $draft->platform,
+                        'cost_usd' => 0.0,
+                        'distance' => round((float) $picked['distance'], 4),
+                        'source' => 'library',
+                    ], [
+                        'source' => 'library',
+                        'cost_usd' => 0.0,
+                    ]);
+                }
+                // Fall through to FAL if Blotato re-host failed.
+            }
         }
 
         // Cost circuit breaker — refuse if we're at/over the daily cap.
@@ -107,6 +177,8 @@ class DesignerAgent extends BaseAgent
         $falUrl = $generated['url'];
 
         // Log cost so the circuit breaker on the next call sees it.
+        $costUsd = self::priceFor($generated['model']);
+
         try {
             AiCost::create([
                 'workspace_id' => $brand->workspace_id,
@@ -116,8 +188,8 @@ class DesignerAgent extends BaseAgent
                 'model_id' => $generated['model'],
                 'input_tokens' => 0,
                 'output_tokens' => 0,
-                'cost_usd' => self::FAL_FLUX_PRO_USD_PER_IMAGE,
-                'cost_myr' => round(self::FAL_FLUX_PRO_USD_PER_IMAGE * 4.7, 4),
+                'cost_usd' => $costUsd,
+                'cost_myr' => round($costUsd * 4.7, 4),
                 'called_at' => now(),
             ]);
         } catch (\Throwable $e) {
@@ -154,12 +226,14 @@ class DesignerAgent extends BaseAgent
             'fal_source_url' => $falUrl,
             'platform' => $draft->platform,
             'image_size' => FalAiClient::imageSizeForPlatform($draft->platform),
-            'cost_usd' => self::FAL_FLUX_PRO_USD_PER_IMAGE,
+            'cost_usd' => $costUsd,
             'latency_ms' => $generated['latency_ms'],
             'prompt' => $prompt,
+            'model' => $generated['model'],
+            'source' => 'fal',
         ], [
             'model' => $generated['model'],
-            'cost_usd' => self::FAL_FLUX_PRO_USD_PER_IMAGE,
+            'cost_usd' => $costUsd,
             'latency_ms' => $generated['latency_ms'],
         ]);
     }

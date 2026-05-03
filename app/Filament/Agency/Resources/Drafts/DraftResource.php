@@ -258,19 +258,15 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('regenerateImage')
-                    ->label(fn (Draft $r) => empty($r->asset_url) ? 'Generate image' : 'Regenerate image')
+                \Filament\Actions\Action::make('pickImage')
+                    ->label(fn (Draft $r) => empty($r->asset_url) ? 'Pick / generate image' : 'Replace image')
                     ->icon('heroicon-o-photo')
                     ->color('gray')
                     ->visible(fn (Draft $r) => ! in_array($r->status, ['published', 'rejected']))
                     ->requiresConfirmation()
-                    ->modalDescription(fn (Draft $r) => empty($r->asset_url)
-                        ? 'Run DesignerAgent to generate a new image via FAL.AI (~$0.04, ~10s).'
-                        : 'Replace the current image. Old asset stays in asset_urls history; the new one becomes asset_url.')
+                    ->modalDescription('Picks the best matching image from your brand asset library. Falls back to FAL flux-schnell ($0.003) only if no library asset matches.')
                     ->action(function (Draft $r): void {
                         @set_time_limit(180);
-                        // Clear existing asset_url so DesignerAgent's idempotency
-                        // check doesn't no-op. asset_urls keeps the history.
                         if (! empty($r->asset_url)) {
                             $r->update(['asset_url' => null]);
                         }
@@ -288,19 +284,64 @@ class DraftResource extends Resource
                         }
                         if (! $result->ok) {
                             \Filament\Notifications\Notification::make()
-                                ->title('Could not generate image')
+                                ->title('Could not get image')
+                                ->body($result->errorMessage ?: 'unknown')
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+                        $source = $result->data['source'] ?? 'fal';
+                        \Filament\Notifications\Notification::make()
+                            ->title('Image ready · ' . $source)
+                            ->body(sprintf(
+                                '$%.4f · %dms',
+                                $result->data['cost_usd'] ?? 0,
+                                $result->data['latency_ms'] ?? 0,
+                            ))
+                            ->success()
+                            ->send();
+                    }),
+
+                \Filament\Actions\Action::make('forceAiImage')
+                    ->label('Force AI image')
+                    ->icon('heroicon-o-sparkles')
+                    ->color('warning')
+                    ->visible(fn (Draft $r) => ! in_array($r->status, ['published', 'rejected']))
+                    ->requiresConfirmation()
+                    ->modalDescription('Bypasses the brand asset library and goes straight to FAL.AI. Use when you want bespoke art for this draft. Cost ~$0.003 (flux-schnell) or up to $0.04 (flux-pro / recraft) depending on configured model.')
+                    ->action(function (Draft $r): void {
+                        @set_time_limit(180);
+                        if (! empty($r->asset_url)) {
+                            $r->update(['asset_url' => null]);
+                        }
+                        try {
+                            $result = app(\App\Agents\DesignerAgent::class)->run($r->brand, [
+                                'draft_id' => $r->id,
+                                'force_fal' => true,
+                            ]);
+                        } catch (\Throwable $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('FAL crashed')
+                                ->body(substr($e->getMessage(), 0, 240))
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+                        if (! $result->ok) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('FAL refused')
                                 ->body($result->errorMessage ?: 'unknown')
                                 ->danger()
                                 ->send();
                             return;
                         }
                         \Filament\Notifications\Notification::make()
-                            ->title('Image ready')
+                            ->title('AI image ready')
                             ->body(sprintf(
-                                '$%.4f · %dms · %s',
+                                '$%.4f · %dms · model %s',
                                 $result->data['cost_usd'] ?? 0,
                                 $result->data['latency_ms'] ?? 0,
-                                $result->data['image_size'] ?? '?',
+                                $result->data['model'] ?? '?',
                             ))
                             ->success()
                             ->send();

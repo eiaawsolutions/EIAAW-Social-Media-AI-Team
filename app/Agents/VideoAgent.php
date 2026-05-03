@@ -6,6 +6,7 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\Draft;
 use App\Services\Blotato\BlotatoClient;
+use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
 use Illuminate\Support\Facades\Log;
@@ -75,6 +76,54 @@ class VideoAgent extends BaseAgent
                 'asset_url' => $draft->asset_url,
                 'note' => 'already-has-video',
             ]);
+        }
+
+        // Library-first routing for videos — same shape as DesignerAgent.
+        $forceFal = ! empty($input['force_fal']) || ! empty($input['skip_library']);
+        $libraryFirst = (bool) config('services.fal.library_first', true);
+
+        if (! $forceFal && $libraryFirst) {
+            $picked = app(BrandAssetPicker::class)->pickFor($brand, $draft, 'video');
+            if ($picked) {
+                /** @var \App\Models\BrandAsset $asset */
+                $asset = $picked['asset'];
+                try {
+                    $blotatoUrl = BlotatoClient::fromConfig()->uploadMediaFromUrl($asset->public_url);
+                } catch (\Throwable $e) {
+                    Log::warning('VideoAgent: library asset Blotato upload failed; falling back to FAL', [
+                        'asset_id' => $asset->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                    $blotatoUrl = null;
+                }
+
+                if ($blotatoUrl) {
+                    $newHistory = is_array($draft->asset_urls) ? $draft->asset_urls : [];
+                    if ($draft->asset_url && ! in_array($draft->asset_url, $newHistory, true)) {
+                        $newHistory[] = $draft->asset_url;
+                    }
+                    $newHistory[] = $blotatoUrl;
+                    $newHistory[] = $asset->public_url;
+                    $draft->update([
+                        'asset_url' => $blotatoUrl,
+                        'asset_urls' => array_values(array_unique($newHistory)),
+                    ]);
+                    $asset->recordUse();
+
+                    return AgentResult::ok([
+                        'draft_id' => $draft->id,
+                        'asset_url' => $blotatoUrl,
+                        'library_asset_id' => $asset->id,
+                        'platform' => $draft->platform,
+                        'cost_usd' => 0.0,
+                        'distance' => round((float) $picked['distance'], 4),
+                        'source' => 'library',
+                    ], [
+                        'source' => 'library',
+                        'cost_usd' => 0.0,
+                    ]);
+                }
+            }
         }
 
         // Cost circuit breaker — separate from image cap.
