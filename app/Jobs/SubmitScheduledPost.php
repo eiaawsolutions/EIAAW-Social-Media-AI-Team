@@ -267,7 +267,11 @@ class SubmitScheduledPost implements ShouldQueue
         // to dotted lookups before declaring it missing.
         $state = strtolower((string) ($status['state'] ?? $status['status'] ?? ''));
         $platformPostId = $this->digKeys($status, ['postId', 'post_id', 'platformPostId', 'externalId', 'id']);
-        $platformPostUrl = $this->digKeys($status, ['postUrl', 'post_url', 'platformPostUrl', 'permalink', 'url', 'shareUrl', 'share_url']);
+        // 2026-05-06: Blotato switched the URL field to `publicUrl` for newer
+        // submissions (verified live for SP76+ across LinkedIn, Threads,
+        // YouTube). Keep the old keys for back-compat with anything still
+        // returning `postUrl`/`shareUrl`.
+        $platformPostUrl = $this->digKeys($status, ['publicUrl', 'public_url', 'postUrl', 'post_url', 'platformPostUrl', 'permalink', 'url', 'shareUrl', 'share_url']);
         $error = $status['error'] ?? $status['message'] ?? null;
 
         if (in_array($state, ['published', 'success', 'completed'])) {

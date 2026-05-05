@@ -6,7 +6,6 @@ use App\Models\ScheduledPost;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Publishing\PostVerificationRules;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Log;
 
 /**
  * Re-verifies every ScheduledPost currently marked `published` against
@@ -93,7 +92,9 @@ class PostsReconcilePublished extends Command
 
             $state = strtolower((string) ($status['state'] ?? $status['status'] ?? ''));
             $newId = $this->digKeys($status, ['postId', 'post_id', 'platformPostId', 'externalId', 'id']);
-            $newUrl = $this->digKeys($status, ['postUrl', 'post_url', 'platformPostUrl', 'permalink', 'url', 'shareUrl', 'share_url']);
+            // Blotato shifted to `publicUrl` for newer submissions; keep old
+            // keys for back-compat. Mirror of SubmitScheduledPost change.
+            $newUrl = $this->digKeys($status, ['publicUrl', 'public_url', 'postUrl', 'post_url', 'platformPostUrl', 'permalink', 'url', 'shareUrl', 'share_url']);
 
             $verdict = PostVerificationRules::verify($platform, $newId, $newUrl);
 
