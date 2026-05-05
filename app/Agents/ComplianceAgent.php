@@ -8,6 +8,7 @@ use App\Models\BrandCorpusItem;
 use App\Models\ComplianceCheck;
 use App\Models\Draft;
 use App\Models\Embargo;
+use App\Services\Blotato\PlatformRules;
 use App\Services\Llm\LlmGateway;
 use App\Services\Embeddings\EmbeddingService;
 use Illuminate\Support\Facades\DB;
@@ -15,16 +16,20 @@ use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 /**
- * The hard compliance gate. Runs 5 checks per draft. ANY failure → draft held.
+ * The hard compliance gate. Runs 6 checks per draft. ANY failure → draft held.
  *
  * Checks (in order — early exits skip later checks for speed):
- *   1. banned_phrase — bypass-impossible. Substring/regex match against brand's
+ *   1. platform_publishability — deterministic Blotato + native-API rules
+ *      (caption length, hashtag cap, required media, connection target_overrides).
+ *      Runs FIRST so we never burn LLM tokens on a draft that physically can't
+ *      publish. See App\Services\Blotato\PlatformRules.
+ *   2. banned_phrase — bypass-impossible. Substring/regex match against brand's
  *      banned_phrases list. Score is 1 (no match) or 0 (match).
- *   2. embargo — date+keyword check. Score is 1 (no active matching embargo) or 0.
- *   3. dedup — semantic similarity vs prior published_posts. Score = 1 - max_similarity.
+ *   3. embargo — date+keyword check. Score is 1 (no active matching embargo) or 0.
+ *   4. dedup — semantic similarity vs prior published_posts. Score = 1 - max_similarity.
  *      Threshold 0.85 (anything ≥ 85% similar is held).
- *   4. brand_voice — LLM call to score voice match. Threshold 0.70.
- *   5. factual_grounding — every grounding_source the Writer claimed must
+ *   5. brand_voice — LLM call to score voice match. Threshold 0.70.
+ *   6. factual_grounding — every grounding_source the Writer claimed must
  *      reference a real row in brand_styles or brand_corpus. Score is the % of
  *      sources that resolve. Threshold 0.80.
  *
@@ -68,7 +73,14 @@ class ComplianceAgent extends BaseAgent
         // Wipe prior compliance checks for this draft (re-running the gate replaces them)
         $draft->complianceChecks()->delete();
 
+        // Platform publishability runs first — if a draft can't physically
+        // publish (missing media on IG/TikTok/YouTube, missing pageId on
+        // Facebook Page, caption over cap, etc), there's no point spending
+        // LLM tokens on brand-voice or factual-grounding checks. The gate
+        // still runs all 6 checks though so the operator sees every problem
+        // on one screen instead of a dribble of one-at-a-time fails.
         $checks = [
+            $this->checkPlatformPublishability($draft, $brand),
             $this->checkBannedPhrases($draft, $brand),
             $this->checkEmbargo($draft, $brand),
             $this->checkDedup($draft, $brand),
@@ -102,7 +114,67 @@ class ComplianceAgent extends BaseAgent
         ]);
     }
 
-    // ─── Check 1: banned phrases ──────────────────────────────────────────
+    // ─── Check 1: platform publishability (Blotato + native API rules) ────
+    // Pre-flight check that catches the deterministic Blotato/native-API
+    // rejections — caption length, hashtag count, malformed hashtag arrays,
+    // and missing media on platforms that mandate it. Runs first so we never
+    // burn LLM tokens on a draft that physically can't publish. Closes the
+    // gap that produced 4 missing-media prod failures on 2026-05-05.
+    //
+    // Connection-level concerns (Facebook Page pageId vs personal-profile
+    // no-pageId, Pinterest boardId) are NOT enforced here — both personal
+    // and business accounts are valid and the routing is owned by the
+    // connection's target_overrides. If a connection is misconfigured, that
+    // surfaces at publish time as an operator-fixable error, not a
+    // compliance failure.
+
+    private function checkPlatformPublishability(Draft $draft, Brand $brand): ComplianceCheck
+    {
+        $eval = PlatformRules::evaluate($draft);
+        $passed = $eval['passed'];
+
+        if ($passed) {
+            return ComplianceCheck::create([
+                'draft_id' => $draft->id,
+                'brand_id' => $brand->id,
+                'check_type' => 'platform_publishability',
+                'score' => 1.0,
+                'threshold' => 1.0,
+                'result' => 'pass',
+                'reason' => sprintf(
+                    'Passes %s caption/hashtag/media rules.',
+                    ucfirst($draft->platform),
+                ),
+                'details' => ['platform' => $draft->platform],
+                'checked_at' => now(),
+            ]);
+        }
+
+        // Aggregate violations into a single readable reason. The kinds list
+        // is the machine-readable handle RedraftFailedDraft uses to decide
+        // which agent to re-run (Writer for text fixes, Designer/Video for
+        // missing media).
+        $kinds = collect($eval['violations'])->pluck('kind')->unique()->values()->all();
+        $reasons = collect($eval['violations'])->pluck('reason')->implode(' | ');
+
+        return ComplianceCheck::create([
+            'draft_id' => $draft->id,
+            'brand_id' => $brand->id,
+            'check_type' => 'platform_publishability',
+            'score' => 0.0,
+            'threshold' => 1.0,
+            'result' => 'fail',
+            'reason' => $reasons,
+            'details' => [
+                'platform' => $draft->platform,
+                'kinds' => $kinds,
+                'violations' => $eval['violations'],
+            ],
+            'checked_at' => now(),
+        ]);
+    }
+
+    // ─── Check 2: banned phrases ──────────────────────────────────────────
 
     private function checkBannedPhrases(Draft $draft, Brand $brand): ComplianceCheck
     {

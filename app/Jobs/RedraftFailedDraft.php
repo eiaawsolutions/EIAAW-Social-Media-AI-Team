@@ -3,8 +3,11 @@
 namespace App\Jobs;
 
 use App\Agents\ComplianceAgent;
+use App\Agents\DesignerAgent;
+use App\Agents\VideoAgent;
 use App\Agents\WriterAgent;
 use App\Models\Draft;
+use App\Services\Imagery\FalAiClient;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -96,6 +99,55 @@ class RedraftFailedDraft implements ShouldQueue
             return;
         }
 
+        // Route by failure kind. A missing-media failure can't be fixed by
+        // Writer (no rewording adds an image) — that needs Designer/Video.
+        // Redrafting the body for those is a wasted LLM call.
+        $route = $this->routeFailures($failures);
+
+        if ($route === 'regenerate_media') {
+            // Missing-media failures: re-run Designer (and VideoAgent for
+            // video formats). Skip Writer — body is fine, only the asset
+            // needs producing. Then re-run Compliance against the now-
+            // attached media.
+            try {
+                app(DesignerAgent::class)->run($brand, ['draft_id' => $draft->id]);
+            } catch (\Throwable $e) {
+                Log::warning('RedraftFailedDraft: Designer re-run failed', [
+                    'draft_id' => $draft->id, 'error' => $e->getMessage(),
+                ]);
+            }
+
+            // VideoAgent only if the calendar entry was a video format AND
+            // the platform accepts video — same gate as DraftCalendarEntry.
+            $entry = $draft->calendarEntry;
+            $needsVideo = $entry
+                && in_array((string) ($entry->format ?? ''), ['reel', 'video', 'story'], true)
+                && FalAiClient::platformAcceptsVideo($draft->platform);
+            if ($needsVideo) {
+                try {
+                    app(VideoAgent::class)->run($brand, ['draft_id' => $draft->id]);
+                } catch (\Throwable $e) {
+                    Log::warning('RedraftFailedDraft: Video re-run failed', [
+                        'draft_id' => $draft->id, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            $draft->forceFill([
+                'revision_count' => ($draft->revision_count ?? 0) + 1,
+                'last_redraft_at' => now(),
+            ])->save();
+
+            try {
+                app(ComplianceAgent::class)->run($brand, ['draft_id' => $draft->id]);
+            } catch (\Throwable $e) {
+                Log::error('RedraftFailedDraft: post-media recompliance failed', [
+                    'draft_id' => $draft->id, 'error' => $e->getMessage(),
+                ]);
+            }
+            return;
+        }
+
         try {
             $writerResult = app(WriterAgent::class)->run($brand, [
                 'calendar_entry_id' => $draft->calendar_entry_id,
@@ -141,5 +193,62 @@ class RedraftFailedDraft implements ShouldQueue
                 // swallow — we're already in an error path
             }
         }
+    }
+
+    /**
+     * Decide how to recover from the failures on this draft. Two paths:
+     *
+     *   - 'regenerate_media' : the only platform_publishability failure is
+     *                          missing media. Re-run Designer/Video, skip
+     *                          Writer (body is fine).
+     *   - 'rewrite'          : default — Writer rewrites the body to address
+     *                          banned-phrase / dedup / brand-voice / factual
+     *                          / caption-too-long / too-many-hashtags fails.
+     *
+     * If failures span both categories (e.g. media missing AND voice fail),
+     * 'rewrite' wins so Writer fixes everything it can; the next Compliance
+     * pass will re-flag the missing media and a subsequent redraft cycle
+     * will route to 'regenerate_media'. This avoids running Writer +
+     * Designer + Video on the same revision tick.
+     *
+     * @param  array<int,array{check_type:string,reason:string,details?:array}> $failures
+     */
+    private function routeFailures(array $failures): string
+    {
+        $kinds = $this->collectKinds($failures);
+
+        $rewriteableKinds = array_diff($kinds, ['media_required']);
+        $hasRewriteable = !empty($rewriteableKinds);
+
+        if ($hasRewriteable) return 'rewrite';
+
+        if (in_array('media_required', $kinds, true)) return 'regenerate_media';
+
+        return 'rewrite';
+    }
+
+    /**
+     * Collect all failure kinds from the failures array. For
+     * platform_publishability checks, the kinds live in details.kinds (added
+     * by ComplianceAgent::checkPlatformPublishability). For other check types
+     * the kind IS the check_type (banned_phrase, brand_voice, etc).
+     *
+     * @param  array<int,array{check_type:string,reason:string,details?:array}> $failures
+     * @return array<int,string>
+     */
+    private function collectKinds(array $failures): array
+    {
+        $kinds = [];
+        foreach ($failures as $f) {
+            if (($f['check_type'] ?? '') === 'platform_publishability') {
+                $detail = is_array($f['details'] ?? null) ? $f['details'] : [];
+                foreach (($detail['kinds'] ?? []) as $k) {
+                    $kinds[] = (string) $k;
+                }
+            } else {
+                $kinds[] = (string) $f['check_type'];
+            }
+        }
+        return array_values(array_unique($kinds));
     }
 }
