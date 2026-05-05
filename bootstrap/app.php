@@ -14,6 +14,13 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withSchedule(function (Schedule $schedule): void {
+        // Mutex TTL of 5 minutes on every withoutOverlapping() call —
+        // bounds the blast radius if a container is SIGKILLed mid-run.
+        // Default TTL is 24h, which means an orphaned mutex stalls the
+        // entire pipeline for a full day until manually cleared with
+        // `php artisan schedule:clear-cache`. With 5-min TTL the scheduler
+        // self-heals on the next minute after the lock expires.
+
         // Auto-schedule path: every minute, find approved drafts (green-lane
         // auto-approved or human-approved) that have no live ScheduledPost
         // yet, and queue them. Closes the loop between the autonomy lane
@@ -21,7 +28,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // Idempotent + race-safe (lockForUpdate inside a transaction).
         $schedule->command('posts:auto-schedule-approved')
             ->everyMinute()
-            ->withoutOverlapping()
+            ->withoutOverlapping(5)
             ->runInBackground();
 
         // Publish path: every minute, dispatch jobs for queued / pollable /
@@ -31,7 +38,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // up if the queue is slow.
         $schedule->command('posts:dispatch-due')
             ->everyMinute()
-            ->withoutOverlapping()
+            ->withoutOverlapping(5)
             ->runInBackground();
 
         // Metrics collection — tiered sampling (every 30min for hot posts,
@@ -39,7 +46,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // we just make sure it runs every 30 min so each tier gets a chance.
         $schedule->command('metrics:collect')
             ->everyThirtyMinutes()
-            ->withoutOverlapping()
+            ->withoutOverlapping(30)
             ->runInBackground();
 
         // Optimizer: weekly recompute of the per-brand recommendation that
@@ -48,7 +55,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // week's performance.
         $schedule->command('optimizer:run')
             ->weekly()->mondays()->at('02:00')
-            ->withoutOverlapping()
+            ->withoutOverlapping(60)
             ->runInBackground();
 
         // Auto-redraft loop: every 5 minutes, find compliance_failed drafts
@@ -59,7 +66,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // attempts on the same draft so a flaky check doesn't burn budget.
         $schedule->command('drafts:redraft-failed')
             ->everyFiveMinutes()
-            ->withoutOverlapping()
+            ->withoutOverlapping(10)
             ->runInBackground();
     })
     ->withMiddleware(function (Middleware $middleware) {
