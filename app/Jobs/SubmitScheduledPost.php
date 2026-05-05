@@ -259,14 +259,28 @@ class SubmitScheduledPost implements ShouldQueue
         }
 
         if (in_array($state, ['failed', 'error', 'rejected'])) {
-            $this->markFailed($post, 'Platform rejected: ' . substr((string) $error, 0, 200));
+            // Blotato sometimes returns a failed state with no error string,
+            // producing the opaque "Platform rejected: " row in the failed list.
+            // Fall back to the full status payload so the operator (and the
+            // compliance learner) has SOMETHING to act on. Cap at 250 chars
+            // total so DB column stays readable.
+            $errorText = trim((string) $error);
+            if ($errorText === '') {
+                $errorText = 'no error string returned. Full status payload: '
+                    . substr(json_encode($status, JSON_UNESCAPED_SLASHES) ?: '{}', 0, 200);
+            }
+            $this->markFailed(
+                $post,
+                'Platform rejected (' . $state . '): ' . substr($errorText, 0, 220),
+                $status,
+            );
             return;
         }
 
         // Still processing — leave as submitted; poller will revisit.
     }
 
-    private function markFailed(ScheduledPost $post, string $reason): void
+    private function markFailed(ScheduledPost $post, string $reason, ?array $blotatoStatus = null): void
     {
         $post->update([
             'status' => 'failed',
@@ -274,9 +288,24 @@ class SubmitScheduledPost implements ShouldQueue
         ]);
         Log::error('SubmitScheduledPost: failed', [
             'id' => $post->id,
+            'platform' => $post->draft?->platform,
             'attempt' => $post->attempt_count,
             'reason' => $reason,
+            'blotato_status' => $blotatoStatus,
         ]);
+
+        // Feed the rejection into the compliance learner so future drafts on
+        // the same platform avoid the same failure mode. Best-effort — never
+        // block the publish path on telemetry.
+        try {
+            app(\App\Services\Compliance\LearnedRulesRecorder::class)
+                ->recordRejection($post, $reason, $blotatoStatus);
+        } catch (\Throwable $e) {
+            Log::warning('SubmitScheduledPost: rejection telemetry failed (non-fatal)', [
+                'id' => $post->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

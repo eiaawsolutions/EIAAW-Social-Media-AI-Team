@@ -4,11 +4,13 @@ namespace App\Agents\Prompts;
 
 final class WriterPrompt
 {
-    // v1.1 — added website_page source_type so the Writer can cite scraped
-    // brand pages (the realistic shape of a brand corpus before historical
-    // posts are imported). Bumping the version triggers redraft eligibility
-    // for drafts that failed under v1.0 (see DraftsRedraftFailed query).
-    public const VERSION = 'writer.v1.1';
+    // v1.2 — appends learned platform-rejection rules from
+    // compliance_learned_rules to the system prompt so the Writer doesn't
+    // re-generate drafts that violate failure modes already observed in
+    // prod (e.g. text-only on IG/TikTok, oversize captions, hashtag
+    // explosions). Bumping the version makes prior compliance_failed drafts
+    // eligible for redraft under the new prompt.
+    public const VERSION = 'writer.v1.2';
 
     /**
      * Per-platform character limits enforced both in the schema and in the
@@ -25,12 +27,12 @@ final class WriterPrompt
         'pinterest' => 500,
     ];
 
-    public static function system(string $platform): string
+    public static function system(string $platform, ?int $workspaceId = null): string
     {
         $limit = self::PLATFORM_LIMITS[$platform] ?? 1000;
         $platformLabel = ucfirst($platform);
 
-        return <<<PROMPT
+        $base = <<<PROMPT
 You are EIAAW's senior copywriter, writing for {$platformLabel}. Your job is to draft one post grounded in the brand's voice and a calendar entry's specific topic.
 
 # Hard rules
@@ -48,6 +50,21 @@ You are EIAAW's senior copywriter, writing for {$platformLabel}. Your job is to 
 # Platform-specific guidance
 
 PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources field\n\nFor every concrete claim in your post, list the grounding source (which prior post / evidence quote / brand-style section anchored it). If a claim is generic (e.g. brand value statement) and supported by the brand-style, cite the brand-style section. Honesty here is the product — never claim a source you didn't actually use.";
+
+        // Append learned-rules memory. Best-effort: if the service or DB is
+        // unavailable we still ship the base prompt — the Writer will at
+        // worst re-trip a known failure and Compliance will catch it.
+        try {
+            $directive = app(\App\Services\Compliance\LearnedRulesProvider::class)
+                ->promptDirectiveFor($platform, $workspaceId);
+            if ($directive !== '') {
+                $base .= "\n\n" . $directive;
+            }
+        } catch (\Throwable) {
+            // swallow — base prompt still safe
+        }
+
+        return $base;
     }
 
     public static function schema(string $platform): array

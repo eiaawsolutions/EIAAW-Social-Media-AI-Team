@@ -47,7 +47,10 @@ class VideoAgent extends BaseAgent
 {
     protected array $requiredStages = ['brand_style'];
 
-    private const DEFAULT_DAILY_CAP_USD = 2.00;
+    /** $5/workspace/day cap — ~10 video generations at FAL Wan 2.6 720p
+     *  ($0.50/clip). The previous $2/day cap tripped on day 5 of normal use
+     *  (5 brands × ~1 video/week + redraft headroom). */
+    private const DEFAULT_DAILY_CAP_USD = 5.00;
 
     /** Approx Wan 2.6 5s 720p cost. */
     private const FAL_WAN_USD_PER_VIDEO = 0.50;
@@ -130,10 +133,13 @@ class VideoAgent extends BaseAgent
             }
         }
 
-        // Cost circuit breaker — separate from image cap.
+        // Cost circuit breaker — separate from image cap. Filter by provider
+        // too so that any future non-FAL video provider (e.g. Runway) doesn't
+        // double-count against the FAL cap.
         $cap = (float) config('services.fal.video_daily_cap_usd', self::DEFAULT_DAILY_CAP_USD);
         $spentToday = (float) AiCost::where('workspace_id', $brand->workspace_id)
             ->where('agent_role', $this->role())
+            ->where('provider', 'fal')
             ->whereDate('called_at', now()->toDateString())
             ->sum('cost_usd');
         if ($spentToday >= $cap) {
@@ -178,11 +184,13 @@ class VideoAgent extends BaseAgent
             AiCost::create([
                 'workspace_id' => $brand->workspace_id,
                 'brand_id' => $brand->id,
+                'draft_id' => $draft->id,
                 'agent_role' => $this->role(),
                 'provider' => 'fal',
                 'model_id' => $generated['model'],
                 'input_tokens' => 0,
                 'output_tokens' => 0,
+                'image_count' => 1,
                 'cost_usd' => self::FAL_WAN_USD_PER_VIDEO,
                 'cost_myr' => round(self::FAL_WAN_USD_PER_VIDEO * 4.7, 4),
                 'called_at' => now(),

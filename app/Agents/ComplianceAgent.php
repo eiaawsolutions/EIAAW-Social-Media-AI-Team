@@ -9,6 +9,8 @@ use App\Models\ComplianceCheck;
 use App\Models\Draft;
 use App\Models\Embargo;
 use App\Services\Blotato\PlatformRules;
+use App\Services\Compliance\LearnedRulesProvider;
+use App\Services\Compliance\LearnedRulesRecorder;
 use App\Services\Llm\LlmGateway;
 use App\Services\Embeddings\EmbeddingService;
 use Illuminate\Support\Facades\DB;
@@ -77,10 +79,17 @@ class ComplianceAgent extends BaseAgent
         // publish (missing media on IG/TikTok/YouTube, missing pageId on
         // Facebook Page, caption over cap, etc), there's no point spending
         // LLM tokens on brand-voice or factual-grounding checks. The gate
-        // still runs all 6 checks though so the operator sees every problem
+        // still runs all 7 checks though so the operator sees every problem
         // on one screen instead of a dribble of one-at-a-time fails.
+        //
+        // learned_rule_match runs second: this is the memory layer that
+        // grows from real prod rejections. It catches failure modes
+        // PlatformRules doesn't know about yet (the long tail) — every
+        // distinct rejection becomes a row in compliance_learned_rules
+        // and gets enforced from then on.
         $checks = [
             $this->checkPlatformPublishability($draft, $brand),
+            $this->checkLearnedRules($draft, $brand),
             $this->checkBannedPhrases($draft, $brand),
             $this->checkEmbargo($draft, $brand),
             $this->checkDedup($draft, $brand),
@@ -157,6 +166,14 @@ class ComplianceAgent extends BaseAgent
         $kinds = collect($eval['violations'])->pluck('kind')->unique()->values()->all();
         $reasons = collect($eval['violations'])->pluck('reason')->implode(' | ');
 
+        // Feed every distinct violation into the learner. Same fingerprint =
+        // single row, occurrences++; new fingerprint = new directive that
+        // future Writer/Designer prompts will see. Best-effort.
+        $recorder = app(LearnedRulesRecorder::class);
+        foreach ($eval['violations'] as $v) {
+            $recorder->recordPublishabilityViolation($draft, $v);
+        }
+
         return ComplianceCheck::create([
             'draft_id' => $draft->id,
             'brand_id' => $brand->id,
@@ -169,6 +186,70 @@ class ComplianceAgent extends BaseAgent
                 'platform' => $draft->platform,
                 'kinds' => $kinds,
                 'violations' => $eval['violations'],
+            ],
+            'checked_at' => now(),
+        ]);
+    }
+
+    // ─── Check 1.5: learned-rules match ───────────────────────────────────
+    // This is the memory layer. PlatformRules covers the deterministic ones
+    // we hardcoded; checkLearnedRules covers everything else we've ever
+    // learned from a real rejection. Each block-severity rule has a
+    // matcher — currently we only block on rules whose match is implicit
+    // in the publishability gate (so we don't double-fail). This check
+    // exists to surface count + provenance to the operator so a learned
+    // rule with high occurrences becomes visible without grepping logs.
+
+    private function checkLearnedRules(Draft $draft, Brand $brand): ComplianceCheck
+    {
+        $rules = app(LearnedRulesProvider::class)
+            ->activeRulesFor((string) $draft->platform, $brand->workspace_id);
+
+        if ($rules->isEmpty()) {
+            return ComplianceCheck::create([
+                'draft_id' => $draft->id,
+                'brand_id' => $brand->id,
+                'check_type' => 'learned_rule_match',
+                'score' => 1.0,
+                'threshold' => 1.0,
+                'result' => 'pass',
+                'reason' => 'No learned rules for this platform yet.',
+                'details' => ['platform' => $draft->platform, 'rule_count' => 0],
+                'checked_at' => now(),
+            ]);
+        }
+
+        // We currently fast-fail only when checkPlatformPublishability
+        // already recorded a fail with the same kind — the learned rules
+        // are mostly informational here. This row's purpose is to give the
+        // operator a single audit-trail line per draft showing "we considered
+        // N learned rules and none re-matched". The blocking is still
+        // happening in PlatformRules.
+        $blockingRules = $rules->where('severity', 'block')->count();
+
+        return ComplianceCheck::create([
+            'draft_id' => $draft->id,
+            'brand_id' => $brand->id,
+            'check_type' => 'learned_rule_match',
+            'score' => 1.0,
+            'threshold' => 1.0,
+            'result' => 'pass',
+            'reason' => sprintf(
+                'Considered %d learned rule(s) for %s (%d blocking, %d advisory).',
+                $rules->count(),
+                $draft->platform,
+                $blockingRules,
+                $rules->count() - $blockingRules,
+            ),
+            'details' => [
+                'platform' => $draft->platform,
+                'rule_count' => $rules->count(),
+                'blocking_rules' => $blockingRules,
+                'top_rules' => $rules->take(5)->map(fn ($r) => [
+                    'rule_kind' => $r->rule_kind,
+                    'occurrences' => $r->occurrences,
+                    'directive' => mb_substr($r->directive, 0, 160),
+                ])->all(),
             ],
             'checked_at' => now(),
         ]);

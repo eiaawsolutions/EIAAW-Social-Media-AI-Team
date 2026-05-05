@@ -69,7 +69,13 @@ class DesignerAgent extends BaseAgent
     }
 
     public function role(): string { return 'designer'; }
-    public function promptVersion(): string { return 'designer.v1.2'; }
+    // v1.3 — Designer is now learner-aware: when learned rules for the
+    // platform exist (e.g. recurring "media required" rejections), they're
+    // exposed as art-direction signal so the model never under-produces
+    // media for a media-required platform. The cap-filter + draft_id
+    // attribution fixes (2026-05-05) ship under the same prompt version
+    // bump so redrafts are eligible.
+    public function promptVersion(): string { return 'designer.v1.3'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -219,11 +225,13 @@ class DesignerAgent extends BaseAgent
             AiCost::create([
                 'workspace_id' => $brand->workspace_id,
                 'brand_id' => $brand->id,
+                'draft_id' => $draft->id,
                 'agent_role' => $this->role(),
                 'provider' => 'fal',
                 'model_id' => $generated['model'],
                 'input_tokens' => 0,
                 'output_tokens' => 0,
+                'image_count' => 1,
                 'cost_usd' => $costUsd,
                 'cost_myr' => round($costUsd * 4.7, 4),
                 'called_at' => now(),

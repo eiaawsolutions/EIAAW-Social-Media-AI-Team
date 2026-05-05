@@ -43,10 +43,13 @@ return [
         'video_request_timeout' => (int) env('FAL_VIDEO_REQUEST_TIMEOUT', 360),
         // Per-workspace daily caps. Video is 10x image so kept separate
         // and operator can lift either independently via Infisical.
-        // Video cap raised from $2.00 to $2.40 on 2026-05-05 to absorb
-        // the FAL Kokoro TTS call (~$0.01/clip) added by BrandVideoComposer.
-        'daily_cap_usd' => (float) env('FAL_DAILY_CAP_USD', 0.50),
-        'video_daily_cap_usd' => (float) env('FAL_VIDEO_DAILY_CAP_USD', 2.40),
+        // 2026-05-05 raise: image $0.50 → $1.50, video $2.40 → $5.00.
+        // The old caps tripped within hours of normal multi-brand use, leaving
+        // drafts stuck at compliance_failed because Designer kept refusing.
+        // The breaker query was also fixed to scope by agent_role+provider so
+        // Anthropic/Voice/embedding spend no longer eats the FAL budget.
+        'daily_cap_usd' => (float) env('FAL_DAILY_CAP_USD', 1.50),
+        'video_daily_cap_usd' => (float) env('FAL_VIDEO_DAILY_CAP_USD', 5.00),
         // FAL TTS endpoint used for voiceovers. Kokoro-82M is the cheapest
         // FAL voice (~$0.001/1k chars, ~$0.01/clip), with PlayHT and
         // ElevenLabs-via-FAL as quality-upgrade flips. Word-level

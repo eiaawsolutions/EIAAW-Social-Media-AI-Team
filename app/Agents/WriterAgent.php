@@ -91,7 +91,7 @@ class WriterAgent extends BaseAgent
 
         $result = $this->llm->call(
             promptVersion: $this->promptVersion(),
-            systemPrompt: WriterPrompt::system($platform),
+            systemPrompt: WriterPrompt::system($platform, $brand->workspace_id),
             userMessage: $userMessage,
             brand: $brand,
             workspace: $brand->workspace,
