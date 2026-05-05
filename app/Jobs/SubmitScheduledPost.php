@@ -387,37 +387,6 @@ class SubmitScheduledPost implements ShouldQueue
     }
 
     /**
-     * Construct a best-guess profile URL for the brand's account on the
-     * post's platform. Used when Blotato confirms `published` but doesn't
-     * return the platform-side permalink — the operator gets a click that
-     * lands them on the right account on the right network, which is much
-     * better than a dead `#` anchor.
-     */
-    private function profileUrlFallback(ScheduledPost $post): ?string
-    {
-        $platform = $post->draft?->platform;
-        $handle = $post->platformConnection?->display_handle;
-        if (! $platform || ! $handle) return null;
-
-        // Some handles are display names with spaces (e.g. "Amos Wafula").
-        // Strip everything that isn't valid in a username and lowercase.
-        $cleanHandle = strtolower(preg_replace('/[^a-zA-Z0-9._-]+/', '', $handle) ?? '');
-        if ($cleanHandle === '') return null;
-
-        return match ($platform) {
-            'instagram' => "https://www.instagram.com/{$cleanHandle}/",
-            'tiktok'    => "https://www.tiktok.com/@{$cleanHandle}",
-            'threads'   => "https://www.threads.com/@{$cleanHandle}",
-            'youtube'   => "https://www.youtube.com/@{$cleanHandle}",
-            'x', 'twitter' => "https://x.com/{$cleanHandle}",
-            'facebook'  => "https://www.facebook.com/{$cleanHandle}",
-            'linkedin'  => "https://www.linkedin.com/in/{$cleanHandle}",
-            'pinterest' => "https://www.pinterest.com/{$cleanHandle}/",
-            default     => null,
-        };
-    }
-
-    /**
      * @return array<int,string>
      */
     private function collectDraftMediaUrls(\App\Models\Draft $draft): array

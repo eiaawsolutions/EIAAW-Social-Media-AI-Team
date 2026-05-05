@@ -131,6 +131,23 @@
                 animation: lf-pulse 1.4s ease-in-out infinite;
             }
             @keyframes lf-pulse { 0%,100%{opacity:.35} 50%{opacity:1} }
+            .lf-card.is-unverified {
+                border-style: dashed;
+                border-color: #D9CFBC;
+                background: white;
+                cursor: not-allowed;
+            }
+            .lf-card.is-unverified:hover { transform: none; box-shadow: none; border-color: #D9CFBC; }
+            .lf-card.is-unverified .lf-media { opacity: .55; }
+            .lf-unverified-pill {
+                display: inline-flex; align-items: center; gap: 6px;
+                font-family: var(--eiaaw-mono); font-size: 10px;
+                letter-spacing: .12em; text-transform: uppercase;
+                color: #92400E;
+                background: #FEF3C7;
+                border: 1px solid #FDE68A;
+                padding: 2px 8px; border-radius: 999px;
+            }
             .lf-empty {
                 text-align: center;
                 padding: 64px 24px;
@@ -199,13 +216,17 @@
                         $stampLocal = $stamp?->copy()->setTimezone($tz);
                         $clickHref = $isPublishing ? null : $this->clickUrl($post);
                         $hasUrl = ! empty($clickHref);
-                        $isProfileFallback = $hasUrl && empty($post->platform_post_url);
+                        // Published row but no verified permalink — Blotato
+                        // hasn't confirmed platform-side delivery yet. Show
+                        // it but don't pretend the click goes anywhere.
+                        $isUnverified = ! $isPublishing && ! $hasUrl;
+                        $cardDisabled = $isPublishing || $isUnverified;
                     @endphp
-                    <a class="lf-card {{ $isPublishing ? 'is-publishing' : '' }}"
+                    <a class="lf-card {{ $isPublishing ? 'is-publishing' : '' }} {{ $isUnverified ? 'is-unverified' : '' }}"
                        href="{{ $hasUrl ? $clickHref : '#' }}"
                        target="{{ $hasUrl ? '_blank' : '_self' }}"
                        rel="{{ $hasUrl ? 'noopener noreferrer' : '' }}"
-                       @if ($isPublishing) onclick="return false;" @endif>
+                       @if ($cardDisabled) onclick="return false;" @endif>
                         <div class="lf-media">
                             @if ($assetUrl !== '' && $isVideo)
                                 <video src="{{ $assetUrl }}" muted loop playsinline preload="metadata"
@@ -226,8 +247,8 @@
                                 <span>#{{ $post->id }} · {{ $post->brand?->name ?? '?' }}</span>
                                 @if ($isPublishing)
                                     <span class="lf-publishing-pill">publishing</span>
-                                @elseif ($isProfileFallback)
-                                    <span title="Permalink not yet captured — opens the brand profile">view profile →</span>
+                                @elseif ($isUnverified)
+                                    <span class="lf-unverified-pill" title="Awaiting platform confirmation — Blotato has not returned a permalink yet">unverified</span>
                                 @else
                                     <span>{{ $hasUrl ? 'view live →' : '' }}</span>
                                 @endif

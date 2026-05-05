@@ -5,6 +5,7 @@ namespace App\Filament\Agency\Pages;
 use App\Models\Brand;
 use App\Models\ScheduledPost;
 use App\Models\Workspace;
+use App\Services\Publishing\PostVerificationRules;
 use Filament\Pages\Page;
 use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Support\Carbon;
@@ -128,36 +129,44 @@ class LiveFeed extends Page
     }
 
     /**
-     * Best-available click target for a published post tile. Prefers the
-     * captured `platform_post_url` (the exact permalink Blotato returned).
-     * Falls back to the connected account's profile URL when Blotato
-     * confirmed `published` but didn't return a permalink — which is
-     * better UX than a dead anchor and still routes the operator to the
-     * correct account on the right platform.
+     * Count of `published` rows that don't pass PostVerificationRules — i.e.
+     * Blotato said published but never returned a real permalink. These render
+     * as "unverified" tiles in the feed; operator can run
+     * `php artisan posts:reconcile-published --apply` to clean them up.
+     */
+    public function totalUnverified(): int
+    {
+        $ws = $this->workspace();
+        if (! $ws) return 0;
+        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        $rows = ScheduledPost::with('draft')
+            ->whereIn('brand_id', $brandIds)
+            ->where('status', 'published')
+            ->get(['id', 'draft_id', 'platform_post_url']);
+        return $rows->filter(function ($p) {
+            $platform = (string) ($p->draft?->platform ?? '');
+            return ! PostVerificationRules::isRealPostUrl($platform, $p->platform_post_url);
+        })->count();
+    }
+
+    /**
+     * Click target for a tile. ONLY returns a URL that PostVerificationRules
+     * recognises as a real post permalink (e.g. instagram.com/p/<id>/, NOT
+     * instagram.com/<handle>). Profile-root URLs and empty URLs return null
+     * so the tile renders unclickable — the truthfulness contract: the live
+     * feed MUST NOT pretend a post exists at a URL when it doesn't.
+     *
+     * Reason: Blotato has been observed to return state=published before
+     * the platform actually has the post. A profile-fallback link would
+     * silently mask that gap and lead the operator to scroll a feed
+     * looking for a post that isn't there. Better to show "verifying with
+     * platform" and disable the click than to falsely promise a live URL.
      */
     public function clickUrl(ScheduledPost $post): ?string
     {
-        if (! empty($post->platform_post_url)) {
-            return $post->platform_post_url;
-        }
-        $platform = $post->draft?->platform;
-        $handle = $post->platformConnection?->display_handle;
-        if (! $platform || ! $handle) return null;
-
-        $clean = strtolower(preg_replace('/[^a-zA-Z0-9._-]+/', '', $handle) ?? '');
-        if ($clean === '') return null;
-
-        return match ($platform) {
-            'instagram' => "https://www.instagram.com/{$clean}/",
-            'tiktok'    => "https://www.tiktok.com/@{$clean}",
-            'threads'   => "https://www.threads.com/@{$clean}",
-            'youtube'   => "https://www.youtube.com/@{$clean}",
-            'x', 'twitter' => "https://x.com/{$clean}",
-            'facebook'  => "https://www.facebook.com/{$clean}",
-            'linkedin'  => "https://www.linkedin.com/in/{$clean}",
-            'pinterest' => "https://www.pinterest.com/{$clean}/",
-            default     => null,
-        };
+        $platform = (string) ($post->draft?->platform ?? '');
+        $url = $post->platform_post_url;
+        return PostVerificationRules::isRealPostUrl($platform, $url) ? $url : null;
     }
 
     public function getHeading(): string|Htmlable
@@ -173,9 +182,19 @@ class LiveFeed extends Page
         $ws = $this->workspace();
         if (! $ws) return null;
         $publishing = $this->totalPublishing();
-        $tail = $publishing > 0
-            ? "{$publishing} confirming with platform · published posts appear once the network confirms"
+        $unverified = $this->totalUnverified();
+
+        $bits = [];
+        if ($publishing > 0) {
+            $bits[] = "{$publishing} confirming with platform";
+        }
+        if ($unverified > 0) {
+            $bits[] = "{$unverified} unverified (run posts:reconcile-published)";
+        }
+        $tail = $bits
+            ? implode(' · ', $bits)
             : 'only posts confirmed live on the platform appear here';
+
         return $ws->name . ' · ' . $this->brandTimezone() . ' · ' . $tail;
     }
 }
