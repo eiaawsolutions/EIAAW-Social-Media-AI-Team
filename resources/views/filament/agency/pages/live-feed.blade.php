@@ -134,7 +134,7 @@
         $posts = $this->posts();
     @endphp
 
-    <div class="lf-shell">
+    <div class="lf-shell" wire:poll.30s>
         <div class="lf-tabs">
             <button type="button"
                     wire:click="setPlatform(null)"
