@@ -11,7 +11,7 @@ class Draft extends Model
     protected $fillable = [
         'brand_id', 'calendar_entry_id', 'platform', 'content_type',
         'body', 'platform_payload', 'hashtags', 'mentions',
-        'asset_url', 'asset_urls',
+        'asset_url', 'asset_urls', 'branding_payload',
         // Provenance
         'agent_role', 'model_id', 'prompt_version', 'prompt_inputs',
         'grounding_sources', 'competitor_refs',
@@ -31,6 +31,7 @@ class Draft extends Model
             'hashtags' => 'array',
             'mentions' => 'array',
             'asset_urls' => 'array',
+            'branding_payload' => 'array',
             'prompt_inputs' => 'array',
             'grounding_sources' => 'array',
             'competitor_refs' => 'array',

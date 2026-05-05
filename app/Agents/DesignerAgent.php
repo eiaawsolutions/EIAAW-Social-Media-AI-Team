@@ -6,10 +6,13 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\Draft;
 use App\Services\Blotato\BlotatoClient;
+use App\Services\Branding\BrandImageStamper;
+use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 
 /**
@@ -41,8 +44,11 @@ class DesignerAgent extends BaseAgent
 {
     protected array $requiredStages = ['brand_style'];
 
-    /** Default $0.50/workspace/day before circuit breaker trips. Overridable via config. */
-    private const DEFAULT_DAILY_CAP_USD = 0.50;
+    /** Default $1.50/workspace/day before circuit breaker trips. Overridable via config.
+     *  At ~$0.003/image (flux/schnell) this allows ~500 image generations per day,
+     *  comfortably above the ~35 base + 3x redraft headroom for a 5-brand workspace.
+     *  The previous $0.50 default tripped within hours of normal multi-brand use. */
+    private const DEFAULT_DAILY_CAP_USD = 1.50;
 
     /**
      * Per-image cost lookup keyed by FAL model id. Defaults to schnell
@@ -141,9 +147,16 @@ class DesignerAgent extends BaseAgent
             }
         }
 
-        // Cost circuit breaker — refuse if we're at/over the daily cap.
+        // Cost circuit breaker — scope to FAL image spend ONLY. Pre-fix this
+        // summed every workspace AiCost row (Anthropic Writer, Voice scorer,
+        // embeddings, even Video) into the image cap, causing the breaker to
+        // trip after a normal day of LLM use even though no images had been
+        // generated. Filter by role + provider so the cap protects what it
+        // claims to protect.
         $cap = (float) config('services.fal.daily_cap_usd', self::DEFAULT_DAILY_CAP_USD);
         $spentToday = (float) AiCost::where('workspace_id', $brand->workspace_id)
+            ->where('agent_role', $this->role())
+            ->where('provider', 'fal')
             ->whereDate('called_at', now()->toDateString())
             ->sum('cost_usd');
         if ($spentToday >= $cap) {
@@ -175,6 +188,29 @@ class DesignerAgent extends BaseAgent
         }
 
         $falUrl = $generated['url'];
+        $brandedLocalPath = null;
+
+        // EIAAW house brand: stamp the FAL still with a Claude-distilled
+        // positive quote + logo + "Powered by EIAAW Solutions" tag. Soft-fail:
+        // if anything in the brand layer breaks, we publish the raw FAL image
+        // — better than no media on a media-required platform.
+        if (EiaawBrandLock::appliesTo($brand) && (bool) config('services.branding.enabled', true)) {
+            try {
+                $artifact = app(QuoteWriter::class)->distil($draft, $brand);
+                $brandedLocalPath = BrandImageStamper::fromConfig()->stamp(
+                    sourceImageUrl: $falUrl,
+                    quote: $artifact['quote'],
+                    platform: $draft->platform,
+                    draftId: $draft->id,
+                );
+            } catch (\Throwable $e) {
+                Log::warning('DesignerAgent: brand stamp failed; falling back to raw FAL image', [
+                    'draft_id' => $draft->id,
+                    'error' => $e->getMessage(),
+                ]);
+                $brandedLocalPath = null;
+            }
+        }
 
         // Log cost so the circuit breaker on the next call sees it.
         $costUsd = self::priceFor($generated['model']);
@@ -196,12 +232,33 @@ class DesignerAgent extends BaseAgent
             Log::warning('DesignerAgent: cost ledger insert failed', ['error' => $e->getMessage()]);
         }
 
+        // If we successfully stamped a branded version, publish it to the
+        // public disk and use that URL for Blotato. Branded image lives at
+        // <APP_URL>/storage/branding/<draftid>-<random>.jpg — discoverable
+        // only by direct path, served once to Blotato then garbage-collected
+        // by the existing storage:link cleanup job.
+        $urlForBlotato = $falUrl;
+        if ($brandedLocalPath !== null && is_file($brandedLocalPath)) {
+            try {
+                $publicRelPath = 'branding/' . $draft->id . '-' . substr(md5(uniqid('', true)), 0, 12) . '.jpg';
+                Storage::disk('public')->put($publicRelPath, file_get_contents($brandedLocalPath));
+                $urlForBlotato = rtrim((string) config('app.url'), '/') . '/storage/' . $publicRelPath;
+                @unlink($brandedLocalPath);
+            } catch (\Throwable $e) {
+                Log::warning('DesignerAgent: failed to publish branded image; falling back to FAL URL', [
+                    'draft_id' => $draft->id,
+                    'error' => $e->getMessage(),
+                ]);
+                // urlForBlotato stays as $falUrl — soft fallback.
+            }
+        }
+
         // Re-host on Blotato unless explicitly skipped.
-        $finalUrl = $falUrl;
+        $finalUrl = $urlForBlotato;
         if (empty($input['skip_blotato_upload'])) {
             try {
                 $blotato = BlotatoClient::fromConfig();
-                $finalUrl = $blotato->uploadMediaFromUrl($falUrl);
+                $finalUrl = $blotato->uploadMediaFromUrl($urlForBlotato);
             } catch (\Throwable $e) {
                 Log::error('DesignerAgent: Blotato media upload failed', [
                     'draft_id' => $draft->id,

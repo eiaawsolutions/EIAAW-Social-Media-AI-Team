@@ -6,10 +6,14 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\Draft;
 use App\Services\Blotato\BlotatoClient;
+use App\Services\Branding\BrandVideoComposer;
+use App\Services\Branding\FalTtsClient;
+use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 
 /**
@@ -167,6 +171,7 @@ class VideoAgent extends BaseAgent
         }
 
         $falUrl = $generated['url'];
+        $brandedLocalPath = null;
 
         // Log cost.
         try {
@@ -186,12 +191,52 @@ class VideoAgent extends BaseAgent
             Log::warning('VideoAgent: cost ledger insert failed', ['error' => $e->getMessage()]);
         }
 
+        // EIAAW house brand: layer voiceover + music + subtitles + logo.
+        // Soft-fail: if any step breaks, publish the raw FAL clip — we'd
+        // rather ship an unbranded video than nothing on a media-required
+        // platform.
+        if (EiaawBrandLock::appliesTo($brand) && (bool) config('services.branding.enabled', true)) {
+            try {
+                $artifact = app(QuoteWriter::class)->distil($draft, $brand);
+                $tts = FalTtsClient::fromConfig()->synthesize($artifact['voiceover'], $brand);
+                $brandedLocalPath = BrandVideoComposer::fromConfig()->compose(
+                    sourceVideoUrl: $falUrl,
+                    voiceoverUrl: $tts['audio_url'],
+                    chunks: $tts['chunks'],
+                    platform: $draft->platform,
+                    draftId: $draft->id,
+                );
+            } catch (\Throwable $e) {
+                Log::warning('VideoAgent: brand composition failed; falling back to raw FAL video', [
+                    'draft_id' => $draft->id,
+                    'error' => $e->getMessage(),
+                ]);
+                $brandedLocalPath = null;
+            }
+        }
+
+        // Publish branded video to public disk so Blotato can fetch it.
+        $urlForBlotato = $falUrl;
+        if ($brandedLocalPath !== null && is_file($brandedLocalPath)) {
+            try {
+                $publicRelPath = 'branding/' . $draft->id . '-' . substr(md5(uniqid('', true)), 0, 12) . '.mp4';
+                Storage::disk('public')->put($publicRelPath, file_get_contents($brandedLocalPath));
+                $urlForBlotato = rtrim((string) config('app.url'), '/') . '/storage/' . $publicRelPath;
+                @unlink($brandedLocalPath);
+            } catch (\Throwable $e) {
+                Log::warning('VideoAgent: failed to publish branded video; falling back to FAL URL', [
+                    'draft_id' => $draft->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         // Re-host on Blotato so it's publishable.
-        $finalUrl = $falUrl;
+        $finalUrl = $urlForBlotato;
         if (empty($input['skip_blotato_upload'])) {
             try {
                 $blotato = BlotatoClient::fromConfig();
-                $finalUrl = $blotato->uploadMediaFromUrl($falUrl);
+                $finalUrl = $blotato->uploadMediaFromUrl($urlForBlotato);
             } catch (\Throwable $e) {
                 Log::error('VideoAgent: Blotato media upload failed', [
                     'draft_id' => $draft->id,

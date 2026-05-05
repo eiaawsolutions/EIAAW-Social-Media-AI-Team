@@ -43,8 +43,41 @@ return [
         'video_request_timeout' => (int) env('FAL_VIDEO_REQUEST_TIMEOUT', 360),
         // Per-workspace daily caps. Video is 10x image so kept separate
         // and operator can lift either independently via Infisical.
+        // Video cap raised from $2.00 to $2.40 on 2026-05-05 to absorb
+        // the FAL Kokoro TTS call (~$0.01/clip) added by BrandVideoComposer.
         'daily_cap_usd' => (float) env('FAL_DAILY_CAP_USD', 0.50),
-        'video_daily_cap_usd' => (float) env('FAL_VIDEO_DAILY_CAP_USD', 2.00),
+        'video_daily_cap_usd' => (float) env('FAL_VIDEO_DAILY_CAP_USD', 2.40),
+        // FAL TTS endpoint used for voiceovers. Kokoro-82M is the cheapest
+        // FAL voice (~$0.001/1k chars, ~$0.01/clip), with PlayHT and
+        // ElevenLabs-via-FAL as quality-upgrade flips. Word-level
+        // timestamps power burned-in subtitles.
+        'tts_model' => env('FAL_TTS_MODEL', 'fal-ai/kokoro/american-english'),
+        'tts_voice' => env('FAL_TTS_VOICE', 'af_heart'),
+        'tts_request_timeout' => (int) env('FAL_TTS_REQUEST_TIMEOUT', 60),
+    ],
+
+    // ─── Branding (image quote stamping + video voiceover/music/subtitles) ──
+    // Applied only when EiaawBrandLock::appliesTo($brand) is true. Cost is
+    // ~$0.001/image (one Haiku call for quote distillation) + ~$0.01/video
+    // (one Kokoro TTS call) — both tracked under the existing FAL/Anthropic
+    // ai_costs ledger; no new vendor required.
+    'branding' => [
+        // Master switch. Set false to bypass branding entirely — useful when
+        // FFmpeg is unavailable on a host (local dev without ffmpeg installed)
+        // or when isolating the raw FAL output for debugging.
+        'enabled' => (bool) env('BRANDING_ENABLED', true),
+        // Background music for videos. Set false to publish video with
+        // voiceover only (no music bed). Files must live in
+        // public/brand/music/*.mp3 — see README.md there.
+        'background_music_enabled' => (bool) env('BRANDING_BG_MUSIC_ENABLED', true),
+        // FFmpeg binary path. Production (Railway/Nixpacks) installs to
+        // /nix/store/.../bin/ffmpeg and resolves via $PATH; local dev on
+        // Windows can override with the absolute path to a ffmpeg.exe.
+        'ffmpeg_bin' => env('FFMPEG_BIN', 'ffmpeg'),
+        'ffprobe_bin' => env('FFPROBE_BIN', 'ffprobe'),
+        // Hard cap on FFmpeg subprocess wall time so a stuck encode doesn't
+        // exhaust the worker's job timeout.
+        'ffmpeg_timeout_seconds' => (int) env('BRANDING_FFMPEG_TIMEOUT', 90),
     ],
 
     'voyage' => [
