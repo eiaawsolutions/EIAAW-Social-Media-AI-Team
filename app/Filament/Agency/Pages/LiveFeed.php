@@ -69,10 +69,22 @@ class LiveFeed extends Page
 
         $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
 
+        // Show published rows AND submitted rows (the "publishing —
+        // confirming with platform" gap). Submitted-without-blotato_post_id
+        // is excluded since those haven't actually been submitted to the
+        // network yet (transient `submitting` state).
         $q = ScheduledPost::with(['draft.calendarEntry', 'brand', 'platformConnection'])
             ->whereIn('brand_id', $brandIds)
-            ->where('status', 'published')
-            ->orderByDesc('published_at');
+            ->where(function ($q) {
+                $q->where('status', 'published')
+                  ->orWhere(function ($q2) {
+                      $q2->where('status', 'submitted')
+                         ->whereNotNull('blotato_post_id');
+                  });
+            })
+            ->orderByRaw("CASE WHEN status='published' THEN 0 ELSE 1 END")
+            ->orderByDesc('published_at')
+            ->orderByDesc('submitted_at');
 
         if ($this->platformFilter) {
             $q->whereHas('draft', fn ($d) => $d->where('platform', $this->platformFilter));
@@ -81,7 +93,7 @@ class LiveFeed extends Page
         return $q->limit(120)->get();
     }
 
-    /** @return array<string, int>  platform => count */
+    /** @return array<string, int>  platform => count (published only) */
     public function platformCounts(): array
     {
         $ws = $this->workspace();
@@ -104,6 +116,17 @@ class LiveFeed extends Page
         return array_sum($this->platformCounts());
     }
 
+    public function totalPublishing(): int
+    {
+        $ws = $this->workspace();
+        if (! $ws) return 0;
+        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        return ScheduledPost::whereIn('brand_id', $brandIds)
+            ->where('status', 'submitted')
+            ->whereNotNull('blotato_post_id')
+            ->count();
+    }
+
     public function getHeading(): string|Htmlable
     {
         $total = $this->totalLive();
@@ -116,6 +139,10 @@ class LiveFeed extends Page
     {
         $ws = $this->workspace();
         if (! $ws) return null;
-        return $ws->name . ' · ' . $this->brandTimezone() . ' · only posts confirmed live on the platform appear here';
+        $publishing = $this->totalPublishing();
+        $tail = $publishing > 0
+            ? "{$publishing} confirming with platform · published posts appear once the network confirms"
+            : 'only posts confirmed live on the platform appear here';
+        return $ws->name . ' · ' . $this->brandTimezone() . ' · ' . $tail;
     }
 }

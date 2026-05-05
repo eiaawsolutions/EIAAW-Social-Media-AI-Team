@@ -109,6 +109,28 @@
                 padding-top: 6px;
                 border-top: 1px solid var(--eiaaw-line-soft);
             }
+            .lf-card.is-publishing {
+                border-style: dashed;
+                border-color: var(--eiaaw-line);
+                background: var(--eiaaw-bg-warm);
+                cursor: default;
+            }
+            .lf-card.is-publishing:hover { transform: none; box-shadow: none; }
+            .lf-publishing-pill {
+                display: inline-flex; align-items: center; gap: 6px;
+                font-family: var(--eiaaw-mono); font-size: 10px;
+                letter-spacing: .12em; text-transform: uppercase;
+                color: var(--eiaaw-ink-2);
+                background: white;
+                border: 1px solid var(--eiaaw-line);
+                padding: 2px 8px; border-radius: 999px;
+            }
+            .lf-publishing-pill::before {
+                content: ''; width: 6px; height: 6px; border-radius: 50%;
+                background: #F59E0B;
+                animation: lf-pulse 1.4s ease-in-out infinite;
+            }
+            @keyframes lf-pulse { 0%,100%{opacity:.35} 50%{opacity:1} }
             .lf-empty {
                 text-align: center;
                 padding: 64px 24px;
@@ -172,13 +194,16 @@
                             || str_contains($assetUrl, '/video/')
                         );
                         $caption = trim((string) ($draft?->body ?? ''));
-                        $publishedLocal = $post->published_at?->copy()->setTimezone($tz);
-                        $hasUrl = ! empty($post->platform_post_url);
+                        $isPublishing = $post->status === 'submitted';
+                        $stamp = $isPublishing ? $post->submitted_at : $post->published_at;
+                        $stampLocal = $stamp?->copy()->setTimezone($tz);
+                        $hasUrl = ! $isPublishing && ! empty($post->platform_post_url);
                     @endphp
-                    <a class="lf-card"
+                    <a class="lf-card {{ $isPublishing ? 'is-publishing' : '' }}"
                        href="{{ $hasUrl ? $post->platform_post_url : '#' }}"
                        target="{{ $hasUrl ? '_blank' : '_self' }}"
-                       rel="{{ $hasUrl ? 'noopener noreferrer' : '' }}">
+                       rel="{{ $hasUrl ? 'noopener noreferrer' : '' }}"
+                       @if ($isPublishing) onclick="return false;" @endif>
                         <div class="lf-media">
                             @if ($assetUrl !== '' && $isVideo)
                                 <video src="{{ $assetUrl }}" muted loop playsinline preload="metadata"
@@ -192,12 +217,16 @@
                         <div class="lf-body">
                             <div class="lf-meta">
                                 <span class="lf-platform-pill lf-platform-{{ $platform }}">{{ $platform }}</span>
-                                <span>{{ $publishedLocal?->format('M j · H:i') ?? '—' }}</span>
+                                <span>{{ $stampLocal?->format('M j · H:i') ?? '—' }}</span>
                             </div>
                             <div class="lf-caption">{{ $caption !== '' ? $caption : '(no caption)' }}</div>
                             <div class="lf-foot">
                                 <span>#{{ $post->id }} · {{ $post->brand?->name ?? '?' }}</span>
-                                <span>{{ $hasUrl ? 'view live →' : '' }}</span>
+                                @if ($isPublishing)
+                                    <span class="lf-publishing-pill">publishing</span>
+                                @else
+                                    <span>{{ $hasUrl ? 'view live →' : '' }}</span>
+                                @endif
                             </div>
                         </div>
                     </a>

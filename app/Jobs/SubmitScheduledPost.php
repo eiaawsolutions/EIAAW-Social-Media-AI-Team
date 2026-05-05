@@ -49,8 +49,27 @@ class SubmitScheduledPost implements ShouldQueue
             return;
         }
 
-        // Idempotency guards
-        if (in_array($post->status, ['submitted', 'published', 'cancelled'])) {
+        // Idempotency guards. `submitted` rows that already have a
+        // blotato_post_id are NOT terminal — they need polling to flip to
+        // `published`. Without this branch the poller in PostsDispatchDue
+        // re-dispatches them and they bounce off this guard forever, leaving
+        // truly-published posts invisible in the live feed.
+        if (in_array($post->status, ['published', 'cancelled'])) {
+            return;
+        }
+        if ($post->status === 'submitted') {
+            if ($post->blotato_post_id) {
+                try {
+                    $client = BlotatoClient::fromConfig();
+                } catch (\Throwable $e) {
+                    Log::warning('SubmitScheduledPost: poll-only client init failed', [
+                        'id' => $post->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                    return;
+                }
+                $this->pollAndAdvance($post, $client);
+            }
             return;
         }
         if ($post->status === 'failed' && $post->attempt_count >= 3) {
