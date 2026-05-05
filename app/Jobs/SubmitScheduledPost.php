@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\ScheduledPost;
 use App\Services\Blotato\BlotatoClient;
+use App\Services\Blotato\PlatformRules;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -93,6 +94,20 @@ class SubmitScheduledPost implements ShouldQueue
         // If we already have a blotato_post_id, this is a poll-only retry.
         if ($post->blotato_post_id) {
             $this->pollAndAdvance($post, $client);
+            return;
+        }
+
+        // Defence-in-depth publishability gate. ComplianceAgent SHOULD have
+        // caught this already, but pre-2026-05-05 drafts predate the
+        // platform_publishability check, and the dispatcher does not re-read
+        // draft.status before queuing. So we re-evaluate the same rules right
+        // before the Blotato call. This stops the YouTube `TypeError: Failed
+        // to parse URL from undefined` (failed/450758 class) and the IG/TikTok
+        // text-only 422s from ever reaching Blotato.
+        $eval = PlatformRules::evaluate($post->draft);
+        if (! $eval['passed']) {
+            $reasons = collect($eval['violations'])->pluck('reason')->implode(' | ');
+            $this->markFailed($post, 'Publishability gate (pre-Blotato): ' . substr($reasons, 0, 250));
             return;
         }
 
