@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\ScheduledPost;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Blotato\PlatformRules;
+use App\Services\Publishing\PostVerificationRules;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -270,21 +271,30 @@ class SubmitScheduledPost implements ShouldQueue
         $error = $status['error'] ?? $status['message'] ?? null;
 
         if (in_array($state, ['published', 'success', 'completed'])) {
-            // Fallback: Blotato sometimes confirms `published` without
-            // returning the platform URL on the first poll (the URL appears
-            // on a subsequent poll once Blotato has fetched the platform-side
-            // permalink). To keep clicks working in the live feed, fall back
-            // to the brand's profile URL on that platform — better than a
-            // dead anchor. We log the raw payload when this happens so we
-            // can refine the key search if Blotato's shape drifts.
-            if (! $platformPostUrl) {
-                Log::info('SubmitScheduledPost: published without postUrl — using profile fallback', [
+            // Verification gate — Blotato has been observed to return
+            // state=published before its TikTok/YouTube/IG/Threads adapters
+            // have actually delivered the post (see prod incident 2026-05-06:
+            // 32 false-positive "published" rows; only 1 TikTok video and 0
+            // YouTube videos actually existed). Require either platform_post_id
+            // or a real-post-URL pattern before flipping to `published`.
+            $platform = (string) ($post->draft?->platform ?? '');
+            $verdict = PostVerificationRules::verify($platform, $platformPostId, $platformPostUrl);
+
+            if (! $verdict['verified']) {
+                // Stay in `submitted` — poller will revisit. Capture the
+                // current Blotato payload so we can see what's missing.
+                Log::info('SubmitScheduledPost: Blotato says published but verification failed; staying as submitted', [
                     'id' => $post->id,
-                    'platform' => $post->draft?->platform,
+                    'platform' => $platform,
+                    'reason' => $verdict['reason'],
+                    'blotato_post_id_returned' => $platformPostId,
+                    'blotato_post_url_returned' => $platformPostUrl,
                     'blotato_status_keys' => array_keys($status),
-                    'blotato_status_sample' => substr(json_encode($status, JSON_UNESCAPED_SLASHES) ?: '{}', 0, 600),
                 ]);
-                $platformPostUrl = $this->profileUrlFallback($post);
+                // Refresh updated_at so the dispatcher's "poll if updated > 60s"
+                // gate kicks back in; otherwise we'd thrash on every minute.
+                $post->touch();
+                return;
             }
 
             $post->update([
