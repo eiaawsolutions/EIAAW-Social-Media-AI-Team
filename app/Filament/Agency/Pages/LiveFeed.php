@@ -127,6 +127,39 @@ class LiveFeed extends Page
             ->count();
     }
 
+    /**
+     * Best-available click target for a published post tile. Prefers the
+     * captured `platform_post_url` (the exact permalink Blotato returned).
+     * Falls back to the connected account's profile URL when Blotato
+     * confirmed `published` but didn't return a permalink — which is
+     * better UX than a dead anchor and still routes the operator to the
+     * correct account on the right platform.
+     */
+    public function clickUrl(ScheduledPost $post): ?string
+    {
+        if (! empty($post->platform_post_url)) {
+            return $post->platform_post_url;
+        }
+        $platform = $post->draft?->platform;
+        $handle = $post->platformConnection?->display_handle;
+        if (! $platform || ! $handle) return null;
+
+        $clean = strtolower(preg_replace('/[^a-zA-Z0-9._-]+/', '', $handle) ?? '');
+        if ($clean === '') return null;
+
+        return match ($platform) {
+            'instagram' => "https://www.instagram.com/{$clean}/",
+            'tiktok'    => "https://www.tiktok.com/@{$clean}",
+            'threads'   => "https://www.threads.com/@{$clean}",
+            'youtube'   => "https://www.youtube.com/@{$clean}",
+            'x', 'twitter' => "https://x.com/{$clean}",
+            'facebook'  => "https://www.facebook.com/{$clean}",
+            'linkedin'  => "https://www.linkedin.com/in/{$clean}",
+            'pinterest' => "https://www.pinterest.com/{$clean}/",
+            default     => null,
+        };
+    }
+
     public function getHeading(): string|Htmlable
     {
         $total = $this->totalLive();

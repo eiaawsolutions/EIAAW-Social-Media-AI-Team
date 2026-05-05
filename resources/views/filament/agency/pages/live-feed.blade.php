@@ -197,10 +197,12 @@
                         $isPublishing = $post->status === 'submitted';
                         $stamp = $isPublishing ? $post->submitted_at : $post->published_at;
                         $stampLocal = $stamp?->copy()->setTimezone($tz);
-                        $hasUrl = ! $isPublishing && ! empty($post->platform_post_url);
+                        $clickHref = $isPublishing ? null : $this->clickUrl($post);
+                        $hasUrl = ! empty($clickHref);
+                        $isProfileFallback = $hasUrl && empty($post->platform_post_url);
                     @endphp
                     <a class="lf-card {{ $isPublishing ? 'is-publishing' : '' }}"
-                       href="{{ $hasUrl ? $post->platform_post_url : '#' }}"
+                       href="{{ $hasUrl ? $clickHref : '#' }}"
                        target="{{ $hasUrl ? '_blank' : '_self' }}"
                        rel="{{ $hasUrl ? 'noopener noreferrer' : '' }}"
                        @if ($isPublishing) onclick="return false;" @endif>
@@ -224,6 +226,8 @@
                                 <span>#{{ $post->id }} · {{ $post->brand?->name ?? '?' }}</span>
                                 @if ($isPublishing)
                                     <span class="lf-publishing-pill">publishing</span>
+                                @elseif ($isProfileFallback)
+                                    <span title="Permalink not yet captured — opens the brand profile">view profile →</span>
                                 @else
                                     <span>{{ $hasUrl ? 'view live →' : '' }}</span>
                                 @endif

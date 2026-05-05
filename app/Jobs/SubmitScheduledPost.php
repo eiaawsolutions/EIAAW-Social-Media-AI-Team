@@ -258,13 +258,35 @@ class SubmitScheduledPost implements ShouldQueue
             return;
         }
 
-        // Blotato status response shape: { state: published|failed|processing, postId, postUrl, error }
+        // Blotato status response shape (verified 2026-05-02 + 2026-05-06):
+        //   { state|status: published|failed|processing, postId|post_id,
+        //     postUrl|post_url, error|message, ... }
+        // Blotato has been observed to nest the URL one level deep under
+        // `result`, `data`, or `post` for older submissions, so fall through
+        // to dotted lookups before declaring it missing.
         $state = strtolower((string) ($status['state'] ?? $status['status'] ?? ''));
-        $platformPostId = $status['postId'] ?? $status['post_id'] ?? null;
-        $platformPostUrl = $status['postUrl'] ?? $status['post_url'] ?? null;
+        $platformPostId = $this->digKeys($status, ['postId', 'post_id', 'platformPostId', 'externalId', 'id']);
+        $platformPostUrl = $this->digKeys($status, ['postUrl', 'post_url', 'platformPostUrl', 'permalink', 'url', 'shareUrl', 'share_url']);
         $error = $status['error'] ?? $status['message'] ?? null;
 
         if (in_array($state, ['published', 'success', 'completed'])) {
+            // Fallback: Blotato sometimes confirms `published` without
+            // returning the platform URL on the first poll (the URL appears
+            // on a subsequent poll once Blotato has fetched the platform-side
+            // permalink). To keep clicks working in the live feed, fall back
+            // to the brand's profile URL on that platform — better than a
+            // dead anchor. We log the raw payload when this happens so we
+            // can refine the key search if Blotato's shape drifts.
+            if (! $platformPostUrl) {
+                Log::info('SubmitScheduledPost: published without postUrl — using profile fallback', [
+                    'id' => $post->id,
+                    'platform' => $post->draft?->platform,
+                    'blotato_status_keys' => array_keys($status),
+                    'blotato_status_sample' => substr(json_encode($status, JSON_UNESCAPED_SLASHES) ?: '{}', 0, 600),
+                ]);
+                $platformPostUrl = $this->profileUrlFallback($post);
+            }
+
             $post->update([
                 'status' => 'published',
                 'platform_post_id' => $platformPostId,
@@ -325,6 +347,64 @@ class SubmitScheduledPost implements ShouldQueue
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Search a (possibly nested) Blotato response for the first non-empty
+     * value under any of the candidate keys. Walks one level into common
+     * envelopes (`result`, `data`, `post`, `submission`) before giving up.
+     *
+     * @param  array<string,mixed>  $payload
+     * @param  array<int,string>    $keys
+     */
+    private function digKeys(array $payload, array $keys): ?string
+    {
+        foreach ($keys as $k) {
+            if (! empty($payload[$k]) && is_string($payload[$k])) {
+                return $payload[$k];
+            }
+        }
+        foreach (['result', 'data', 'post', 'submission'] as $envelope) {
+            if (isset($payload[$envelope]) && is_array($payload[$envelope])) {
+                foreach ($keys as $k) {
+                    if (! empty($payload[$envelope][$k]) && is_string($payload[$envelope][$k])) {
+                        return $payload[$envelope][$k];
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Construct a best-guess profile URL for the brand's account on the
+     * post's platform. Used when Blotato confirms `published` but doesn't
+     * return the platform-side permalink — the operator gets a click that
+     * lands them on the right account on the right network, which is much
+     * better than a dead `#` anchor.
+     */
+    private function profileUrlFallback(ScheduledPost $post): ?string
+    {
+        $platform = $post->draft?->platform;
+        $handle = $post->platformConnection?->display_handle;
+        if (! $platform || ! $handle) return null;
+
+        // Some handles are display names with spaces (e.g. "Amos Wafula").
+        // Strip everything that isn't valid in a username and lowercase.
+        $cleanHandle = strtolower(preg_replace('/[^a-zA-Z0-9._-]+/', '', $handle) ?? '');
+        if ($cleanHandle === '') return null;
+
+        return match ($platform) {
+            'instagram' => "https://www.instagram.com/{$cleanHandle}/",
+            'tiktok'    => "https://www.tiktok.com/@{$cleanHandle}",
+            'threads'   => "https://www.threads.com/@{$cleanHandle}",
+            'youtube'   => "https://www.youtube.com/@{$cleanHandle}",
+            'x', 'twitter' => "https://x.com/{$cleanHandle}",
+            'facebook'  => "https://www.facebook.com/{$cleanHandle}",
+            'linkedin'  => "https://www.linkedin.com/in/{$cleanHandle}",
+            'pinterest' => "https://www.pinterest.com/{$cleanHandle}/",
+            default     => null,
+        };
     }
 
     /**
