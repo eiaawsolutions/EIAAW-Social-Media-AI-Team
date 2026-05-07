@@ -55,8 +55,30 @@ class VideoAgent extends BaseAgent
     /** Approx Wan 2.6 5s 720p cost. */
     private const FAL_WAN_USD_PER_VIDEO = 0.50;
 
+    /** Allowed aspect ratios. Anything else is rejected at resolveAspectRatio
+     *  to keep FAL + ffmpeg branches finite. '4:5' (IG square-ish) can be
+     *  added later but isn't supported by Wan 2.6. */
+    private const ALLOWED_ASPECTS = ['9:16', '16:9', '1:1'];
+
+    /** Per-platform default video aspect when the draft does not specify
+     *  one. Picked for primary feed surface, not the auxiliary one:
+     *    - YouTube: long-form 16:9 (Shorts is bonus, not the bigger surface)
+     *    - LinkedIn: feed video 16:9 (LinkedIn Shorts is a tiny audience)
+     *    - X: tweet player is 16:9
+     *    - TikTok / IG / Threads / Facebook: vertical 9:16 (Reels/feed) */
+    private const PLATFORM_ASPECT_DEFAULTS = [
+        'tiktok'    => '9:16',
+        'instagram' => '9:16',
+        'threads'   => '9:16',
+        'facebook'  => '9:16',
+        'youtube'   => '16:9',
+        'linkedin'  => '16:9',
+        'x'         => '16:9',
+        'twitter'   => '16:9',
+    ];
+
     public function role(): string { return 'video'; }
-    public function promptVersion(): string { return 'video.v1.1'; }
+    public function promptVersion(): string { return 'video.v1.2'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -149,7 +171,8 @@ class VideoAgent extends BaseAgent
             ));
         }
 
-        $prompt = (string) ($input['prompt_override'] ?? $this->buildPrompt($brand, $draft));
+        $aspect = $this->resolveAspectRatio($draft, $input);
+        $prompt = (string) ($input['prompt_override'] ?? $this->buildPrompt($brand, $draft, $aspect));
         $duration = max(3, min(8, (int) ($input['duration_seconds'] ?? 5)));
 
         try {
@@ -163,7 +186,7 @@ class VideoAgent extends BaseAgent
         try {
             $generated = $fal->generateVideo($prompt, array_filter([
                 'image_url' => $stillUrl,
-                'aspect_ratio' => '9:16',
+                'aspect_ratio' => $aspect,
                 'resolution' => '720p',
                 'duration' => $duration,
             ]));
@@ -213,6 +236,7 @@ class VideoAgent extends BaseAgent
                     chunks: $tts['chunks'],
                     platform: $draft->platform,
                     draftId: $draft->id,
+                    aspectRatio: $aspect,
                 );
             } catch (\Throwable $e) {
                 Log::warning('VideoAgent: brand composition failed; falling back to raw FAL video', [
@@ -267,6 +291,7 @@ class VideoAgent extends BaseAgent
         $draft->update([
             'asset_url' => $finalUrl,
             'asset_urls' => array_values($newHistory),
+            'video_aspect_ratio' => $aspect, // pin the resolved aspect for replay/audit
         ]);
 
         return AgentResult::ok([
@@ -274,6 +299,7 @@ class VideoAgent extends BaseAgent
             'asset_url' => $finalUrl,
             'fal_source_url' => $falUrl,
             'platform' => $draft->platform,
+            'aspect_ratio' => $aspect,
             'duration_seconds' => $duration,
             'used_keyframe' => (bool) $stillUrl,
             'cost_usd' => self::FAL_WAN_USD_PER_VIDEO,
@@ -281,9 +307,36 @@ class VideoAgent extends BaseAgent
             'prompt' => $prompt,
         ], [
             'model' => $generated['model'],
+            'aspect_ratio' => $aspect,
             'cost_usd' => self::FAL_WAN_USD_PER_VIDEO,
             'latency_ms' => $generated['latency_ms'],
         ]);
+    }
+
+    /**
+     * Resolve the aspect ratio for this draft's video. Precedence:
+     *   1. $input['aspect_ratio']                 — operator/agent override
+     *   2. $draft->video_aspect_ratio             — per-draft pin (set on the
+     *      Draft via /agency/drafts edit, or pinned by an earlier VideoAgent run)
+     *   3. self::PLATFORM_ASPECT_DEFAULTS         — sensible per-platform default
+     *   4. '9:16' fallback                        — unknown platforms get vertical
+     *
+     * Invalid aspect strings fall through to the platform default rather
+     * than throwing — VideoAgent should ship video, not 422.
+     */
+    private function resolveAspectRatio(Draft $draft, array $input): string
+    {
+        $candidates = [
+            $input['aspect_ratio'] ?? null,
+            $draft->video_aspect_ratio ?? null,
+            self::PLATFORM_ASPECT_DEFAULTS[strtolower((string) $draft->platform)] ?? null,
+        ];
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && in_array($candidate, self::ALLOWED_ASPECTS, true)) {
+                return $candidate;
+            }
+        }
+        return '9:16';
     }
 
     private function draftAlreadyHasVideo(Draft $draft): bool
@@ -313,7 +366,7 @@ class VideoAgent extends BaseAgent
         return null;
     }
 
-    private function buildPrompt(Brand $brand, Draft $draft): string
+    private function buildPrompt(Brand $brand, Draft $draft, string $aspect = '9:16'): string
     {
         $entry = $draft->calendarEntry;
         $bodyLead = (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 30, ' …');
@@ -321,22 +374,31 @@ class VideoAgent extends BaseAgent
         $direction = trim((string) ($entry->visual_direction ?? ''));
         $directionHint = $direction !== '' ? " Visual brief: {$direction}." : '';
 
+        $orientation = $this->orientationLabel($aspect); // "vertical 9:16" | "landscape 16:9" | "square 1:1"
+        $videoForm = $this->videoFormLabel($draft->platform, $aspect); // "Reel" | "long-form video" | etc.
+
         // EIAAW-internal workspace: pace to the house editorial motion contract,
         // override platform "fast cuts" defaults that would violate brand.
         if (EiaawBrandLock::appliesTo($brand)) {
             $platformHint = match ($draft->platform) {
-                'tiktok' => 'TikTok-native vertical 9:16, hook in first 1.5s but resolved through composition not jump cuts',
-                'instagram' => 'Instagram Reel vertical 9:16, slow editorial pacing, deliberate final beat',
-                'youtube' => 'YouTube Shorts vertical 9:16, opening frame works as a still thumbnail',
-                'threads' => 'Threads short vertical 9:16, lo-fi authentic, single-take feel',
-                'facebook' => 'Facebook Reel vertical 9:16, slightly slower pacing',
-                'linkedin' => 'LinkedIn-native short vertical 9:16, professional, no music swells',
-                default => 'Short-form vertical 9:16',
+                'tiktok'    => "TikTok {$videoForm} {$orientation}, hook in first 1.5s but resolved through composition not jump cuts",
+                'instagram' => "Instagram {$videoForm} {$orientation}, slow editorial pacing, deliberate final beat",
+                'youtube'   => $aspect === '16:9'
+                    ? "YouTube long-form {$orientation}, opening shot doubles as a strong thumbnail, cinematic establishing wide"
+                    : "YouTube Shorts {$orientation}, opening frame works as a still thumbnail",
+                'threads'   => "Threads short {$orientation}, lo-fi authentic, single-take feel",
+                'facebook'  => "Facebook {$videoForm} {$orientation}, slightly slower pacing",
+                'linkedin'  => $aspect === '16:9'
+                    ? "LinkedIn feed video {$orientation}, professional, no music swells, executive-level framing"
+                    : "LinkedIn-native short {$orientation}, professional, no music swells",
+                'x', 'twitter' => "X {$videoForm} {$orientation}, scroll-stopping first frame, native-looking",
+                default     => "Short-form {$orientation}",
             };
 
             return sprintf(
-                '%d-second short-form vertical video for EIAAW Solutions on %s. %s. %s%s Subject: %s. No on-screen text, no captions, no watermarks baked in.',
+                '%d-second %s video for EIAAW Solutions on %s. %s. %s%s Subject: %s. No on-screen text, no captions, no watermarks baked in.',
                 5,
+                $orientation,
                 ucfirst($draft->platform),
                 $platformHint,
                 EiaawBrandLock::videoDirective(),
@@ -347,23 +409,60 @@ class VideoAgent extends BaseAgent
 
         // Client workspace path — original platform-aesthetic mapping.
         $platformHint = match ($draft->platform) {
-            'tiktok' => 'TikTok-native: hook in first 1.5s, fast cuts, energetic but not chaotic, 9:16 vertical',
-            'instagram' => 'Instagram Reel: clean editorial pacing, brand-consistent palette, 9:16 vertical, end on a strong final beat',
-            'youtube' => 'YouTube Shorts: thumbnail-first frame should be readable at small size, 9:16 vertical',
-            'threads' => 'Threads short: lo-fi authentic feel, vertical 9:16, no aggressive editing',
-            'facebook' => 'Facebook Reel: similar to Instagram, slightly slower pacing',
-            'linkedin' => 'LinkedIn-native short: professional, clear narration cue, no music swells, vertical 9:16',
-            default => 'Short-form vertical 9:16, brand-consistent',
+            'tiktok'    => "TikTok-native: hook in first 1.5s, fast cuts, energetic but not chaotic, {$orientation}",
+            'instagram' => "Instagram {$videoForm}: clean editorial pacing, brand-consistent palette, {$orientation}, end on a strong final beat",
+            'youtube'   => $aspect === '16:9'
+                ? "YouTube long-form: cinematic widescreen pacing, thumbnail-strong opening shot, {$orientation}"
+                : "YouTube Shorts: thumbnail-first frame readable at small size, {$orientation}",
+            'threads'   => "Threads short: lo-fi authentic feel, {$orientation}, no aggressive editing",
+            'facebook'  => "Facebook {$videoForm}: similar to Instagram, slightly slower pacing, {$orientation}",
+            'linkedin'  => $aspect === '16:9'
+                ? "LinkedIn feed video: professional, clear narration cue, no music swells, executive framing, {$orientation}"
+                : "LinkedIn-native short: professional, clear narration cue, no music swells, {$orientation}",
+            'x', 'twitter' => "X video: scroll-stopping first frame, captioned-by-default mindset, {$orientation}",
+            default     => "Short-form {$orientation}, brand-consistent",
         };
 
         return sprintf(
-            '%d-second short-form vertical video for "%s" on %s. %s.%s Subject: %s. Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s.',
+            '%d-second %s video for "%s" on %s. %s.%s Subject: %s. Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s.',
             5,
+            $orientation,
             $brand->name,
             ucfirst($draft->platform),
             $platformHint,
             $directionHint,
             $bodyLead,
         );
+    }
+
+    private function orientationLabel(string $aspect): string
+    {
+        return match ($aspect) {
+            '16:9' => 'landscape 16:9',
+            '1:1'  => 'square 1:1',
+            default => 'vertical 9:16',
+        };
+    }
+
+    /** Human label for the video format on each platform — used to make
+     *  prompts read naturally ("Instagram Reel" vs "LinkedIn feed video"). */
+    private function videoFormLabel(string $platform, string $aspect): string
+    {
+        $platform = strtolower($platform);
+        if ($aspect === '16:9') {
+            return match ($platform) {
+                'youtube' => 'long-form video',
+                'linkedin' => 'feed video',
+                'facebook' => 'feed video',
+                'instagram' => 'feed video',
+                default => 'video',
+            };
+        }
+        // vertical
+        return match ($platform) {
+            'instagram', 'facebook' => 'Reel',
+            'youtube' => 'Short',
+            default => 'short-form video',
+        };
     }
 }

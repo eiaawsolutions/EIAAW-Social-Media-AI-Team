@@ -58,8 +58,9 @@ class BrandVideoComposer
      * @param  string $sourceVideoUrl  FAL CDN URL of the raw video
      * @param  string $voiceoverUrl    FAL TTS audio URL
      * @param  array<int,array{text:string,start:float,end:float}> $chunks  word-level timings
-     * @param  string $platform        target social platform (drives aspect)
+     * @param  string $platform        target social platform (drives safe-zone hints)
      * @param  int $draftId            for music pick + work-dir naming
+     * @param  string $aspectRatio     '9:16' | '16:9' | '1:1' — drives subtitle Y, scale cap, logo position
      *
      * @throws RuntimeException
      */
@@ -69,6 +70,7 @@ class BrandVideoComposer
         array $chunks,
         string $platform,
         int $draftId,
+        string $aspectRatio = '9:16',
     ): string {
         $workDir = $this->workDir($draftId);
 
@@ -105,6 +107,7 @@ class BrandVideoComposer
             srtPath: $srtPath,
             hasMusic: $musicPath !== null,
             platform: $platform,
+            aspectRatio: $aspectRatio,
         );
 
         $args[] = '-filter_complex';
@@ -157,11 +160,22 @@ class BrandVideoComposer
      *   Without music:
      *     [1:a]          volume → [aout]
      */
-    private function buildFilterComplex(string $srtPath, bool $hasMusic, string $platform): string
+    private function buildFilterComplex(string $srtPath, bool $hasMusic, string $platform, string $aspectRatio = '9:16'): string
     {
-        // Vertical-platform safe zones (TikTok action rail, IG bottom UI):
-        // raise subtitles to ~74% of frame height. YouTube horizontal: 86%.
-        $subtitleY = $this->isVerticalPlatform($platform) ? 'h*0.74' : 'h*0.82';
+        // Aspect-aware safe zones. With Alignment=2 (bottom-center) the
+        // subtitle MarginV is the padding from the bottom edge in script
+        // pixels. 9:16 vertical needs to clear the platform bottom UI (IG
+        // action rail, TikTok caption stack — ~24% of frame); 16:9
+        // landscape only needs to clear lower-thirds and YouTube/LinkedIn
+        // playback chrome; 1:1 sits between the two.
+        $isVertical = $aspectRatio === '9:16';
+        $isSquare = $aspectRatio === '1:1';
+        $marginV = $isVertical ? 120 : ($isSquare ? 100 : 80);
+
+        // Width cap: keep verticals at 1080×1920 max, landscapes at
+        // 1920×1080 max. Wan-2.6 returns 720p natively so this is a clamp,
+        // not an upscale. 1:1 reuses the vertical ceiling.
+        $widthCap = $aspectRatio === '16:9' ? 1920 : 1080;
 
         $srtEsc = $this->ffmpegEscapeFilterPath($srtPath);
 
@@ -170,12 +184,12 @@ class BrandVideoComposer
         // shadow. BorderStyle=1 = outline+shadow; OutlineColour ASS bgr-hex.
         $subStyle = "FontName=DejaVu Sans,FontSize=22,PrimaryColour=&H00FFFFFF,"
             . "OutlineColour=&H00000000,BackColour=&H88000000,Bold=1,BorderStyle=1,"
-            . "Outline=2,Shadow=1,Alignment=2,MarginV=120";
+            . "Outline=2,Shadow=1,Alignment=2,MarginV={$marginV}";
 
         // Logo: keep aspect, bottom-right with 32px padding.
         // Logo width ~8% of input video width.
         $videoChain =
-            "[0:v]scale='if(gt(iw,1080),1080,iw)':'-2'[v0];" .
+            "[0:v]scale='if(gt(iw,{$widthCap}),{$widthCap},iw)':'-2'[v0];" .
             "[2:v]scale='main_w*0.08':-1[lg];" .
             "[v0][lg]overlay=W-w-32:H-h-32:format=auto:eval=init[v1];" .
             "[v1]subtitles='{$srtEsc}':force_style='{$subStyle}'[vout]";
@@ -273,12 +287,6 @@ class BrandVideoComposer
 
         $idx = crc32((string) $draftId) % count($files);
         return $files[$idx];
-    }
-
-    private function isVerticalPlatform(string $platform): bool
-    {
-        return in_array(strtolower($platform), ['tiktok', 'instagram', 'threads', 'youtube'], true);
-        // 'youtube' covers Shorts. Long-form YouTube horizontal isn't a Designer/Video target today.
     }
 
     private function ffmpegEscapeFilterPath(string $path): string
