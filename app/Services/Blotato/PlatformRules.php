@@ -3,6 +3,7 @@
 namespace App\Services\Blotato;
 
 use App\Models\Draft;
+use App\Models\PlatformConnection;
 
 /**
  * Single source of truth for per-platform Blotato + native API publishability
@@ -114,14 +115,20 @@ final class PlatformRules
     /**
      * Evaluate a draft against its platform's publishability rules.
      *
-     * Only checks rules that block any auto-post regardless of account type.
-     * Connection-level concerns (Facebook pageId vs personal, Pinterest
-     * boardId, etc) are handled at the connection layer (target_overrides),
-     * not here — both personal and Page accounts are valid.
+     * Two layers of checks:
+     *   1. Draft-level — rules that block any auto-post regardless of which
+     *      account it goes to (caption length, hashtag count, media).
+     *   2. Connection-level — rules that depend on the platform_connection
+     *      target_overrides. Currently: Facebook requires `pageId`,
+     *      Pinterest requires `boardId`. Both Blotato adapters reject
+     *      HTTP 400 without these. Caller may omit $connection to skip
+     *      connection-level checks (back-compat with pre-2026-05-07
+     *      callers); when omitted, those checks are silently skipped and
+     *      surface only at publish time.
      *
      * @return array{passed:bool, violations:array<int,array{kind:string,reason:string,detail:array}>}
      */
-    public static function evaluate(Draft $draft): array
+    public static function evaluate(Draft $draft, ?PlatformConnection $connection = null): array
     {
         $rule = self::for((string) $draft->platform);
         $violations = [];
@@ -203,6 +210,47 @@ final class PlatformRules
                         'platform' => $draft->platform,
                         'media_present' => $mediaCount,
                         'media_required' => $rule['media_min'],
+                    ],
+                ];
+            }
+        }
+
+        // ── Connection-level required overrides ──
+        // Facebook (Pages API): Blotato requires `pageId` on every post,
+        // even for personal-feed connections. Verified live 2026-05-07
+        // after 4 prod posts failed HTTP 400 "body.post.target must have
+        // required property 'pageId'".
+        // Pinterest: requires `boardId`. Same shape.
+        // Without a connection passed in, we can't check these — caller's
+        // back-compat path. Surfaces at publish-time instead via Blotato 400.
+        if ($connection !== null) {
+            $platform = strtolower((string) $draft->platform);
+            $overrides = is_array($connection->target_overrides) ? $connection->target_overrides : [];
+
+            if ($platform === 'facebook' && empty($overrides['pageId'])) {
+                $violations[] = [
+                    'kind' => 'missing_facebook_page_id',
+                    'reason' => 'Facebook requires a Page id. '
+                        . 'Set platform_connection.target_overrides.pageId to the numeric Facebook Page id '
+                        . '(NOT the Blotato accountId, NOT a username) in /agency/platforms → Target overrides. '
+                        . 'Personal-profile auto-posting was deprecated by Meta in 2024.',
+                    'detail' => [
+                        'platform' => 'facebook',
+                        'connection_id' => $connection->id,
+                        'override_keys_present' => array_keys($overrides),
+                    ],
+                ];
+            }
+
+            if ($platform === 'pinterest' && empty($overrides['boardId'])) {
+                $violations[] = [
+                    'kind' => 'missing_pinterest_board_id',
+                    'reason' => 'Pinterest requires a board id. '
+                        . 'Set platform_connection.target_overrides.boardId in /agency/platforms → Target overrides.',
+                    'detail' => [
+                        'platform' => 'pinterest',
+                        'connection_id' => $connection->id,
+                        'override_keys_present' => array_keys($overrides),
                     ],
                 ];
             }

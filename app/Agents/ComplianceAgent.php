@@ -126,20 +126,34 @@ class ComplianceAgent extends BaseAgent
     // ─── Check 1: platform publishability (Blotato + native API rules) ────
     // Pre-flight check that catches the deterministic Blotato/native-API
     // rejections — caption length, hashtag count, malformed hashtag arrays,
-    // and missing media on platforms that mandate it. Runs first so we never
-    // burn LLM tokens on a draft that physically can't publish. Closes the
-    // gap that produced 4 missing-media prod failures on 2026-05-05.
+    // missing media on platforms that mandate it, AND missing required
+    // connection target_overrides (Facebook pageId, Pinterest boardId).
+    // Runs first so we never burn LLM tokens on a draft that physically
+    // can't publish.
     //
-    // Connection-level concerns (Facebook Page pageId vs personal-profile
-    // no-pageId, Pinterest boardId) are NOT enforced here — both personal
-    // and business accounts are valid and the routing is owned by the
-    // connection's target_overrides. If a connection is misconfigured, that
-    // surfaces at publish time as an operator-fixable error, not a
-    // compliance failure.
+    // History note: pre-2026-05-07 this skipped connection-level checks on
+    // the rationale that personal profiles route without pageId. That was
+    // wrong for Facebook — Meta's Pages API has required pageId since
+    // 2024 (verified live 2026-05-07: 4 prod posts hit HTTP 400 "body.post
+    // .target must have required property 'pageId'"). PlatformRules now
+    // accepts the connection so these checks fire at compliance time
+    // instead of at publish time.
 
     private function checkPlatformPublishability(Draft $draft, Brand $brand): ComplianceCheck
     {
-        $eval = PlatformRules::evaluate($draft);
+        // Resolve the active platform_connection for this draft's platform
+        // so PlatformRules can verify connection-level required overrides.
+        // We use the most-recently-active connection. If the brand has zero
+        // connections for this platform, evaluate() runs draft-level checks
+        // only — the missing-connection state will surface at scheduling
+        // time, not as a compliance failure.
+        $connection = \App\Models\PlatformConnection::where('brand_id', $brand->id)
+            ->where('platform', $draft->platform)
+            ->where('status', 'active')
+            ->orderByDesc('updated_at')
+            ->first();
+
+        $eval = PlatformRules::evaluate($draft, $connection);
         $passed = $eval['passed'];
 
         if ($passed) {

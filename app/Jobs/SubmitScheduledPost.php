@@ -124,7 +124,7 @@ class SubmitScheduledPost implements ShouldQueue
         // before the Blotato call. This stops the YouTube `TypeError: Failed
         // to parse URL from undefined` (failed/450758 class) and the IG/TikTok
         // text-only 422s from ever reaching Blotato.
-        $eval = PlatformRules::evaluate($post->draft);
+        $eval = PlatformRules::evaluate($post->draft, $post->platformConnection);
         if (! $eval['passed']) {
             $reasons = collect($eval['violations'])->pluck('reason')->implode(' | ');
             $this->markFailed($post, 'Publishability gate (pre-Blotato): ' . substr($reasons, 0, 250));
