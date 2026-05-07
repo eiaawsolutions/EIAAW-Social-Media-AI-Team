@@ -249,7 +249,12 @@ class BlotatoClient
             ],
             'tiktok' => [
                 'targetType' => 'tiktok',
-                'privacyLevel' => 'SELF_ONLY', // safest default — operator lifts to PUBLIC_TO_EVERYONE
+                // 2026-05-07: flipped from SELF_ONLY → PUBLIC_TO_EVERYONE per
+                // operator decision. Posts are now visible on the public feed
+                // immediately. Operator can still narrow per-connection via
+                // platform_connections.target_overrides.privacyLevel
+                // (PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS | FOLLOWER_OF_CREATOR | SELF_ONLY).
+                'privacyLevel' => 'PUBLIC_TO_EVERYONE',
                 'disabledComments' => false,
                 'disabledDuet' => false,
                 'disabledStitch' => false,
@@ -260,8 +265,14 @@ class BlotatoClient
             'youtube' => [
                 'targetType' => 'youtube',
                 'title' => $this->extractYoutubeTitle($text),
-                'privacyStatus' => 'private', // safest first run
-                'shouldNotifySubscribers' => false,
+                // 2026-05-07: flipped from private → public per operator
+                // decision. Operator can override per-connection via
+                // platform_connections.target_overrides.privacyStatus
+                // (public | unlisted | private).
+                'privacyStatus' => 'public',
+                // Subscribers get notified on first publish — surfaces the
+                // post in their YT app inbox. Operator can override.
+                'shouldNotifySubscribers' => true,
                 'isMadeForKids' => false,
                 'containsSyntheticMedia' => true, // we're posting AI-generated
             ],
