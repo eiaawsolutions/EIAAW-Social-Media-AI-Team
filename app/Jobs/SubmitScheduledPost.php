@@ -131,6 +131,25 @@ class SubmitScheduledPost implements ShouldQueue
             return;
         }
 
+        // Video-format integrity gate — added 2026-05-08 after SP25 (YouTube)
+        // got auto-removed because we sent a stamped JPEG to /v2/posts on a
+        // calendar entry asking for format=reel. Designer's regen action had
+        // overwritten asset_url=mp4 with asset_url=jpeg, and YouTube's spam
+        // classifier scrubbed the resulting 1-frame "video".
+        //
+        // Refusal is loud + actionable: the operator sees "Draft has stale
+        // image asset on a video format. Re-run VideoAgent." in the failed
+        // list. Auto-redraft will route to regenerate_media on the next tick.
+        if ($this->draftNeedsVideoButHasImage($post->draft)) {
+            $this->markFailed(
+                $post,
+                'Video-format draft has a still image as its primary asset (asset_url is .jpg/.png/etc). '
+                . 'Calendar entry asks for format=reel|video|story on a video-capable platform but the publishable URL is not an mp4. '
+                . 'Re-run VideoAgent on this draft (use the "Generate video" action in /agency/drafts).'
+            );
+            return;
+        }
+
         // Upload media first (Blotato requires its own URLs in createPost).
         $blotatoMediaUrls = [];
         $sourceMediaUrls = $this->collectDraftMediaUrls($post->draft);
@@ -388,6 +407,43 @@ class SubmitScheduledPost implements ShouldQueue
             }
         }
         return null;
+    }
+
+    /**
+     * True iff the draft's calendar entry asks for a video format on a
+     * video-capable platform AND the draft.asset_url currently points to a
+     * still image (jpeg/png/webp/gif). Used by the publish-time integrity
+     * gate to refuse drafts where the image was regenerated but VideoAgent
+     * never re-ran — sending a JPEG to YouTube/TikTok as a "video" gets
+     * auto-removed by their spam classifiers (see SP25 incident 2026-05-07).
+     */
+    private function draftNeedsVideoButHasImage(\App\Models\Draft $draft): bool
+    {
+        $entry = $draft->calendarEntry;
+        if (! $entry) return false;
+        $format = strtolower((string) ($entry->format ?? ''));
+        if (! in_array($format, ['reel', 'video', 'story'], true)) return false;
+        if (! \App\Services\Imagery\FalAiClient::platformAcceptsVideo($draft->platform)) return false;
+
+        $url = strtolower((string) ($draft->asset_url ?? ''));
+        if ($url === '') return false; // missing-media gate handles this
+
+        // Treat any explicit video extension as fine. URLs without an
+        // extension (Blotato sometimes returns these for re-hosted media)
+        // are accepted optimistically — the upstream PlatformRules media
+        // check + Blotato's own validation are the next net.
+        $videoExts = ['.mp4', '.mov', '.webm', '.m4v'];
+        foreach ($videoExts as $ext) {
+            if (str_ends_with($url, $ext)) return false;
+        }
+        $imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic'];
+        foreach ($imageExts as $ext) {
+            if (str_ends_with($url, $ext)) return true;
+        }
+
+        // No recognised extension — let it through. Better than false-
+        // failing on Blotato URLs that omit the extension.
+        return false;
     }
 
     /**

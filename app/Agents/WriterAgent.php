@@ -114,6 +114,13 @@ class WriterAgent extends BaseAgent
             $body = mb_substr((string) ($payload['body'] ?? ''), 0, $bodyCap);
             $hashtags = array_slice($payload['hashtags'] ?? [], 0, 30);
 
+            // Branding artefacts — Writer v1.3 produces these alongside the
+            // body. They get stamped onto the image (quote) and read aloud
+            // over the video (voiceover). Persist as branding_payload so
+            // QuoteWriter::distil() short-circuits and Designer/Video both
+            // consume the same authored text.
+            $brandingPayload = self::extractBrandingPayload($payload);
+
             $promptInputs = [
                 'calendar_entry_id' => $entry->id,
                 'brand_style_version' => $brand->currentStyle->version ?? null,
@@ -137,6 +144,7 @@ class WriterAgent extends BaseAgent
                         'body' => $body,
                         'hashtags' => $hashtags,
                         'mentions' => $payload['mentions'] ?? [],
+                        'branding_payload' => $brandingPayload,
                         // Refresh provenance — this is a new generation, even
                         // though the row id is preserved.
                         'model_id' => $result->modelId,
@@ -166,6 +174,7 @@ class WriterAgent extends BaseAgent
                 'body' => $body,
                 'hashtags' => $hashtags,
                 'mentions' => $payload['mentions'] ?? [],
+                'branding_payload' => $brandingPayload,
                 // Provenance
                 'agent_role' => $this->role(),
                 'model_id' => $result->modelId,
@@ -197,6 +206,43 @@ class WriterAgent extends BaseAgent
             'cost_usd' => $result->costUsd,
             'latency_ms' => $result->latencyMs,
         ]);
+    }
+
+    /**
+     * Extract + normalise the branding artefacts (quote + voiceover) from
+     * a Writer JSON payload into the shape stored on draft.branding_payload.
+     * Strips wrapping quote marks and trims whitespace; preserves the rest
+     * verbatim so the same text the operator sees in /agency/drafts is
+     * what gets stamped on the image / spoken in the video.
+     *
+     * Returns null only if BOTH fields are missing — in that case Writer's
+     * v1.3 schema gate will already have rejected the response upstream.
+     * The null return is a defensive last-resort that lets QuoteWriter
+     * fall back to its own distillation rather than blowing up Designer.
+     *
+     * @param  array<string,mixed>  $payload  raw Writer JSON
+     * @return array{quote:string, voiceover:string, distilled_at:string, source:string}|null
+     */
+    private static function extractBrandingPayload(array $payload): ?array
+    {
+        $quote = trim((string) ($payload['quote'] ?? ''));
+        $voiceover = trim((string) ($payload['voiceover'] ?? ''));
+
+        // Strip wrapping quote characters the model occasionally adds
+        // despite the schema description forbidding them.
+        $quote = preg_replace('/^[\"\'\x{201C}\x{2018}]+|[\"\'\x{201D}\x{2019}]+$/u', '', $quote) ?? $quote;
+        $quote = trim($quote);
+
+        if ($quote === '' && $voiceover === '') {
+            return null;
+        }
+
+        return [
+            'quote' => $quote,
+            'voiceover' => $voiceover,
+            'distilled_at' => now()->toIso8601String(),
+            'source' => 'writer', // distinguishes Writer-v1.3 cache from QuoteWriter fallback
+        ];
     }
 
     /**

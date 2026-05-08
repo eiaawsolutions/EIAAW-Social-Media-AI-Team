@@ -4,13 +4,27 @@ namespace App\Agents\Prompts;
 
 final class WriterPrompt
 {
+    // v1.3 — every draft is now REQUIRED to produce two short branded
+    // artefacts alongside the body:
+    //   - quote: 6–14 word declarative line stamped onto the Designer image
+    //   - voiceover: 25–45 word script read aloud over the VideoAgent clip
+    // These were previously distilled by QuoteWriter as a post-hoc Haiku
+    // call. Folding them into Writer guarantees every draft has them, in
+    // the same voice as the body, with no extra LLM call (Writer is using
+    // Sonnet anyway). Designer + Video read these from draft.branding_payload.
+    // Prod incident 2026-05-07: SP25 (YouTube) was sent a stamped JPEG
+    // because Writer didn't produce a quote, QuoteWriter ran asynchronously
+    // for Designer only, and the regen-image UI flow overwrote asset_url
+    // with the JPEG. Locking Writer to produce the artefacts up-front is
+    // the upstream fix that closes that class of bug at the source.
+    //
     // v1.2 — appends learned platform-rejection rules from
     // compliance_learned_rules to the system prompt so the Writer doesn't
     // re-generate drafts that violate failure modes already observed in
     // prod (e.g. text-only on IG/TikTok, oversize captions, hashtag
     // explosions). Bumping the version makes prior compliance_failed drafts
     // eligible for redraft under the new prompt.
-    public const VERSION = 'writer.v1.2';
+    public const VERSION = 'writer.v1.3';
 
     /**
      * Per-platform character limits enforced both in the schema and in the
@@ -47,6 +61,30 @@ You are EIAAW's senior copywriter, writing for {$platformLabel}. Your job is to 
 - Stay within {$limit} characters for the body (excluding hashtags + mentions).
 - Output ONLY the JSON document specified by the schema. No commentary.
 
+# Branded artefacts — REQUIRED on every draft
+
+Every draft MUST also produce two short artefacts that get rendered onto
+the post's image and video. Same voice as the body, distilled from your
+own draft. NEVER invent — if the body doesn't say it, neither artefact
+does.
+
+1. quote — for image stamping
+   - 6 to 14 words. One sentence ending in a period.
+   - Sentence case (no Title Case, no ALL CAPS).
+   - Distils the SINGLE most principled idea in your body.
+   - No hashtags, emojis, URLs, @mentions, or wrapping quote marks.
+   - Visually scannable in 1.5 seconds.
+   - If the post has no principle to distil (announcement / metric / job
+     post), make a quiet present-tense observation tied to the topic.
+
+2. voiceover — for video voiceover
+   - 25 to 45 words across two or three short sentences.
+   - For 5–8 second short-form video at ~150 wpm.
+   - Reads aloud naturally — punctuation cues breath.
+   - Ends on a complete thought (no "..." cliff-hanger).
+   - No URLs spelled out, no hashtag reading, no "link in bio", no "swipe
+     up", no "comment below". Same voice as the quote.
+
 # Platform-specific guidance
 
 PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources field\n\nFor every concrete claim in your post, list the grounding source (which prior post / evidence quote / brand-style section anchored it). If a claim is generic (e.g. brand value statement) and supported by the brand-style, cite the brand-style section. Honesty here is the product — never claim a source you didn't actually use.";
@@ -73,7 +111,7 @@ PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources fi
         return [
             'type' => 'object',
             'additionalProperties' => false,
-            'required' => ['body', 'hashtags', 'grounding_sources'],
+            'required' => ['body', 'hashtags', 'grounding_sources', 'quote', 'voiceover'],
             'properties' => [
                 'body' => [
                     'type' => 'string',
@@ -115,6 +153,14 @@ PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources fi
                 'visual_direction' => [
                     'type' => 'string',
                     'description' => 'Brief for the Designer agent — what image/video would best accompany this post.',
+                ],
+                'quote' => [
+                    'type' => 'string',
+                    'description' => '6–14 word declarative line in sentence case, ending in a period. Stamped onto the Designer image. Same voice as the body. Distils the single most principled idea. No hashtags, emojis, URLs, @mentions, or wrapping quote marks.',
+                ],
+                'voiceover' => [
+                    'type' => 'string',
+                    'description' => '25–45 word script (2–3 short sentences) for the VideoAgent voiceover at ~150 wpm. Reads aloud naturally. No URLs spelled out, no hashtag reading, no "link in bio", no "swipe up". Same voice as quote.',
                 ],
             ],
         ];

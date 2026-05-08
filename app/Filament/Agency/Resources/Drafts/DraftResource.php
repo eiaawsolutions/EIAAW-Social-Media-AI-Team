@@ -278,9 +278,9 @@ class DraftResource extends Resource
                     ->color('gray')
                     ->visible(fn (Draft $r) => ! in_array($r->status, ['published', 'rejected']))
                     ->requiresConfirmation()
-                    ->modalDescription('Picks the best matching image from your brand asset library. Falls back to FAL flux-schnell ($0.003) only if no library asset matches.')
+                    ->modalDescription(fn (Draft $r) => self::regenModalDescription($r, 'library-first'))
                     ->action(function (Draft $r): void {
-                        @set_time_limit(180);
+                        @set_time_limit(420);
                         if (! empty($r->asset_url)) {
                             $r->update(['asset_url' => null]);
                         }
@@ -304,13 +304,23 @@ class DraftResource extends Resource
                                 ->send();
                             return;
                         }
+                        // For video formats, the still is the keyframe; we
+                        // MUST re-run VideoAgent so asset_url ends up as the
+                        // mp4, not the just-regenerated jpeg. Skipping this
+                        // is what produced the YouTube "static-image-as-video"
+                        // takedown on 2026-05-07. Soft-fail: if Video fails,
+                        // we'll surface that — the operator still has the
+                        // image and can retry video manually.
+                        $videoNote = self::rerunVideoIfNeeded($r);
+
                         $source = $result->data['source'] ?? 'fal';
                         \Filament\Notifications\Notification::make()
                             ->title('Image ready · ' . $source)
                             ->body(sprintf(
-                                '$%.4f · %dms',
+                                '$%.4f · %dms%s',
                                 $result->data['cost_usd'] ?? 0,
                                 $result->data['latency_ms'] ?? 0,
+                                $videoNote,
                             ))
                             ->success()
                             ->send();
@@ -322,9 +332,9 @@ class DraftResource extends Resource
                     ->color('warning')
                     ->visible(fn (Draft $r) => ! in_array($r->status, ['published', 'rejected']))
                     ->requiresConfirmation()
-                    ->modalDescription('Bypasses the brand asset library and goes straight to FAL.AI. Use when you want bespoke art for this draft. Cost ~$0.003 (flux-schnell) or up to $0.04 (flux-pro / recraft) depending on configured model.')
+                    ->modalDescription(fn (Draft $r) => self::regenModalDescription($r, 'force-fal'))
                     ->action(function (Draft $r): void {
-                        @set_time_limit(180);
+                        @set_time_limit(420);
                         if (! empty($r->asset_url)) {
                             $r->update(['asset_url' => null]);
                         }
@@ -349,13 +359,18 @@ class DraftResource extends Resource
                                 ->send();
                             return;
                         }
+                        // See pickImage action above — same rationale: keep
+                        // asset_url=mp4 for video formats by re-running Video.
+                        $videoNote = self::rerunVideoIfNeeded($r);
+
                         \Filament\Notifications\Notification::make()
                             ->title('AI image ready')
                             ->body(sprintf(
-                                '$%.4f · %dms · model %s',
+                                '$%.4f · %dms · model %s%s',
                                 $result->data['cost_usd'] ?? 0,
                                 $result->data['latency_ms'] ?? 0,
                                 $result->data['model'] ?? '?',
+                                $videoNote,
                             ))
                             ->success()
                             ->send();
@@ -507,6 +522,89 @@ class DraftResource extends Resource
             ->whereHas('brand', function (Builder $q) use ($workspaceId) {
                 $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
             });
+    }
+
+    /**
+     * Modal copy for the regen-image actions. When the calendar entry is a
+     * video format (reel/video/story) AND the platform accepts video, we
+     * tell the operator that VideoAgent will also re-run — otherwise
+     * regenerating the still alone leaves asset_url=jpeg on a video draft,
+     * which YouTube/TikTok scrub as static-image-as-video.
+     */
+    private static function regenModalDescription(Draft $draft, string $mode): string
+    {
+        $base = $mode === 'force-fal'
+            ? 'Bypasses the brand asset library and goes straight to FAL.AI. Use when you want bespoke art for this draft. Cost ~$0.003 (flux-schnell) or up to $0.04 (flux-pro / recraft) depending on configured model.'
+            : 'Picks the best matching image from your brand asset library. Falls back to FAL flux-schnell ($0.003) only if no library asset matches.';
+
+        if (self::draftNeedsVideo($draft)) {
+            $base .= ' Because this draft is a video format on a video-capable platform, VideoAgent will also re-run after the image is ready (~$0.50, ~30s) so the publish target stays an mp4.';
+        }
+        return $base;
+    }
+
+    /**
+     * Re-run VideoAgent if (and only if) the draft's calendar entry asks
+     * for a video format AND the platform accepts video AND there isn't
+     * already a video at asset_url after Designer's run.
+     *
+     * Returns a short status note suffix for the operator notification.
+     * Soft-fail: any VideoAgent error is logged + surfaced in the note,
+     * never thrown — the operator already has the regenerated image and
+     * can click "Generate video" manually if this didn't work.
+     */
+    private static function rerunVideoIfNeeded(Draft $draft): string
+    {
+        if (! self::draftNeedsVideo($draft)) {
+            return '';
+        }
+
+        // If Designer already returned an mp4 (e.g. brand-asset-library
+        // found a matching video and BlotatoClient::uploadMediaFromUrl
+        // returned a Blotato-hosted video URL), there's nothing to do.
+        $current = (string) ($draft->fresh()->asset_url ?? '');
+        $currentLower = strtolower($current);
+        if ($current !== '' && (
+            str_ends_with($currentLower, '.mp4')
+            || str_ends_with($currentLower, '.mov')
+            || str_ends_with($currentLower, '.webm')
+        )) {
+            return ' · video already attached';
+        }
+
+        try {
+            $videoResult = app(\App\Agents\VideoAgent::class)->run($draft->brand, [
+                'draft_id' => $draft->id,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('DraftResource: VideoAgent re-run after image regen failed', [
+                'draft_id' => $draft->id,
+                'error' => $e->getMessage(),
+            ]);
+            return ' · video re-run crashed (click "Generate video" to retry)';
+        }
+
+        if (! $videoResult->ok) {
+            return ' · video re-run failed: ' . substr((string) $videoResult->errorMessage, 0, 80);
+        }
+
+        $videoCost = $videoResult->data['cost_usd'] ?? 0;
+        return ' · video ready · +$' . number_format((float) $videoCost, 4);
+    }
+
+    /**
+     * Detector: should this draft have an mp4 as its primary asset_url?
+     * Mirrors the same condition DraftCalendarEntry uses (calendar entry
+     * format + platform-accepts-video) so the regen UI matches the
+     * autonomous pipeline's behaviour.
+     */
+    private static function draftNeedsVideo(Draft $draft): bool
+    {
+        $entry = $draft->calendarEntry;
+        if (! $entry) return false;
+        $format = strtolower((string) ($entry->format ?? ''));
+        if (! in_array($format, ['reel', 'video', 'story'], true)) return false;
+        return \App\Services\Imagery\FalAiClient::platformAcceptsVideo($draft->platform);
     }
 
     public static function getPages(): array
