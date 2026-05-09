@@ -217,12 +217,19 @@ class RedraftFailedDraft implements ShouldQueue
     {
         $kinds = $this->collectKinds($failures);
 
-        $rewriteableKinds = array_diff($kinds, ['media_required']);
+        // Media-only failures route to regenerate_media (Designer/Video).
+        // Both kinds describe the same condition: the draft needs an asset
+        // it doesn't have. media_required = platform-mandated (IG/TikTok/YT
+        // text-only refusal). calendar_format_media_missing = calendar entry
+        // says single_image/carousel/reel/video/story but asset_url is empty
+        // even on text-permitting platforms (LinkedIn / Threads / Facebook).
+        $mediaKinds = ['media_required', 'calendar_format_media_missing'];
+        $rewriteableKinds = array_diff($kinds, $mediaKinds);
         $hasRewriteable = !empty($rewriteableKinds);
 
         if ($hasRewriteable) return 'rewrite';
 
-        if (in_array('media_required', $kinds, true)) return 'regenerate_media';
+        if (array_intersect($kinds, $mediaKinds)) return 'regenerate_media';
 
         return 'rewrite';
     }

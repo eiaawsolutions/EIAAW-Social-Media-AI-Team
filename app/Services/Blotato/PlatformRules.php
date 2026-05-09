@@ -215,6 +215,53 @@ final class PlatformRules
             }
         }
 
+        // ── Calendar-format media intent ──
+        // The calendar entry's `format` declares the operator's intent
+        // (single_image / carousel / reel / video / story). When the intent
+        // is a media format, the draft MUST have an asset_url — regardless
+        // of whether the platform technically allows text-only.
+        //
+        // Why this is separate from the platform-level `media_required`
+        // rule above: LinkedIn + Threads + Facebook + X all accept
+        // text-only posts (rule['media_required']=false), so the existing
+        // gate doesn't block a text-only post on those platforms. But if
+        // the operator's calendar said "single_image", shipping naked text
+        // is a quiet failure of intent — the post has no visual anchor on
+        // a feed where every other post does, and the operator wonders
+        // why their content looks half-finished.
+        //
+        // Verified live 2026-05-09: 25 of 39 published prod posts shipped
+        // text-only when the calendar entry asked for media. 12 of 18
+        // currently-queued posts will repeat the failure. This gate stops
+        // both: compliance flips them to compliance_failed (so the redraft
+        // loop can re-run Designer/Video), and the publish-time gate in
+        // SubmitScheduledPost catches anything that slipped through.
+        $entry = $draft->calendarEntry;
+        if ($entry !== null) {
+            $entryFormat = strtolower((string) ($entry->format ?? ''));
+            $mediaFormats = ['single_image', 'carousel', 'reel', 'video', 'story'];
+            if (in_array($entryFormat, $mediaFormats, true) && self::countMedia($draft) === 0) {
+                $videoFormats = ['reel', 'video', 'story'];
+                $needsVideo = in_array($entryFormat, $videoFormats, true);
+                $violations[] = [
+                    'kind' => $needsVideo ? 'media_required' : 'calendar_format_media_missing',
+                    'reason' => sprintf(
+                        'Calendar entry asks for format=%s but draft has no asset_url. '
+                        . '%s must attach %s before publish — or change the calendar entry format to text_only.',
+                        $entryFormat,
+                        $needsVideo ? 'VideoAgent (and Designer for the keyframe)' : 'DesignerAgent',
+                        $needsVideo ? 'a video (.mp4)' : 'an image',
+                    ),
+                    'detail' => [
+                        'platform' => $draft->platform,
+                        'calendar_format' => $entryFormat,
+                        'expected_media_type' => $needsVideo ? 'video' : 'image',
+                        'asset_url_present' => false,
+                    ],
+                ];
+            }
+        }
+
         // ── Connection-level required overrides ──
         // Facebook (Pages API): Blotato requires `pageId` on every post,
         // even for personal-feed connections. Verified live 2026-05-07
