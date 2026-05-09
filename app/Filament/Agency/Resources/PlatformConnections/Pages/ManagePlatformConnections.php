@@ -23,7 +23,7 @@ class ManagePlatformConnections extends ManageRecords
                 ->icon('heroicon-o-arrow-top-right-on-square')
                 ->color('gray')
                 ->outlined()
-                ->url('https://my.blotato.com/accounts', shouldOpenInNewTab: true),
+                ->url('https://my.blotato.com/settings', shouldOpenInNewTab: true),
 
             Action::make('sync')
                 ->label('Sync from Blotato')
