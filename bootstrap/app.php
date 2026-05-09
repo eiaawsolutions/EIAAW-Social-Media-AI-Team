@@ -68,6 +68,16 @@ return Application::configure(basePath: dirname(__DIR__))
             ->everyFiveMinutes()
             ->withoutOverlapping(10)
             ->runInBackground();
+
+        // Weekly competitor intel refresh — Mondays 03:00 UTC, just after
+        // Optimizer (02:00). Pulls competitor ads from Meta Ad Library +
+        // LinkedIn (via Firecrawl) into competitor_ads with a 30-day rolling
+        // window. Strategist consumes both Optimizer recommendation and the
+        // refreshed intel on its next calendar build.
+        $schedule->command('intel:refresh')
+            ->weekly()->mondays()->at('03:00')
+            ->withoutOverlapping(60)
+            ->runInBackground();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(

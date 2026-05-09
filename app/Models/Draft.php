@@ -9,7 +9,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class Draft extends Model
 {
     protected $fillable = [
-        'brand_id', 'calendar_entry_id', 'platform', 'content_type',
+        'brand_id', 'calendar_entry_id', 'parent_draft_id',
+        'platform', 'content_type',
         'body', 'platform_payload', 'hashtags', 'mentions',
         'asset_url', 'asset_urls', 'video_aspect_ratio', 'branding_payload',
         // Provenance
@@ -50,6 +51,16 @@ class Draft extends Model
     public function calendarEntry(): BelongsTo
     {
         return $this->belongsTo(CalendarEntry::class);
+    }
+
+    public function parent(): BelongsTo
+    {
+        return $this->belongsTo(Draft::class, 'parent_draft_id');
+    }
+
+    public function derivatives(): HasMany
+    {
+        return $this->hasMany(Draft::class, 'parent_draft_id');
     }
 
     public function complianceChecks(): HasMany

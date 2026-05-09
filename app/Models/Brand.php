@@ -23,6 +23,8 @@ class Brand extends Model
         'timezone',
         'logo_url',
         'config',
+        'competitors',
+        'competitor_intel_config',
         'archived_at',
     ];
 
@@ -30,6 +32,8 @@ class Brand extends Model
     {
         return [
             'config' => 'array',
+            'competitors' => 'array',
+            'competitor_intel_config' => 'array',
             'archived_at' => 'datetime',
         ];
     }
@@ -98,6 +102,11 @@ class Brand extends Model
     public function performanceUploads(): HasMany
     {
         return $this->hasMany(PerformanceUpload::class);
+    }
+
+    public function competitorAds(): HasMany
+    {
+        return $this->hasMany(CompetitorAd::class);
     }
 
     protected function isArchived(): Attribute

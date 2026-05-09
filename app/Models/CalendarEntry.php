@@ -11,7 +11,7 @@ class CalendarEntry extends Model
     protected $fillable = [
         'content_calendar_id', 'brand_id', 'scheduled_date', 'scheduled_time',
         'topic', 'angle', 'pillar', 'format', 'platforms', 'objective',
-        'visual_direction', 'status',
+        'visual_direction', 'research_brief', 'is_pillar', 'status',
     ];
 
     protected function casts(): array
@@ -19,6 +19,8 @@ class CalendarEntry extends Model
         return [
             'scheduled_date' => 'date',
             'platforms' => 'array',
+            'research_brief' => 'array',
+            'is_pillar' => 'boolean',
         ];
     }
 

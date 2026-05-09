@@ -89,6 +89,34 @@ return [
         'model' => env('VOYAGE_MODEL', 'voyage-3'),
     ],
 
+    // ─── Competitor intelligence ────────────────────────────────────
+    // Used by CompetitorIntelAgent (weekly Mon 03:00 UTC) to fetch
+    // competitor ad creatives. Two providers:
+    //   - Meta Ad Library: official API. Token comes from the brand's
+    //     existing Blotato Meta connection — no new OAuth flow.
+    //   - Firecrawl: scrapes the LinkedIn EU DSA transparency portal
+    //     (LinkedIn has no public ad-library API in 2026).
+    'meta' => [
+        'ad_library_base_url' => env('META_AD_LIBRARY_BASE_URL', 'https://graph.facebook.com/v20.0/ads_archive'),
+        'ad_library_request_timeout' => (int) env('META_AD_LIBRARY_REQUEST_TIMEOUT', 30),
+    ],
+
+    'firecrawl' => [
+        'api_key' => env('FIRECRAWL_API_KEY'),
+        'base_url' => env('FIRECRAWL_BASE_URL', 'https://api.firecrawl.dev/v1'),
+        'request_timeout' => (int) env('FIRECRAWL_REQUEST_TIMEOUT', 60),
+    ],
+
+    'competitor_intel' => [
+        'enabled' => (bool) env('COMPETITOR_INTEL_ENABLED', true),
+        // Cap per-brand fetch volume so a misconfigured handle list can't
+        // burn the workspace's daily LLM/Firecrawl budget on intel alone.
+        'max_handles_per_brand' => (int) env('COMPETITOR_INTEL_MAX_HANDLES', 10),
+        'max_ads_per_handle' => (int) env('COMPETITOR_INTEL_MAX_ADS_PER_HANDLE', 25),
+        // Rolling retention; rows past this are pruned by the agent itself.
+        'retention_days' => (int) env('COMPETITOR_INTEL_RETENTION_DAYS', 30),
+    ],
+
     // ─── Publishing ─────────────────────────────────────────────────
     'blotato' => [
         'api_key' => env('BLOTATO_API_KEY'),

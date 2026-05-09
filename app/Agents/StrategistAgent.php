@@ -5,6 +5,7 @@ namespace App\Agents;
 use App\Agents\Prompts\StrategistPrompt;
 use App\Models\Brand;
 use App\Models\CalendarEntry;
+use App\Models\CompetitorAd;
 use App\Models\ContentCalendar;
 use App\Services\Readiness\SetupReadiness;
 use Illuminate\Support\Carbon;
@@ -79,7 +80,9 @@ class StrategistAgent extends BaseAgent
             : Carbon::now($brand->timezone)->startOfMonth();
         $endsOn = $startsOn->copy()->endOfMonth();
 
-        $userMessage = $this->buildUserMessage($brand, $brandStyle->content_md, $activePlatforms, $pillarMix, $formatMix, $startsOn, $endsOn);
+        $competitorBlock = $this->renderCompetitorSignals($brand);
+
+        $userMessage = $this->buildUserMessage($brand, $brandStyle->content_md, $activePlatforms, $pillarMix, $formatMix, $startsOn, $endsOn, $competitorBlock);
 
         $result = $this->llm->call(
             promptVersion: $this->promptVersion(),
@@ -179,10 +182,15 @@ class StrategistAgent extends BaseAgent
         array $formatMix,
         Carbon $startsOn,
         Carbon $endsOn,
+        string $competitorBlock = '',
     ): string {
         $platformList = implode(', ', $platforms);
         $pillarLines = collect($pillarMix)->map(fn ($pct, $key) => "- $key: ".round($pct * 100)."%")->implode("\n");
         $formatLines = collect($formatMix)->map(fn ($pct, $key) => "- $key: ".round($pct * 100)."%")->implode("\n");
+
+        $competitorSection = $competitorBlock !== ''
+            ? "\n# Competitor signals (last 30 days)\n".$competitorBlock."\n"
+            : '';
 
         return <<<MSG
 BRAND: {$brand->name}
@@ -196,11 +204,44 @@ ACTIVE PLATFORMS: {$platformList}
 
 # Format mix targets
 {$formatLines}
-
+{$competitorSection}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 
 Plan the calendar now. Return one entry per day for the month, distributed across pillars/formats per the mix targets and across the active platforms. Use day_offset = 0 for the first day of the period.
 MSG;
+    }
+
+    /**
+     * Render the most recent competitor ads as a compact, themed block the
+     * Strategist can reason over. Empty string when there's nothing in the
+     * 30-day window — the prompt section is then suppressed entirely so the
+     * model isn't reading a stub header with no data.
+     *
+     * Why we cap to 12 ads (not all 250 a brand might have): token budget +
+     * the model needs themes, not a database dump. We show the freshest 12,
+     * truncated to ~280 chars each, mixing platforms.
+     */
+    private function renderCompetitorSignals(Brand $brand): string
+    {
+        $rows = CompetitorAd::query()
+            ->where('brand_id', $brand->id)
+            ->where('expires_at', '>', now())
+            ->whereNotNull('body')
+            ->orderByDesc('observed_at')
+            ->limit(12)
+            ->get(['platform', 'competitor_label', 'competitor_handle', 'body', 'cta', 'first_seen_at']);
+
+        if ($rows->isEmpty()) return '';
+
+        $lines = $rows->map(function (CompetitorAd $ad) {
+            $label = $ad->competitor_label ?: $ad->competitor_handle;
+            $body = mb_substr(trim((string) $ad->body), 0, 280);
+            $cta = $ad->cta ? " [CTA: {$ad->cta}]" : '';
+            $when = $ad->first_seen_at?->format('M j') ?? 'recent';
+            return "- ({$ad->platform} · {$label} · {$when}) {$body}{$cta}";
+        })->implode("\n");
+
+        return $lines."\n\nUse these as MARKET CONTEXT only — never copy themes, names, or wording. Position 1–2 entries as deliberate counter-positioning anchored in your brand's evidence.";
     }
 }

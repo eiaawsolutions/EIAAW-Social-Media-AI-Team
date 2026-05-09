@@ -24,7 +24,12 @@ final class WriterPrompt
     // prod (e.g. text-only on IG/TikTok, oversize captions, hashtag
     // explosions). Bumping the version makes prior compliance_failed drafts
     // eligible for redraft under the new prompt.
-    public const VERSION = 'writer.v1.3';
+    // v1.4 — when a research_brief is present on the calendar entry, the
+    // user message now includes 5 deepened angles with hook/thesis/evidence/
+    // tension/audience. The Writer is asked to PICK ONE angle and draft from
+    // it (rather than generating from the one-line strategist angle alone).
+    // Falls back gracefully when the brief is null (Researcher off / failed).
+    public const VERSION = 'writer.v1.4';
 
     /**
      * Per-platform character limits enforced both in the schema and in the
@@ -87,7 +92,7 @@ does.
 
 # Platform-specific guidance
 
-PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources field\n\nFor every concrete claim in your post, list the grounding source (which prior post / evidence quote / brand-style section anchored it). If a claim is generic (e.g. brand value statement) and supported by the brand-style, cite the brand-style section. Honesty here is the product — never claim a source you didn't actually use.";
+PROMPT.self::platformGuide($platform)."\n\n# Research brief (when supplied)\n\nIf the user message contains a 'Research brief — 5 angles' block, treat each angle as a candidate direction. Pick the SINGLE angle that best fits the platform + format + objective and draft from it. Use that angle's `evidence` verbatim where it strengthens a claim. Do NOT mash multiple angles together — pick one and commit. If no brief is supplied, draft from the one-line angle on the calendar entry.\n\n# Provenance — grounding_sources field\n\nFor every concrete claim in your post, list the grounding source (which prior post / evidence quote / brand-style section anchored it). If a claim is generic (e.g. brand value statement) and supported by the brand-style, cite the brand-style section. Honesty here is the product — never claim a source you didn't actually use.";
 
         // Append learned-rules memory. Best-effort: if the service or DB is
         // unavailable we still ship the base prompt — the Writer will at
@@ -166,7 +171,7 @@ PROMPT.self::platformGuide($platform)."\n\n# Provenance — grounding_sources fi
         ];
     }
 
-    private static function platformGuide(string $platform): string
+    public static function platformGuide(string $platform): string
     {
         return match ($platform) {
             'linkedin' => "- Open with a specific hook line that earns the click.\n- Short paragraphs. Whitespace = readability.\n- Insight-led, professional-but-human voice. First-person experience > generic advice.\n- 3-5 hashtags at the end.",

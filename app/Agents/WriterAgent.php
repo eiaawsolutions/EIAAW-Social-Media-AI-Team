@@ -319,6 +319,7 @@ class WriterAgent extends BaseAgent
         array $redraftContext,
     ): string {
         $similarBlock = $this->renderSimilarBlock($similar);
+        $researchBlock = $this->renderResearchBrief($entry);
 
         $priorBody = (string) ($redraftContext['prior_body'] ?? '');
         $failures = $redraftContext['failures'] ?? [];
@@ -362,7 +363,7 @@ PRIOR_DRAFT
 - Format: {$entry->format}
 - Objective: {$entry->objective}
 - Visual direction: {$entry->visual_direction}
-
+{$researchBlock}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 
@@ -376,6 +377,7 @@ MSG;
     private function buildUserMessage(Brand $brand, string $brandStyleMd, CalendarEntry $entry, array $similar, string $platform): string
     {
         $similarBlock = $this->renderSimilarBlock($similar);
+        $researchBlock = $this->renderResearchBrief($entry);
 
         return <<<MSG
 BRAND: {$brand->name}
@@ -388,7 +390,7 @@ PLATFORM: {$platform}
 - Format: {$entry->format}
 - Objective: {$entry->objective}
 - Visual direction: {$entry->visual_direction}
-
+{$researchBlock}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 
@@ -397,5 +399,32 @@ PLATFORM: {$platform}
 
 Now draft the post per the schema. Only write the JSON object.
 MSG;
+    }
+
+    /**
+     * Render the ResearcherAgent's 5-angle brief if present, otherwise empty.
+     * The empty case suppresses the section header entirely so the model
+     * isn't reading "Research brief — 5 angles" with no follow-up.
+     */
+    private function renderResearchBrief(CalendarEntry $entry): string
+    {
+        $brief = $entry->research_brief;
+        $angles = is_array($brief['angles'] ?? null) ? $brief['angles'] : [];
+        if (empty($angles)) return '';
+
+        $lines = collect($angles)
+            ->take(5)
+            ->map(function (array $a, int $i): string {
+                $hook = trim((string) ($a['hook'] ?? ''));
+                $thesis = trim((string) ($a['thesis'] ?? ''));
+                $evidence = trim((string) ($a['evidence'] ?? ''));
+                $tension = trim((string) ($a['tension'] ?? ''));
+                $audience = trim((string) ($a['audience'] ?? ''));
+                $idx = $i + 1;
+                return "{$idx}. HOOK: {$hook}\n   THESIS: {$thesis}\n   EVIDENCE: {$evidence}\n   TENSION: {$tension}\n   AUDIENCE: {$audience}";
+            })
+            ->implode("\n\n");
+
+        return "\n# Research brief — 5 angles (pick ONE that best fits the platform/format/objective)\n{$lines}\n";
     }
 }
