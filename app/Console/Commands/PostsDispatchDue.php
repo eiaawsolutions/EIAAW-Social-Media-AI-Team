@@ -6,6 +6,7 @@ use App\Jobs\SubmitScheduledPost;
 use App\Models\ScheduledPost;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Cron entry: every minute, dispatch a SubmitScheduledPost job for every
@@ -65,6 +66,12 @@ class PostsDispatchDue extends Command
             $dispatched++;
         }
 
+        Log::info('posts:dispatch-due tick', [
+            'dispatched' => $dispatched,
+            'queued_due' => $rows->count(),
+            'polls' => $polls->count(),
+            'retries' => $retries->count(),
+        ]);
         $this->info("Dispatched {$dispatched} job(s).");
         return self::SUCCESS;
     }
