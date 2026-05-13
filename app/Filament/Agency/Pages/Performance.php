@@ -7,9 +7,15 @@ use App\Models\Brand;
 use App\Models\PostMetric;
 use App\Models\ScheduledPost;
 use App\Models\Workspace;
+use App\Services\Metrics\MetricsCsvImporter;
+use Filament\Actions\Action;
+use Filament\Forms\Components\FileUpload;
+use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Storage;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Performance — the receipt page. Real metrics from post_metrics, real
@@ -40,6 +46,113 @@ class Performance extends Page
     public function setWindow(int $days): void
     {
         $this->window = max(7, min(90, $days));
+    }
+
+    /**
+     * CSV import + template download. Until v1.1 first-party OAuth pulls
+     * land, this is the canonical path for getting real engagement numbers
+     * onto the dashboard. Operator exports analytics from each platform's
+     * native dashboard (Meta Business Suite, LinkedIn page analytics,
+     * TikTok studio, YT Studio, Threads Insights), pastes the post URL,
+     * uploads. Each row → PostMetric snapshot with source='csv_upload'.
+     */
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('downloadTemplate')
+                ->label('Download CSV template')
+                ->icon('heroicon-o-arrow-down-tray')
+                ->color('gray')
+                ->action(fn (): StreamedResponse => response()->streamDownload(
+                    fn () => print(MetricsCsvImporter::templateCsv()),
+                    'eiaaw-metrics-template.csv',
+                    ['Content-Type' => 'text/csv'],
+                )),
+
+            Action::make('uploadMetrics')
+                ->label('Upload metrics CSV')
+                ->icon('heroicon-o-arrow-up-tray')
+                ->color('primary')
+                ->modalHeading('Upload analytics CSV')
+                ->modalDescription('Export from the platform\'s native analytics, paste the public post URL alongside the counters, upload here. Rows match by platform_post_url against this workspace\'s posts. Empty cells stay empty (we never fabricate zeros).')
+                ->schema([
+                    FileUpload::make('csv')
+                        ->label('CSV file')
+                        ->acceptedFileTypes(['text/csv', 'application/csv', 'application/vnd.ms-excel', 'text/plain'])
+                        ->maxSize(5 * 1024) // 5 MB
+                        ->disk('local')
+                        ->directory('metrics-uploads')
+                        ->preserveFilenames()
+                        ->required(),
+                ])
+                ->action(function (array $data): void {
+                    $relativePath = $data['csv'] ?? null;
+                    if (! $relativePath) {
+                        Notification::make()->title('No file received')->danger()->send();
+                        return;
+                    }
+
+                    $ws = $this->workspace();
+                    if (! $ws) {
+                        Notification::make()->title('No workspace context')->danger()->send();
+                        return;
+                    }
+
+                    $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+                    if ($brandIds->isEmpty()) {
+                        Notification::make()
+                            ->title('No brands in this workspace')
+                            ->body('Add a brand and publish at least one post before uploading metrics.')
+                            ->warning()
+                            ->send();
+                        return;
+                    }
+
+                    $absolutePath = Storage::disk('local')->path($relativePath);
+                    $report = app(MetricsCsvImporter::class)->import($absolutePath, $brandIds);
+
+                    // Tidy up — uploaded CSV has been parsed, no need to keep.
+                    Storage::disk('local')->delete($relativePath);
+
+                    if (isset($report['error'])) {
+                        Notification::make()
+                            ->title('CSV could not be processed')
+                            ->body($report['error'])
+                            ->danger()
+                            ->persistent()
+                            ->send();
+                        return;
+                    }
+
+                    $imported = (int) $report['imported'];
+                    $skippedCount = count($report['skipped']);
+
+                    if ($imported === 0 && $skippedCount === 0) {
+                        Notification::make()
+                            ->title('CSV was empty')
+                            ->body('No data rows found.')
+                            ->warning()
+                            ->send();
+                        return;
+                    }
+
+                    $body = "Imported {$imported} row(s) into post_metrics.";
+                    if ($skippedCount > 0) {
+                        $previewLines = collect(array_slice($report['skipped'], 0, 5))
+                            ->map(fn (array $s) => "Row {$s['row']}: {$s['reason']}")
+                            ->implode("\n");
+                        $more = $skippedCount > 5 ? "\n…and " . ($skippedCount - 5) . ' more.' : '';
+                        $body .= "\n\nSkipped {$skippedCount} row(s):\n{$previewLines}{$more}";
+                    }
+
+                    Notification::make()
+                        ->title($imported > 0 ? 'Metrics imported' : 'No rows imported')
+                        ->body($body)
+                        ->color($imported > 0 ? 'success' : 'warning')
+                        ->persistent()
+                        ->send();
+                }),
+        ];
     }
 
     public function workspace(): ?Workspace
