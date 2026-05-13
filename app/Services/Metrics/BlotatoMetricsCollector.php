@@ -15,11 +15,15 @@ use Illuminate\Support\Facades\Log;
  * processed, but the shape varies per platform. v1 captures whatever
  * Blotato gives us and stores the raw payload for forensics.
  *
- * v1.1: replace this with per-platform first-party OAuth pulls
- * (LinkedIn UGC /socialActions, Facebook Graph /insights, IG Graph /insights,
- * YouTube Data /videos, X /tweets/:id with the paid Basic tier). Until
- * those land, the manual CSV upload at /agency/performance is the
- * canonical "real metrics" path.
+ * v1.1: replace with per-platform first-party OAuth pulls *where the
+ * platform actually allows it* — Facebook Graph /insights, IG Graph
+ * /insights, YouTube Data /videos, X /tweets/:id with the paid Basic
+ * tier. LinkedIn is the exception: r_member_social (read own posts'
+ * engagement) is a closed permission as of 2024 — LinkedIn is not
+ * accepting new requests. Personal-profile metrics require manual CSV
+ * upload until a Company Page migration unlocks the Marketing API.
+ * Manual CSV upload at /agency/performance remains the universal
+ * "real metrics" fallback.
  */
 class BlotatoMetricsCollector
 {

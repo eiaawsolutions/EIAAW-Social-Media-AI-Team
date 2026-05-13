@@ -88,7 +88,7 @@
                 @if ($hasMetrics)
                     No platform breakdown for this window.
                 @else
-                    No metrics yet. Blotato's status endpoint doesn't echo platform analytics for most networks (Meta, LinkedIn, YouTube, TikTok, Threads), so until v1.1 first-party OAuth pulls land, use <strong>Upload metrics CSV</strong> in the page header — export from each platform's native analytics, paste the post URL, upload. Empty cells stay empty (no fabricated zeros).
+                    No metrics yet. Blotato's status endpoint doesn't echo platform analytics for most networks (Meta, LinkedIn, YouTube, TikTok, Threads). LinkedIn's personal-profile read API is closed — auto-pull requires migrating to a Company Page + Marketing Developer Platform approval. Until then, use <strong>Upload metrics CSV</strong> in the page header — export from each platform's native analytics, paste the post URL, upload. Empty cells stay empty (no fabricated zeros).
                 @endif
             </div>
         @else
