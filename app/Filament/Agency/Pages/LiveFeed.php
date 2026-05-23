@@ -31,6 +31,10 @@ class LiveFeed extends Page
 
     /** Livewire-safe scalar state. */
     public ?string $platformFilter = null; // null = all platforms
+    public ?string $statusFilter = null;   // null = published+publishing+unverified, else 'published' | 'publishing' | 'unverified'
+    public ?string $dateFrom = null;       // YYYY-MM-DD, brand-tz day inclusive
+    public ?string $dateUntil = null;      // YYYY-MM-DD, brand-tz day inclusive
+    public ?string $search = null;         // caption substring (drafts.body)
 
     public function mount(): void
     {
@@ -40,6 +44,29 @@ class LiveFeed extends Page
     public function setPlatform(?string $platform): void
     {
         $this->platformFilter = $platform ?: null;
+    }
+
+    public function resetFilters(): void
+    {
+        $this->statusFilter = null;
+        $this->dateFrom = null;
+        $this->dateUntil = null;
+        $this->search = null;
+    }
+
+    /**
+     * The values are wire-modeled from a Livewire-aware blade form, so they
+     * arrive as strings (or empty strings). Normalise empty-string → null so
+     * the query builder skips them.
+     */
+    public function updated(string $name): void
+    {
+        if (in_array($name, ['statusFilter', 'dateFrom', 'dateUntil', 'search'], true)) {
+            $val = $this->{$name};
+            if (is_string($val) && trim($val) === '') {
+                $this->{$name} = null;
+            }
+        }
     }
 
     public function workspace(): ?Workspace
@@ -91,7 +118,58 @@ class LiveFeed extends Page
             $q->whereHas('draft', fn ($d) => $d->where('platform', $this->platformFilter));
         }
 
-        return $q->limit(120)->get();
+        // Status filter: 'published' = confirmed live; 'publishing' = submitted,
+        // awaiting platform confirmation. 'unverified' filtered post-fetch via
+        // PostVerificationRules since it depends on the platform_post_url
+        // shape, not a column. Null = all three buckets.
+        if ($this->statusFilter === 'published') {
+            $q->where('status', 'published');
+        } elseif ($this->statusFilter === 'publishing') {
+            $q->where('status', 'submitted')->whereNotNull('blotato_post_id');
+        }
+
+        // Date range against published_at (falls back to submitted_at for
+        // publishing-only rows). Brand-tz day boundaries.
+        $tz = $this->brandTimezone();
+        if ($this->dateFrom) {
+            $from = Carbon::parse($this->dateFrom, $tz)->startOfDay()->setTimezone('UTC');
+            $q->where(function ($qq) use ($from) {
+                $qq->where('published_at', '>=', $from)
+                   ->orWhere(function ($qq2) use ($from) {
+                       $qq2->whereNull('published_at')
+                           ->where('submitted_at', '>=', $from);
+                   });
+            });
+        }
+        if ($this->dateUntil) {
+            $until = Carbon::parse($this->dateUntil, $tz)->endOfDay()->setTimezone('UTC');
+            $q->where(function ($qq) use ($until) {
+                $qq->where('published_at', '<=', $until)
+                   ->orWhere(function ($qq2) use ($until) {
+                       $qq2->whereNull('published_at')
+                           ->where('submitted_at', '<=', $until);
+                   });
+            });
+        }
+
+        if ($this->search) {
+            $needle = trim($this->search);
+            $q->whereHas('draft', fn ($d) => $d->where('body', 'ILIKE', '%' . $needle . '%'));
+        }
+
+        $rows = $q->limit(120)->get();
+
+        // Unverified filter: rows in `published` status that don't pass the
+        // truthfulness rules (no real platform_post_url permalink yet).
+        if ($this->statusFilter === 'unverified') {
+            $rows = $rows->filter(function ($p) {
+                if ($p->status !== 'published') return false;
+                $platform = (string) ($p->draft?->platform ?? '');
+                return ! PostVerificationRules::isRealPostUrl($platform, $p->platform_post_url);
+            })->values();
+        }
+
+        return $rows;
     }
 
     /** @return array<string, int>  platform => count (published only) */

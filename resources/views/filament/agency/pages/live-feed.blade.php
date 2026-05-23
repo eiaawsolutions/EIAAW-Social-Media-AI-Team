@@ -34,6 +34,56 @@
             .lf-tabs button.active { background: var(--eiaaw-ink); color: var(--eiaaw-bg); border-color: var(--eiaaw-ink); }
             .lf-tabs .lf-tab-count { font-size: 10px; opacity: .65; }
 
+            .lf-filters {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                gap: 10px;
+                margin-bottom: 16px;
+                padding: 12px 14px;
+                background: white;
+                border: 1px solid var(--eiaaw-line);
+                border-radius: 12px;
+                align-items: end;
+            }
+            .lf-filters label {
+                display: block;
+                font-family: var(--eiaaw-mono);
+                font-size: 10px;
+                letter-spacing: .14em;
+                text-transform: uppercase;
+                color: var(--eiaaw-mute);
+                margin-bottom: 4px;
+            }
+            .lf-filters input,
+            .lf-filters select {
+                width: 100%;
+                padding: 6px 10px;
+                font-size: 13px;
+                border: 1px solid var(--eiaaw-line);
+                border-radius: 8px;
+                background: var(--eiaaw-bg);
+                color: var(--eiaaw-ink);
+            }
+            .lf-filters input:focus,
+            .lf-filters select:focus {
+                outline: none;
+                border-color: var(--eiaaw-primary);
+                background: white;
+            }
+            .lf-filters .lf-reset {
+                font-family: var(--eiaaw-mono);
+                font-size: 10px;
+                letter-spacing: .14em;
+                text-transform: uppercase;
+                padding: 7px 12px;
+                border-radius: 8px;
+                background: var(--eiaaw-bg);
+                color: var(--eiaaw-ink-2);
+                border: 1px solid var(--eiaaw-line);
+                cursor: pointer;
+            }
+            .lf-filters .lf-reset:hover { background: var(--eiaaw-bg-warm); }
+
             .lf-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -174,6 +224,33 @@
     @endphp
 
     <div class="lf-shell" wire:poll.30s>
+        <div class="lf-filters">
+            <div>
+                <label for="lf-search">Search captions</label>
+                <input id="lf-search" type="search" wire:model.live.debounce.400ms="search" placeholder="text in caption..." />
+            </div>
+            <div>
+                <label for="lf-status">Status</label>
+                <select id="lf-status" wire:model.live="statusFilter">
+                    <option value="">All</option>
+                    <option value="published">Published</option>
+                    <option value="publishing">Publishing</option>
+                    <option value="unverified">Unverified</option>
+                </select>
+            </div>
+            <div>
+                <label for="lf-from">From</label>
+                <input id="lf-from" type="date" wire:model.live="dateFrom" />
+            </div>
+            <div>
+                <label for="lf-until">To</label>
+                <input id="lf-until" type="date" wire:model.live="dateUntil" />
+            </div>
+            <div>
+                <button type="button" class="lf-reset" wire:click="resetFilters">Reset</button>
+            </div>
+        </div>
+
         <div class="lf-tabs">
             <button type="button"
                     wire:click="setPlatform(null)"

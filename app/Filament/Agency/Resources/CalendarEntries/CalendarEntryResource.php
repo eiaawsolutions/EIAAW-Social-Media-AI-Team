@@ -9,6 +9,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables;
+use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -45,6 +46,9 @@ class CalendarEntryResource extends Resource
     {
         return $table
             ->defaultSort('scheduled_date')
+            ->searchPlaceholder('Search topic...')
+            ->persistFiltersInSession()
+            ->persistSearchInSession()
             ->columns([
                 Tables\Columns\TextColumn::make('scheduled_date')
                     ->label('Day')
@@ -88,6 +92,96 @@ class CalendarEntryResource extends Resource
                     ->badge()
                     ->color(fn (int $state) => $state > 0 ? 'success' : 'gray'),
             ])
+            ->filters([
+                Tables\Filters\SelectFilter::make('platform')
+                    ->label('Platform')
+                    ->multiple()
+                    ->options([
+                        'instagram' => 'Instagram',
+                        'facebook' => 'Facebook',
+                        'linkedin' => 'LinkedIn',
+                        'tiktok' => 'TikTok',
+                        'threads' => 'Threads',
+                        'x' => 'X (Twitter)',
+                        'youtube' => 'YouTube',
+                        'pinterest' => 'Pinterest',
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        $values = $data['values'] ?? [];
+                        if (empty($values)) {
+                            return $query;
+                        }
+                        // platforms is a JSON array on calendar_entries; match
+                        // when any selected platform appears in the array.
+                        return $query->where(function (Builder $q) use ($values) {
+                            foreach ($values as $v) {
+                                $q->orWhereJsonContains('platforms', $v);
+                            }
+                        });
+                    }),
+
+                Tables\Filters\SelectFilter::make('pillar')
+                    ->label('Pillar')
+                    ->multiple()
+                    ->options([
+                        'educational' => 'Educational',
+                        'community' => 'Community',
+                        'promotional' => 'Promotional',
+                        'behind_the_scenes' => 'Behind the scenes',
+                        'thought_leadership' => 'Thought leadership',
+                    ]),
+
+                Tables\Filters\SelectFilter::make('format')
+                    ->label('Format')
+                    ->multiple()
+                    ->options([
+                        'image' => 'Image',
+                        'carousel' => 'Carousel',
+                        'reel' => 'Reel',
+                        'video' => 'Video',
+                        'story' => 'Story',
+                        'text' => 'Text',
+                    ]),
+
+                Tables\Filters\Filter::make('scheduled_date_range')
+                    ->label('Scheduled date')
+                    ->schema([
+                        \Filament\Forms\Components\DatePicker::make('from')
+                            ->label('From')
+                            ->native(false)
+                            ->closeOnDateSelection(),
+                        \Filament\Forms\Components\DatePicker::make('until')
+                            ->label('To')
+                            ->native(false)
+                            ->closeOnDateSelection(),
+                    ])
+                    ->columns(2)
+                    ->query(function (Builder $query, array $data): Builder {
+                        return $query
+                            ->when(
+                                $data['from'] ?? null,
+                                fn (Builder $q, $date) => $q->whereDate('scheduled_date', '>=', $date),
+                            )
+                            ->when(
+                                $data['until'] ?? null,
+                                fn (Builder $q, $date) => $q->whereDate('scheduled_date', '<=', $date),
+                            );
+                    })
+                    ->indicateUsing(function (array $data): array {
+                        $indicators = [];
+                        if ($data['from'] ?? null) {
+                            $indicators[] = \Filament\Tables\Filters\Indicator::make('From: ' . \Illuminate\Support\Carbon::parse($data['from'])->format('M j, Y'))
+                                ->removeField('from');
+                        }
+                        if ($data['until'] ?? null) {
+                            $indicators[] = \Filament\Tables\Filters\Indicator::make('To: ' . \Illuminate\Support\Carbon::parse($data['until'])->format('M j, Y'))
+                                ->removeField('until');
+                        }
+                        return $indicators;
+                    }),
+            ])
+            ->filtersFormColumns(4)
+            ->filtersLayout(FiltersLayout::AboveContent)
             ->recordActions([
                 \Filament\Actions\Action::make('runWriter')
                     ->label('Draft this')

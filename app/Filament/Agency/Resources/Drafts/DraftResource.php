@@ -11,6 +11,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables;
+use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -41,6 +42,9 @@ class DraftResource extends Resource
     {
         return $table
             ->defaultSort('created_at', 'desc')
+            ->searchPlaceholder('Search captions...')
+            ->persistFiltersInSession()
+            ->persistSearchInSession()
             ->columns([
                 Tables\Columns\TextColumn::make('id')
                     ->label('#')
@@ -121,6 +125,8 @@ class DraftResource extends Resource
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('status')
+                    ->label('Status')
+                    ->multiple()
                     ->options([
                         'compliance_pending' => 'Compliance pending',
                         'compliance_failed' => 'Compliance failed',
@@ -131,6 +137,8 @@ class DraftResource extends Resource
                         'rejected' => 'Rejected',
                     ]),
                 Tables\Filters\SelectFilter::make('platform')
+                    ->label('Platform')
+                    ->multiple()
                     ->options([
                         'instagram' => 'Instagram',
                         'facebook' => 'Facebook',
@@ -139,8 +147,47 @@ class DraftResource extends Resource
                         'threads' => 'Threads',
                         'x' => 'X (Twitter)',
                         'youtube' => 'YouTube',
+                        'pinterest' => 'Pinterest',
                     ]),
+                Tables\Filters\Filter::make('created_range')
+                    ->label('Created')
+                    ->schema([
+                        \Filament\Forms\Components\DatePicker::make('from')
+                            ->label('From')
+                            ->native(false)
+                            ->closeOnDateSelection(),
+                        \Filament\Forms\Components\DatePicker::make('until')
+                            ->label('To')
+                            ->native(false)
+                            ->closeOnDateSelection(),
+                    ])
+                    ->columns(2)
+                    ->query(function (Builder $query, array $data): Builder {
+                        return $query
+                            ->when(
+                                $data['from'] ?? null,
+                                fn (Builder $q, $date) => $q->whereDate('created_at', '>=', $date),
+                            )
+                            ->when(
+                                $data['until'] ?? null,
+                                fn (Builder $q, $date) => $q->whereDate('created_at', '<=', $date),
+                            );
+                    })
+                    ->indicateUsing(function (array $data): array {
+                        $indicators = [];
+                        if ($data['from'] ?? null) {
+                            $indicators[] = \Filament\Tables\Filters\Indicator::make('From: ' . \Illuminate\Support\Carbon::parse($data['from'])->format('M j, Y'))
+                                ->removeField('from');
+                        }
+                        if ($data['until'] ?? null) {
+                            $indicators[] = \Filament\Tables\Filters\Indicator::make('To: ' . \Illuminate\Support\Carbon::parse($data['until'])->format('M j, Y'))
+                                ->removeField('until');
+                        }
+                        return $indicators;
+                    }),
             ])
+            ->filtersFormColumns(4)
+            ->filtersLayout(FiltersLayout::AboveContent)
             ->recordActions([
                 \Filament\Actions\Action::make('view')
                     ->label('View')

@@ -9,6 +9,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables;
+use Filament\Tables\Enums\FiltersLayout;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -197,7 +198,8 @@ class ScheduledPostResource extends Resource
                         return $indicators;
                     }),
             ])
-            ->filtersFormColumns(3)
+            ->filtersFormColumns(4)
+            ->filtersLayout(FiltersLayout::AboveContent)
             ->recordActions([
                 \Filament\Actions\Action::make('reschedule')
                     ->label('Reschedule')
