@@ -53,6 +53,7 @@
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
                 gap: 14px;
+                max-width: 720px;
             }
             .lane-card {
                 position: relative;
@@ -148,7 +149,7 @@
             </h2>
             <p class="autonomy-lead">
                 The lane decides how a draft moves from <strong>Writer</strong> → <strong>Scheduled</strong>.
-                You can override per-platform later (e.g. <em>green on Threads, red on LinkedIn</em>).
+                You can override per-platform later (e.g. <em>green on Threads, amber on LinkedIn</em>).
                 Compliance still runs on every draft regardless of lane — autonomy controls the human-in-the-loop step,
                 not the brand-voice or factual-grounding checks.
             </p>
@@ -169,21 +170,12 @@
                         'amber' => [
                             'pill' => 'Approve · 1 human',
                             'title' => 'Amber — 1 human approves',
-                            'lead' => 'Compliance passes → goes to drafts queue → 1 reviewer clicks Approve. The default for most agencies.',
+                            'lead' => 'Compliance passes → goes to drafts queue → 1 reviewer clicks Approve. The default for most agencies and the safe pick for regulated, sensitive, or executive content.',
                             'fits' => [
                                 'Most B2B brands and client work',
                                 'Instagram, Facebook, LinkedIn',
                                 'New brands still establishing voice',
-                            ],
-                        ],
-                        'red' => [
-                            'pill' => 'Approve · 2 humans',
-                            'title' => 'Red — 2 humans approve',
-                            'lead' => 'Compliance passes → 2 separate reviewers must click Approve. Use for regulated, sensitive, or executive content.',
-                            'fits' => [
-                                'Regulated industries (BFSI, healthcare, legal)',
-                                'CEO / executive social posts',
-                                'Crisis and PR-sensitive moments',
+                                'Regulated, sensitive, or executive posts',
                             ],
                         ],
                     ];
@@ -213,7 +205,7 @@
             </div>
 
             <div style="margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--eiaaw-line-soft); font-family: var(--eiaaw-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--eiaaw-mute);">
-                Per-platform overrides ship in v1.1 · Compliance runs on every lane
+                Per-platform overrides ship in v1.1 · Compliance runs on every lane · Switching the lane only affects future drafts
             </div>
         @endif
     </div>
