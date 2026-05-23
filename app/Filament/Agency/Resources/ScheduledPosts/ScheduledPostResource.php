@@ -40,6 +40,10 @@ class ScheduledPostResource extends Resource
     {
         return $table
             ->defaultSort('scheduled_for')
+            ->searchPlaceholder('Search captions...')
+            ->searchable()
+            ->persistFiltersInSession()
+            ->persistSearchInSession()
             ->columns([
                 Tables\Columns\TextColumn::make('scheduled_for')
                     ->label('When (brand TZ)')
@@ -72,6 +76,7 @@ class ScheduledPostResource extends Resource
                     ->label('Caption')
                     ->wrap()
                     ->limit(220)
+                    ->searchable()
                     ->extraHeaderAttributes(['style' => 'min-width: 360px;'])
                     ->extraAttributes(['style' => 'max-width: 520px;'])
                     ->placeholder('—'),
@@ -123,6 +128,8 @@ class ScheduledPostResource extends Resource
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('status')
+                    ->label('Status')
+                    ->multiple()
                     ->options([
                         'queued' => 'Queued',
                         'submitting' => 'Submitting',
@@ -131,7 +138,66 @@ class ScheduledPostResource extends Resource
                         'failed' => 'Failed',
                         'cancelled' => 'Cancelled',
                     ]),
+
+                Tables\Filters\SelectFilter::make('platform')
+                    ->label('Platform')
+                    ->multiple()
+                    ->options([
+                        'facebook' => 'Facebook',
+                        'instagram' => 'Instagram',
+                        'linkedin' => 'LinkedIn',
+                        'threads' => 'Threads',
+                        'tiktok' => 'TikTok',
+                        'x' => 'X (Twitter)',
+                        'youtube' => 'YouTube',
+                        'pinterest' => 'Pinterest',
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        $values = $data['values'] ?? [];
+                        if (empty($values)) {
+                            return $query;
+                        }
+                        return $query->whereHas('draft', fn (Builder $q) => $q->whereIn('platform', $values));
+                    }),
+
+                Tables\Filters\Filter::make('scheduled_for_range')
+                    ->label('Scheduled date')
+                    ->schema([
+                        \Filament\Forms\Components\DatePicker::make('from')
+                            ->label('From')
+                            ->native(false)
+                            ->closeOnDateSelection(),
+                        \Filament\Forms\Components\DatePicker::make('until')
+                            ->label('To')
+                            ->native(false)
+                            ->closeOnDateSelection(),
+                    ])
+                    ->columns(2)
+                    ->query(function (Builder $query, array $data): Builder {
+                        return $query
+                            ->when(
+                                $data['from'] ?? null,
+                                fn (Builder $q, $date) => $q->whereDate('scheduled_for', '>=', $date),
+                            )
+                            ->when(
+                                $data['until'] ?? null,
+                                fn (Builder $q, $date) => $q->whereDate('scheduled_for', '<=', $date),
+                            );
+                    })
+                    ->indicateUsing(function (array $data): array {
+                        $indicators = [];
+                        if ($data['from'] ?? null) {
+                            $indicators[] = \Filament\Tables\Filters\Indicator::make('From: ' . \Illuminate\Support\Carbon::parse($data['from'])->format('M j, Y'))
+                                ->removeField('from');
+                        }
+                        if ($data['until'] ?? null) {
+                            $indicators[] = \Filament\Tables\Filters\Indicator::make('To: ' . \Illuminate\Support\Carbon::parse($data['until'])->format('M j, Y'))
+                                ->removeField('until');
+                        }
+                        return $indicators;
+                    }),
             ])
+            ->filtersFormColumns(3)
             ->recordActions([
                 \Filament\Actions\Action::make('reschedule')
                     ->label('Reschedule')
