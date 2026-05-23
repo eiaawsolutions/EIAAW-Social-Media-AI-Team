@@ -3,6 +3,7 @@
 namespace App\Filament\Agency\Pages;
 
 use App\Models\Brand;
+use App\Models\PostMetric;
 use App\Models\ScheduledPost;
 use App\Models\Workspace;
 use App\Services\Publishing\PostVerificationRules;
@@ -170,6 +171,39 @@ class LiveFeed extends Page
         }
 
         return $rows;
+    }
+
+    /**
+     * Latest PostMetric per ScheduledPost id, for the post ids currently
+     * rendered on the page. Returns a map keyed by scheduled_post_id so the
+     * blade can do `$latestMetrics[$post->id]` in O(1) without N+1 queries.
+     *
+     * Truthfulness: only real snapshots are returned. Posts with no metric
+     * row get nothing — the blade renders an empty strip (NOT zeros).
+     *
+     * @param  \Illuminate\Support\Collection<int, ScheduledPost>  $posts
+     * @return array<int, PostMetric>
+     */
+    public function latestMetricsFor($posts): array
+    {
+        if ($posts->isEmpty()) return [];
+
+        $postIds = $posts->pluck('id')->all();
+
+        // Single subquery for the latest metric id per post, then a join
+        // back to fetch the full row.
+        $latestIds = \DB::table('post_metrics')
+            ->select(\DB::raw('MAX(id) as id'))
+            ->whereIn('scheduled_post_id', $postIds)
+            ->groupBy('scheduled_post_id')
+            ->pluck('id');
+
+        if ($latestIds->isEmpty()) return [];
+
+        return PostMetric::whereIn('id', $latestIds)
+            ->get()
+            ->keyBy('scheduled_post_id')
+            ->all();
     }
 
     /** @return array<string, int>  platform => count (published only) */

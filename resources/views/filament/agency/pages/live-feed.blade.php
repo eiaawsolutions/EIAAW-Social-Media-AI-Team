@@ -159,6 +159,18 @@
                 padding-top: 6px;
                 border-top: 1px solid var(--eiaaw-line-soft);
             }
+            .lf-metrics {
+                display: flex; align-items: center; gap: 10px;
+                font-family: var(--eiaaw-mono); font-size: 11px;
+                letter-spacing: .06em;
+                color: var(--eiaaw-ink-2);
+                padding: 6px 0 2px;
+                border-top: 1px solid var(--eiaaw-line-soft);
+            }
+            .lf-metric { display: inline-flex; align-items: baseline; gap: 4px; }
+            .lf-metric-val { font-weight: 600; color: var(--eiaaw-ink); }
+            .lf-metric-lbl { font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--eiaaw-mute); }
+            .lf-metric-dash { color: var(--eiaaw-mute); font-weight: 600; }
             .lf-card.is-publishing {
                 border-style: dashed;
                 border-color: var(--eiaaw-line);
@@ -221,6 +233,19 @@
         $platformCounts = $this->platformCounts();
         $total = $this->totalLive();
         $posts = $this->posts();
+        $latestMetrics = $this->latestMetricsFor($posts);
+
+        // Platforms where the lead counter is "views" instead of "impressions".
+        $videoFirstPlatforms = ['tiktok', 'youtube', 'youtube_shorts'];
+
+        // Compact number formatter — 12,400 -> "12.4K", 2,100,000 -> "2.1M".
+        $fmtCount = function (?int $n): string {
+            if ($n === null) return '—';
+            if ($n < 1000) return (string) $n;
+            if ($n < 10000) return number_format($n / 1000, 1) . 'K';
+            if ($n < 1000000) return number_format($n / 1000) . 'K';
+            return number_format($n / 1000000, 1) . 'M';
+        };
     @endphp
 
     <div class="lf-shell" wire:poll.30s>
@@ -320,6 +345,37 @@
                                 <span>{{ $stampLocal?->format('M j · H:i') ?? '—' }}</span>
                             </div>
                             <div class="lf-caption">{{ $caption !== '' ? $caption : '(no caption)' }}</div>
+                            @php
+                                $metric = (! $isPublishing && ! $isUnverified) ? ($latestMetrics[$post->id] ?? null) : null;
+                                $isVideoFirst = in_array($platform, $videoFirstPlatforms, true);
+                                $leadVal = $isVideoFirst ? ($metric?->video_views) : ($metric?->impressions);
+                                $leadLbl = $isVideoFirst ? 'views' : 'imp';
+                                $hasAnyMetric = $metric && (
+                                    $metric->impressions !== null || $metric->video_views !== null
+                                    || $metric->likes !== null || $metric->comments !== null
+                                );
+                                $tooltip = null;
+                                if ($metric) {
+                                    $age = $metric->observed_at?->diffForHumans(['parts' => 1, 'short' => true]);
+                                    $tooltip = 'Updated ' . ($age ?? '—') . ' · source: ' . $metric->source;
+                                }
+                            @endphp
+                            @if ($hasAnyMetric)
+                                <div class="lf-metrics" title="{{ $tooltip }}">
+                                    <span class="lf-metric">
+                                        <span class="lf-metric-val {{ $leadVal === null ? 'lf-metric-dash' : '' }}">{{ $fmtCount($leadVal) }}</span>
+                                        <span class="lf-metric-lbl">{{ $leadLbl }}</span>
+                                    </span>
+                                    <span class="lf-metric">
+                                        <span class="lf-metric-val {{ $metric->likes === null ? 'lf-metric-dash' : '' }}">{{ $fmtCount($metric->likes) }}</span>
+                                        <span class="lf-metric-lbl">likes</span>
+                                    </span>
+                                    <span class="lf-metric">
+                                        <span class="lf-metric-val {{ $metric->comments === null ? 'lf-metric-dash' : '' }}">{{ $fmtCount($metric->comments) }}</span>
+                                        <span class="lf-metric-lbl">cmts</span>
+                                    </span>
+                                </div>
+                            @endif
                             <div class="lf-foot">
                                 <span>#{{ $post->id }} · {{ $post->brand?->name ?? '?' }}</span>
                                 @if ($isPublishing)
