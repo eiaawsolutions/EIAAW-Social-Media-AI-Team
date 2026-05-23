@@ -11,6 +11,7 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Brand Assets — the upload library that DesignerAgent + VideoAgent pick
@@ -136,6 +137,28 @@ class BrandAssetResource extends Resource
                         $r->update(['archived_at' => $r->archived_at ? null : now()]);
                         \Filament\Notifications\Notification::make()->title($r->archived_at ? 'Archived' : 'Restored')->send();
                     }),
+                \Filament\Actions\DeleteAction::make()
+                    ->label('Delete')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->modalHeading('Delete this asset permanently?')
+                    ->modalDescription('Removes the row AND the underlying file from storage. Drafts that already published using this asset keep working — the platform CDN has its own copy. Use Archive instead if you want it hidden but recoverable.')
+                    ->before(function (BrandAsset $record): void {
+                        self::deleteAssetFile($record);
+                    }),
+            ])
+            ->toolbarActions([
+                \Filament\Actions\BulkActionGroup::make([
+                    \Filament\Actions\DeleteBulkAction::make()
+                        ->label('Delete selected')
+                        ->modalHeading('Delete selected assets permanently?')
+                        ->modalDescription('Removes each row AND its file from storage. This cannot be undone.')
+                        ->before(function (\Illuminate\Support\Collection $records): void {
+                            foreach ($records as $record) {
+                                self::deleteAssetFile($record);
+                            }
+                        }),
+                ]),
             ])
             ->emptyStateHeading('No assets yet')
             ->emptyStateDescription('Click "Upload assets" to add brand-approved images and videos. The Designer + Video agents will pick from these before falling back to AI generation.')
@@ -170,5 +193,27 @@ class BrandAssetResource extends Resource
         return [
             'index' => ManageBrandAssets::route('/'),
         ];
+    }
+
+    /**
+     * Best-effort: remove the underlying file from storage before the row is
+     * deleted. We swallow failures (logged) so a missing/already-gone file
+     * doesn't block the operator from removing the row.
+     */
+    protected static function deleteAssetFile(BrandAsset $asset): void
+    {
+        if (! $asset->storage_disk || ! $asset->storage_path) {
+            return;
+        }
+        try {
+            Storage::disk($asset->storage_disk)->delete($asset->storage_path);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('brand-asset delete: storage delete failed', [
+                'asset_id' => $asset->id,
+                'disk' => $asset->storage_disk,
+                'path' => $asset->storage_path,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
