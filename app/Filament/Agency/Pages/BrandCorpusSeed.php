@@ -46,9 +46,14 @@ class BrandCorpusSeed extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-book-open';
     protected static ?string $navigationLabel = 'Brand corpus';
     protected static ?string $title = 'Brand corpus';
-    protected static ?int $navigationSort = 5;
+    protected static ?int $navigationSort = 2;
     protected static ?string $slug = 'brand-corpus';
     protected string $view = 'filament.agency.pages.brand-corpus-seed';
+
+    public function getSubheading(): ?string
+    {
+        return 'Past posts and reference material that train the Writer to sound like the brand. Aim for 5+ items per brand.';
+    }
 
     /** Livewire-safe scalar state. */
     public ?int $brand = null;

@@ -25,7 +25,7 @@ class LiveFeed extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-globe-alt';
     protected static ?string $navigationLabel = 'Live feed';
     protected static ?string $title = 'Live feed';
-    protected static ?int $navigationSort = 11;
+    protected static ?int $navigationSort = 10;
     protected static ?string $slug = 'live-feed';
     protected string $view = 'filament.agency.pages.live-feed';
 

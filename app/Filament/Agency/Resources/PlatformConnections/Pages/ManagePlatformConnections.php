@@ -15,6 +15,11 @@ class ManagePlatformConnections extends ManageRecords
 {
     protected static string $resource = PlatformConnectionResource::class;
 
+    public function getSubheading(): ?string
+    {
+        return 'Social accounts connected via Blotato. Add them in Blotato, then sync to pull them in here.';
+    }
+
     protected function getHeaderActions(): array
     {
         return [

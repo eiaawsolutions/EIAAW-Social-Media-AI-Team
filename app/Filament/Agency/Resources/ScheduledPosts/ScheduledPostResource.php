@@ -30,7 +30,7 @@ class ScheduledPostResource extends Resource
     protected static ?string $navigationLabel = 'Schedule';
     protected static ?string $modelLabel = 'Scheduled post';
     protected static ?string $pluralModelLabel = 'Schedule';
-    protected static ?int $navigationSort = 9;
+    protected static ?int $navigationSort = 8;
 
     public static function form(Schema $schema): Schema
     {

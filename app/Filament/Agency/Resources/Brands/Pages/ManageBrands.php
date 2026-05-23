@@ -10,6 +10,11 @@ class ManageBrands extends ManageRecords
 {
     protected static string $resource = BrandResource::class;
 
+    public function getSubheading(): ?string
+    {
+        return 'The brands you publish for. Add one to start — each brand carries its own voice, palette, and platforms.';
+    }
+
     protected function getHeaderActions(): array
     {
         return [

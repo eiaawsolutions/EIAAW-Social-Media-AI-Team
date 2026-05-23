@@ -18,6 +18,11 @@ class ManageBrandAssets extends ManageRecords
 {
     protected static string $resource = BrandAssetResource::class;
 
+    public function getSubheading(): ?string
+    {
+        return 'Brand-approved images and videos the Designer pulls from. Upload, tag, reuse.';
+    }
+
     protected function getHeaderActions(): array
     {
         return [

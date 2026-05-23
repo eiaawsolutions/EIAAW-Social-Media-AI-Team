@@ -26,6 +26,11 @@ class ManageDrafts extends ManageRecords
         return Width::Full;
     }
 
+    public function getSubheading(): ?string
+    {
+        return 'AI-written posts waiting on your read. Approve, reject, or redraft before they reach the schedule.';
+    }
+
     protected function getHeaderActions(): array
     {
         return [

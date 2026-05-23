@@ -18,6 +18,11 @@ class ManageScheduledPosts extends ManageRecords
         return Width::Full;
     }
 
+    public function getSubheading(): ?string
+    {
+        return 'Approved drafts queued for their scheduled time. Pause publishing here if a brand crisis hits.';
+    }
+
     protected function getHeaderActions(): array
     {
         $workspace = $this->resolveWorkspace();

@@ -31,7 +31,7 @@ class DraftResource extends Resource
     protected static ?string $navigationLabel = 'Drafts';
     protected static ?string $modelLabel = 'Draft';
     protected static ?string $pluralModelLabel = 'Drafts';
-    protected static ?int $navigationSort = 8;
+    protected static ?int $navigationSort = 7;
 
     public static function form(Schema $schema): Schema
     {

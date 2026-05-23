@@ -20,6 +20,11 @@ class ManageCalendarEntries extends ManageRecords
         return Width::Full;
     }
 
+    public function getSubheading(): ?string
+    {
+        return 'The planned posting cadence per brand. Generate it once, then draft against it.';
+    }
+
     protected function getHeaderActions(): array
     {
         return [

@@ -28,6 +28,11 @@ class Billing extends Page
     protected static ?int $navigationSort = 90;
     protected string $view = 'filament.agency.pages.billing';
 
+    public function getSubheading(): ?string
+    {
+        return 'Your plan, trial countdown, and Stripe subscription. Upgrade or change plan here.';
+    }
+
     public ?Workspace $workspace = null;
     public ?string $trialBadge = null;
     public ?string $statusLabel = null;
