@@ -31,7 +31,7 @@ class Performance extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-chart-bar';
     protected static ?string $navigationLabel = 'Performance';
     protected static ?string $title = 'Performance';
-    protected static ?int $navigationSort = 9;
+    protected static ?int $navigationSort = 10;
     protected static ?string $slug = 'performance';
     protected string $view = 'filament.agency.pages.performance';
 

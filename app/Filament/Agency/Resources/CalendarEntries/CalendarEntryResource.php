@@ -35,7 +35,7 @@ class CalendarEntryResource extends Resource
     protected static ?string $navigationLabel = 'Calendar';
     protected static ?string $modelLabel = 'Calendar entry';
     protected static ?string $pluralModelLabel = 'Calendar';
-    protected static ?int $navigationSort = 6;
+    protected static ?int $navigationSort = 7;
 
     public static function form(Schema $schema): Schema
     {
