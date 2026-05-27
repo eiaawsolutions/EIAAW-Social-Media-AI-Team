@@ -28,7 +28,7 @@
           <a href="#how" class="btn btn-ghost btn-lg">See how it works</a>
         </div>
         <div class="rvl" style="margin-top: 28px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute);">
-          Flat brand-based pricing &middot; no per-user tax &middot; white-label included from Studio
+          Flat brand-based pricing &middot; no per-user tax &middot; white-label from Studio &middot; Malaysia-only in v1
         </div>
       </div>
       <div style="grid-column: 8 / span 5; padding-top: 60px;" class="elegant-figure-parent">
@@ -124,19 +124,25 @@
           Most "AI social media teams" are one LLM with role prompts pretending to be six. EIAAW's agents are genuinely separate — different memory, different tool scopes, different evals between each handoff.
         </p>
         <p style="margin-top: 24px; color: var(--ink-2); line-height: 1.65;">
-          Every output from the Writer or Designer flows through the Compliance agent before anything reaches you. If the brand-voice score, factual grounding, embargo check, prior-post deduplication, or image brand-DNA pass is below threshold — the post is <strong>held with the reason shown</strong>. No silent hallucinations. No off-brand visuals slipping through.
+          Every Writer, Designer, and Video output flows through the Compliance agent before anything reaches you. If the brand-voice score, factual grounding, embargo check, prior-post deduplication, banned phrase, learned-rule, or platform-publishability check fails — the post is <strong>held with the reason shown</strong>. Seven checks per post. No silent hallucinations. No off-brand visuals slipping through.
         </p>
       </div>
 
       <div id="agents" style="grid-column: 7 / span 6; display: grid; grid-template-columns: 1fr 1fr; gap: 18px;">
         @php
+          // These are the 6 agents on the active publishing path. The
+          // platform also ships Researcher, Optimizer, Repurpose, Onboarding,
+          // CompetitorIntel + the Scheduler — surfaced inside the product,
+          // not on the marketing page (keeps the message focused on the
+          // publishing loop the customer cares about). Compliance is the
+          // hard gate that runs 7 checks (see ComplianceAgent::handle).
           $agents = [
             ['Strategist', 'Builds the monthly calendar from your brand evidence + historical performance.'],
-            ['Writer', 'Drafts captions and posts grounded in your real high-performing content, with citation chips.'],
-            ['Designer', 'Generates on-brand visuals via FAL.AI Flux — locked to your palette, typography, logo placement.'],
-            ['Scheduler', 'Schedules to all platforms via Blotato. Respects embargoes, time zones, dedup rules.'],
-            ['Community', 'Drafts replies to comments + DMs. Escalates anything outside your reply policy.'],
-            ['Compliance', 'The hard gate. Five checks per post. Fail = held. No exceptions.'],
+            ['Researcher', 'Pulls competitor + market signal into the brief so the Writer isn\'t guessing.'],
+            ['Writer', 'Drafts captions grounded in your real high-performing posts, with citation chips on every phrase.'],
+            ['Designer', 'Generates on-brand stills via FAL.AI Flux — locked to your palette, typography, logo placement.'],
+            ['Video', 'Generates short-form vertical via FAL.AI Wan 2.6 (Reels / TikTok / Shorts). Voiceover + music + subtitles when EIAAW brand-lock is on.'],
+            ['Compliance', 'The hard gate. Seven checks per post (platform-publishability, learned-rules, banned-phrases, embargo, dedup, brand-voice, factual-grounding). Fail = held.'],
           ];
         @endphp
         @foreach ($agents as $i => [$name, $desc])
@@ -148,6 +154,10 @@
         @endforeach
       </div>
     </div>
+
+    <p class="rvl" style="margin-top: 32px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); text-align: center;">
+      Plus a Scheduler that ships via Blotato, an Optimizer that retunes weekly from real engagement, a Repurpose agent that recycles winners across platforms, and a Competitor-intel agent that refreshes Mondays
+    </p>
   </div>
 </section>
 
@@ -170,8 +180,8 @@
             'b' => 'Each phrase shows which brand-style.md section grounded it, which prior high-performing post the angle was modelled on (with date and actual metrics), which competitor reference was studied. No more "trust the AI."',
           ],
           [
-            'h' => 'Image receipts',
-            'b' => 'Prompt used, model + version, source assets composited, brand-DNA pass/fail per token (palette, typography, logo placement). C2PA provenance signed at generation. Prove on-brand, prove AI-generated.',
+            'h' => 'Image &amp; video receipts',
+            'b' => 'Prompt used, model + version (Flux Schnell for stills, Wan 2.6 for vertical video), source assets composited, brand-DNA pass/fail per token (palette, typography, logo placement). Every image and clip carries an explicit AI-generated flag — honest disclosure ready for Meta, TikTok, and YouTube\'s synthetic-media policies.',
           ],
           [
             'h' => 'Recommendation receipts',
@@ -206,20 +216,29 @@
 
     <div class="grid-12" style="gap: 24px;">
       @php
+        // Production ships two lanes (the Red two-human lane was retired in
+        // 9f8611b → see AutonomyLane.php). Compliance is the real hard gate
+        // — anything held there blocks all lanes equally. Single-approval
+        // is enough at the autonomy layer because Compliance is what stops
+        // off-brand or non-compliant content from reaching the queue in
+        // the first place.
         $lanes = [
-          ['name' => 'Green lane', 'color' => 'var(--primary)', 'rule' => 'Auto-publish if Compliance passes.', 'use' => 'Evergreen tips, recurring formats, brand-value content. The system runs while you sleep.'],
-          ['name' => 'Amber lane', 'color' => 'var(--ink)', 'rule' => 'Single human approval required.', 'use' => 'Product claims, news-cycle adjacent posts, anything matching your flagged keywords. Default for new client accounts.'],
-          ['name' => 'Red lane', 'color' => 'var(--danger)', 'rule' => 'Two-human approval required.', 'use' => 'Crisis windows, regulatory periods, IPs flagged sensitive. Nothing publishes without two sign-offs.'],
+          ['name' => 'Green lane', 'color' => 'var(--primary)', 'rule' => 'Auto-publish if Compliance passes.', 'use' => 'Evergreen tips, recurring formats, brand-value content. Runs while you sleep — every post still passes the 7-check Compliance gate first.'],
+          ['name' => 'Amber lane', 'color' => 'var(--ink)', 'rule' => 'Single human approval required.', 'use' => 'Product claims, news-cycle adjacent posts, anything matching your flagged keywords. Default for new brands and client accounts.'],
         ];
       @endphp
       @foreach ($lanes as $l)
-        <div class="rvl" style="grid-column: span 4; border-top: 4px solid {{ $l['color'] }}; padding-top: 24px;">
+        <div class="rvl" style="grid-column: span 6; border-top: 4px solid {{ $l['color'] }}; padding-top: 24px;">
           <strong style="font-family: var(--sans); font-size: 22px; letter-spacing: -0.015em; color: var(--ink);">{{ $l['name'] }}</strong>
           <div style="margin-top: 8px; font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: {{ $l['color'] }};">{{ $l['rule'] }}</div>
           <p style="margin-top: 16px; color: var(--ink-2); line-height: 1.6; font-size: 15px;">{{ $l['use'] }}</p>
         </div>
       @endforeach
     </div>
+
+    <p class="rvl" style="margin-top: 32px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); text-align: center;">
+      Need crisis-window lockdown? Pause publishing per workspace with one toggle &middot; resumes when you say so
+    </p>
   </div>
 </section>
 
@@ -264,7 +283,7 @@
     </div>
 
     <p class="rvl" style="margin-top: 48px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); text-align: center;">
-      Prices exclusive of any applicable taxes &middot; Malaysia-only in v1 &middot; cancel any time &middot; FPX + card billing
+      Prices exclusive of any applicable taxes &middot; Malaysia-only in v1 &middot; cancel any time &middot; card billing via Stripe (FPX via Billplz coming)
     </p>
   </div>
 </section>
