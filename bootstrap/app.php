@@ -78,6 +78,24 @@ return Application::configure(basePath: dirname(__DIR__))
             ->weekly()->mondays()->at('03:00')
             ->withoutOverlapping(60)
             ->runInBackground();
+
+        // Plan-cap release valve: hourly, flip any scheduled_posts that were
+        // deferred to next period back to status='queued' once their
+        // queued_for_period_at has arrived. Hourly cadence is plenty — the
+        // worst-case latency is "publishes within an hour of the new month
+        // starting", which is well below user-visible expectations.
+        $schedule->command('posts:release-queued-next-period')
+            ->hourly()
+            ->withoutOverlapping(10)
+            ->runInBackground();
+
+        // Cap-warning sweep: daily at 09:00 UTC (mid-morning APAC), email
+        // workspaces that have crossed 80% of their monthly post cap. Once
+        // per period per workspace — see PostsWarnNearCap throttle key.
+        $schedule->command('posts:warn-near-cap')
+            ->dailyAt('09:00')
+            ->withoutOverlapping(30)
+            ->runInBackground();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(

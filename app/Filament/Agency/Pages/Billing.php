@@ -3,6 +3,7 @@
 namespace App\Filament\Agency\Pages;
 
 use App\Models\Workspace;
+use App\Services\Billing\PlanCaps;
 use App\Services\StripePriceCache;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
@@ -39,6 +40,23 @@ class Billing extends Page
     public ?string $planLabel = null;
     public bool $hasActiveSub = false;
 
+    /** Per-month usage snapshot driven by PlanCaps. Surfaced on the page. */
+    public ?array $usage = null;
+
+    /**
+     * Pricing display block — monthly MYR, annual MYR (= monthly × annual
+     * multiplier), savings vs 12-monthly. Driven by config/billing.php so
+     * the UI never lies about what Stripe will actually charge.
+     *
+     * @var array{
+     *   monthly_myr: int,
+     *   annual_myr: int,
+     *   annual_savings_myr: int,
+     *   tax_note: string,
+     * }|null
+     */
+    public ?array $pricing = null;
+
     public function mount(): void
     {
         $user = auth()->user();
@@ -50,13 +68,64 @@ class Billing extends Page
             return;
         }
 
-        $this->planLabel = match ($this->workspace->plan) {
-            'solo' => 'Solo · RM 99 / mo',
-            'studio' => 'Studio · RM 299 / mo',
-            'agency' => 'Agency · RM 799 / mo',
-            'eiaaw_internal' => 'EIAAW internal',
-            default => 'Unknown',
-        };
+        // Plan label reads MYR price directly from config/billing.php so the
+        // page stays in sync with the source of truth (no risk of stale
+        // labels if pricing changes again).
+        $planConfig = config('billing.plans.' . $this->workspace->plan);
+        $priceMyr = (int) ($planConfig['price_myr'] ?? 0);
+        $planName = (string) ($planConfig['name'] ?? ucfirst((string) $this->workspace->plan));
+        $this->planLabel = $this->workspace->plan === 'eiaaw_internal'
+            ? 'EIAAW internal'
+            : "{$planName} · RM " . number_format($priceMyr) . ' / mo';
+
+        // Usage snapshot: brands used / limit, posts published this month /
+        // limit, AI videos this month / limit. Customer-facing — drives the
+        // "you've used 80%, upgrade for more" prompts.
+        $caps = app(PlanCaps::class)->capsFor($this->workspace);
+        $this->usage = [
+            'brands_used' => $this->workspace->activeBrandsCount(),
+            'brands_cap' => $caps['max_brands'],
+            'posts_used' => $this->workspace->publishedPostsThisMonth(),
+            'posts_cap' => $caps['max_published_posts_per_month'],
+            'videos_used' => $this->workspace->aiVideosThisMonth(),
+            'videos_cap' => $caps['max_ai_videos_per_month'],
+        ];
+
+        // Pricing block — shown for non-EIAAW-internal workspaces.
+        if ($planConfig && $this->workspace->plan !== 'eiaaw_internal') {
+            $this->pricing = [
+                'monthly_myr' => (int) ($planConfig['price_myr'] ?? 0),
+                'annual_myr' => StripePriceCache::annualMyr($planConfig),
+                'annual_savings_myr' => StripePriceCache::annualSavingsMyr($planConfig),
+                'tax_note' => $this->buildTaxNote(),
+            ];
+        }
+    }
+
+    /**
+     * Tax line shown under the pricing block. Three modes:
+     *   - SST not enabled (current state) → "Prices exclusive of any taxes
+     *     that may apply."
+     *   - SST enabled, customer in MY → "+ 8% SST on top per RMCD. SST reg:
+     *     {number}."
+     *   - SST enabled, customer outside MY → "no SST applies."
+     * Customer country is derived from Cashier when we have it; falls back
+     * to MY (allowed_countries gate elsewhere ensures non-MY shouldn't reach
+     * this page in v1).
+     */
+    private function buildTaxNote(): string
+    {
+        $taxEnabled = (bool) config('billing.tax.enabled', false);
+        if (! $taxEnabled) {
+            return 'Prices shown are exclusive of any applicable taxes. Stripe collects card payment in MYR; your card issuer may charge a foreign-transaction fee if billed outside Malaysia.';
+        }
+        $ratePct = round(((float) config('billing.tax.rate', 0.08)) * 100);
+        $regNo = (string) config('billing.tax.registration_number', '');
+        return sprintf(
+            'Malaysian customers: + %d%% SST on top, charged automatically per RMCD. SST registration: %s.',
+            $ratePct,
+            $regNo !== '' ? $regNo : '(pending)',
+        );
 
         $this->statusLabel = match ($this->workspace->subscription_status) {
             'trialing' => 'Free trial',

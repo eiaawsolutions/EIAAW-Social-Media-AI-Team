@@ -235,13 +235,10 @@
     </div>
 
     <div class="grid-12" style="gap: 24px;">
-      @php
-        $tiers = [
-          ['name' => 'Solo', 'price' => 'RM 99', 'unit' => '/ month', 'brands' => '1 brand', 'posts' => '60 posts/mo', 'whitelabel' => false, 'best' => 'For founders running their own brand.'],
-          ['name' => 'Studio', 'price' => 'RM 299', 'unit' => '/ month', 'brands' => '3 brands', 'posts' => '300 posts/mo', 'whitelabel' => true, 'best' => 'For freelancers and small studios. White-label included.'],
-          ['name' => 'Agency', 'price' => 'RM 799', 'unit' => '/ month', 'brands' => '12 brands', 'posts' => 'Unlimited', 'whitelabel' => true, 'best' => 'For agencies with full client portal + per-client guardrail isolation.', 'highlight' => true],
-        ];
-      @endphp
+      {{-- Pricing is derived from config/billing.php via
+           SignupController::tiersFromConfig() so the landing page and
+           /signup picker can NEVER drift. Edit prices in config, not here. --}}
+      @php $tiers = \App\Http\Controllers\SignupController::tiersFromConfig(); @endphp
       @foreach ($tiers as $t)
         <div class="rvl" style="grid-column: span 4; padding: 36px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); {{ ($t['highlight'] ?? false) ? 'border: 2px solid var(--ink); transform: translateY(-12px);' : '' }}">
           <strong style="font-family: var(--sans); font-size: 22px; letter-spacing: -0.015em; color: var(--ink);">{{ $t['name'] }}</strong>
@@ -249,21 +246,25 @@
             <span style="font-family: var(--sans); font-weight: 500; font-size: 56px; letter-spacing: -0.04em; color: var(--ink);">{{ $t['price'] }}</span>
             <span style="font-size: 14px; color: var(--mute);">{{ $t['unit'] }}</span>
           </div>
+          <div style="margin-top: 6px; font-size: 12px; color: var(--mute); font-family: var(--mono);">
+            or RM {{ number_format($t['annual_myr']) }}/year &middot; save RM {{ number_format($t['annual_savings_myr']) }} (2 months free)
+          </div>
           <ul style="margin-top: 24px; list-style: none; padding: 0; display: flex; flex-direction: column; gap: 10px;">
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>{{ $t['brands'] }}</li>
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>{{ $t['posts'] }}</li>
+            <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>{{ $t['videos'] }}</li>
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>All 6 agents + full receipts</li>
-            <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>Tiered autonomy (green/amber/red)</li>
+            <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>Tiered autonomy (green/amber)</li>
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: {{ $t['whitelabel'] ? 'var(--ink-2)' : 'var(--mute)' }};"><span style="width: 4px; height: 4px; border-radius: 50%; background: {{ $t['whitelabel'] ? 'var(--primary)' : 'var(--mute)' }};"></span>{{ $t['whitelabel'] ? 'White-label client portal' : 'No white-label (upgrade to Studio)' }}</li>
           </ul>
           <p style="margin-top: 20px; font-size: 13px; color: var(--ink-2); line-height: 1.5; font-style: italic;">{{ $t['best'] }}</p>
-          <a href="{{ url('/signup/' . strtolower($t['name'])) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Start free for 14 days <span class="arrow">&rarr;</span></a>
+          <a href="{{ url('/signup/' . $t['key']) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Start free for 14 days <span class="arrow">&rarr;</span></a>
         </div>
       @endforeach
     </div>
 
     <p class="rvl" style="margin-top: 48px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); text-align: center;">
-      Pass-through AI cost transparency &middot; cancel any time &middot; no contract &middot; FPX (Malaysia) + card billing
+      Prices exclusive of any applicable taxes &middot; Malaysia-only in v1 &middot; cancel any time &middot; FPX + card billing
     </p>
   </div>
 </section>

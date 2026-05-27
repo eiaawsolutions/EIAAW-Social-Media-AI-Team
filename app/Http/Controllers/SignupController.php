@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\StripePriceCache;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -57,44 +58,88 @@ class SignupController extends Controller
     }
 
     /**
-     * Tier card data shown on the picker page. Mirrors the pricing block in
-     * the landing page; keep both pointing at the same SOURCE OF TRUTH
-     * (config/billing.php) when copy iteration ramps up.
+     * Tier card data shown on the picker page. SINGLE SOURCE OF TRUTH is
+     * config/billing.php — prices, caps, plan names all derive from there.
+     * The landing page uses the same shape via the public static helper
+     * tiersFromConfig() below so we cannot drift between the two surfaces.
+     *
+     * The non-config bits (sales copy: best-for, highlight flag, white-label
+     * boolean) stay here because they're marketing decisions, not billing
+     * data — but they're keyed by plan slug so adding a new tier in config
+     * doesn't silently break the picker if no copy is supplied (we skip
+     * unknown tiers).
      */
     private function tiers(): array
     {
-        return [
-            [
-                'key' => 'solo',
-                'name' => 'Solo',
-                'price' => 'RM 99',
-                'unit' => '/ month',
-                'brands' => '1 brand',
-                'posts' => '60 posts/mo',
-                'whitelabel' => false,
+        return self::tiersFromConfig();
+    }
+
+    /**
+     * Static so the landing page Blade can call it without a controller
+     * instance. Returns a list of tier cards ready to render: name + MYR
+     * price + caps (brands, posts/mo) + marketing copy + annual savings.
+     *
+     * @return array<int, array{
+     *   key:string, name:string,
+     *   price:string, unit:string, price_myr:int,
+     *   annual_myr:int, annual_savings_myr:int,
+     *   brands:string, posts:string, videos:string,
+     *   whitelabel:bool, best:string, highlight?:bool,
+     * }>
+     */
+    public static function tiersFromConfig(): array
+    {
+        // Marketing copy per plan slug. Plans without copy here are skipped
+        // (eg. eiaaw_internal is never shown on signup).
+        $copy = [
+            'solo' => [
                 'best' => 'For founders running their own brand.',
+                'whitelabel' => false,
             ],
-            [
-                'key' => 'studio',
-                'name' => 'Studio',
-                'price' => 'RM 299',
-                'unit' => '/ month',
-                'brands' => '3 brands',
-                'posts' => '300 posts/mo',
-                'whitelabel' => true,
+            'studio' => [
                 'best' => 'For freelancers and small studios. White-label included.',
-            ],
-            [
-                'key' => 'agency',
-                'name' => 'Agency',
-                'price' => 'RM 799',
-                'unit' => '/ month',
-                'brands' => '12 brands',
-                'posts' => 'Unlimited',
                 'whitelabel' => true,
+            ],
+            'agency' => [
                 'best' => 'For agencies with full client portal + per-client guardrail isolation.',
+                'whitelabel' => true,
                 'highlight' => true,
             ],
         ];
+
+        $tiers = [];
+        $plans = (array) config('billing.plans', []);
+
+        foreach (self::ALLOWED_PLANS as $key) {
+            $plan = $plans[$key] ?? null;
+            $cfg = $copy[$key] ?? null;
+            if (! $plan || ! $cfg) continue;
+
+            $brands = (int) ($plan['caps']['max_brands'] ?? 0);
+            $posts = (int) ($plan['caps']['max_published_posts_per_month'] ?? 0);
+            $videos = (int) ($plan['caps']['max_ai_videos_per_month'] ?? 0);
+
+            $tiers[] = [
+                'key' => $key,
+                'name' => (string) ($plan['name'] ?? ucfirst($key)),
+                'price' => 'RM ' . number_format((int) ($plan['price_myr'] ?? 0)),
+                'unit' => '/ month',
+                'price_myr' => (int) ($plan['price_myr'] ?? 0),
+                'annual_myr' => StripePriceCache::annualMyr($plan),
+                'annual_savings_myr' => StripePriceCache::annualSavingsMyr($plan),
+                'brands' => $brands . ' brand' . ($brands === 1 ? '' : 's'),
+                // "Unlimited" reads better than "1500 posts/mo" for Agency.
+                // The hard cap is still 1500 (see config) — this is just
+                // marketing copy. Anything above ~1000 reads as unlimited
+                // for any realistic agency workload.
+                'posts' => $posts >= 1000 ? 'Unlimited posts' : ($posts . ' posts/mo'),
+                'videos' => $videos . ' AI videos/mo',
+                'whitelabel' => (bool) $cfg['whitelabel'],
+                'best' => (string) $cfg['best'],
+                'highlight' => (bool) ($cfg['highlight'] ?? false),
+            ];
+        }
+
+        return $tiers;
     }
 }

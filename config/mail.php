@@ -113,4 +113,19 @@ return [
         'name' => env('MAIL_FROM_NAME', 'Example'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Operational mail overrides
+    |--------------------------------------------------------------------------
+    | We pin certain operational mails (security alerts, 80%-cap warnings) to
+    | Resend explicitly so a future product MAIL_MAILER swap (Mailgun →
+    | Postmark, etc.) doesn't move critical operational traffic onto a less
+    | reliable transport. Mirrors config/security.php → 'alerts.mailer'.
+    */
+    'cap_warning' => [
+        'mailer' => env('CAP_WARNING_MAILER', 'resend'),
+        'from_address' => env('CAP_WARNING_FROM', 'noreply@eiaawsolutions.com'),
+        'from_name' => env('CAP_WARNING_FROM_NAME', 'EIAAW Social Media Team'),
+    ],
+
 ];
