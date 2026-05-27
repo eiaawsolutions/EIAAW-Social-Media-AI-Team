@@ -76,13 +76,26 @@ class BillingController extends Controller
 
         $planConfig = $plans[$plan];
 
-        $session = $stripe->checkout->sessions->create(array_merge($customerArg, [
+        // Geography gate — v1 is Malaysia-only (config/billing.php
+        // 'allowed_countries'). We require billing address collection so
+        // Stripe captures the country. Post-checkout (success handler) we
+        // verify the address country is in the allowed list and reject
+        // otherwise. Stripe's Checkout API doesn't natively restrict the
+        // country dropdown for subscription mode, so this is enforced
+        // server-side after Stripe returns the session.
+        // Once SST is enabled (config/billing.php 'tax.enabled') we also
+        // flip automatic_tax + tax_id_collection on so MY customers are
+        // charged 8% SST and B2B customers can supply a tax ID.
+        $taxEnabled = (bool) config('billing.tax.enabled', false);
+
+        $sessionArgs = array_merge($customerArg, [
             'mode'                 => 'subscription',
             'payment_method_types' => ['card'],
             'line_items'           => [[
                 'price'    => $priceId,
                 'quantity' => 1,
             ]],
+            'billing_address_collection' => 'required',
             'subscription_data' => [
                 'trial_period_days' => $planConfig['trial_days'],
                 'metadata'          => [
@@ -100,7 +113,23 @@ class BillingController extends Controller
             'success_url'        => route('billing.success').'?session_id={CHECKOUT_SESSION_ID}',
             'cancel_url'         => route('signup.picker', ['canceled' => 1]),
             'allow_promotion_codes' => true,
-        ]));
+        ]);
+
+        // Only add tax-related blocks when SST is active — sending them
+        // with enabled=false confuses Stripe's automatic_tax engine and
+        // sometimes returns a 400. Opt-in only.
+        if ($taxEnabled) {
+            $sessionArgs['automatic_tax'] = ['enabled' => true];
+            $sessionArgs['tax_id_collection'] = ['enabled' => true];
+            // customer_update is REQUIRED by automatic_tax when reusing an
+            // existing customer, so Stripe can refresh the address used
+            // for tax calc.
+            if (! empty($existing->data)) {
+                $sessionArgs['customer_update'] = ['address' => 'auto', 'name' => 'auto'];
+            }
+        }
+
+        $session = $stripe->checkout->sessions->create($sessionArgs);
 
         // Defensive allow-list: Stripe controls this URL today, but a
         // compromised SDK or a future API change shouldn't be able to push
@@ -153,6 +182,38 @@ class BillingController extends Controller
         $trialing = $subscription && ($subscription->status ?? null) === 'trialing';
         if (! $paid && ! $trialing) {
             return redirect()->route('signup.picker', ['payment_failed' => 1]);
+        }
+
+        // Geography gate (v1 = Malaysia only). Stripe captured the billing
+        // address during checkout; if the customer is outside the allowed
+        // list, refund the subscription (still in trial, no charge yet) and
+        // bounce them. Trial subscriptions can be cancelled cleanly with no
+        // refund mechanics needed; paid subscriptions are rarer here (only
+        // if trial_period_days=0 someday) but the same cancel call works.
+        $allowedCountries = (array) config('billing.allowed_countries', ['MY']);
+        $customerCountry = $session->customer_details?->address?->country ?? null;
+        if ($customerCountry && ! in_array($customerCountry, $allowedCountries, true)) {
+            Log::warning('billing.success: non-allowed country, cancelling subscription', [
+                'session_id' => $sessionId,
+                'country' => $customerCountry,
+                'allowed' => $allowedCountries,
+            ]);
+            // Best-effort cancel; if it fails we still refuse provisioning.
+            try {
+                if ($subscription?->id) {
+                    Cashier::stripe()->subscriptions->cancel($subscription->id);
+                }
+            } catch (\Throwable $e) {
+                Log::error('billing.success: cancel failed for non-allowed country', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+            return redirect()->route('signup.picker')
+                ->with('error', sprintf(
+                    'EIAAW Social Media AI Team is currently available in Malaysia only. Your trial has been cancelled and no charge will be made. Email %s if you\'d like to be notified when we launch in %s.',
+                    'eiaawsolutions@gmail.com',
+                    $customerCountry,
+                ));
         }
 
         // Stripe metadata arrives as a \Stripe\StripeObject. PHP's (array)
