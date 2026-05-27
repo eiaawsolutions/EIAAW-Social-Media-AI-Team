@@ -31,27 +31,74 @@ use Illuminate\Support\Facades\Log;
  */
 class PlatformSyncService
 {
-    public function __construct(private readonly BlotatoClient $blotato) {}
+    /**
+     * No-arg constructor — the per-workspace BlotatoClient is resolved
+     * inside syncForBrand() from the brand's workspace, not injected, to
+     * guarantee tenant isolation. Each call to syncForBrand() builds a
+     * client scoped to that brand's workspace's Blotato account.
+     *
+     * Prior to 2026-05-27 this took an injected BlotatoClient — a leftover
+     * from the single-tenant model where one global key served everyone.
+     * That signature made the cross-tenant leakage easy to introduce: any
+     * caller could pass a BlotatoClient built from HQ's key against a
+     * customer's brand. The no-arg constructor closes that hole.
+     */
+    public function __construct() {}
 
     /**
      * Sync all Blotato accounts into platform_connections for the given brand.
+     *
+     * The BlotatoClient is built from the brand's workspace handle, so a
+     * customer's sync only sees their own Blotato account's social handles —
+     * never HQ's or any other workspace's.
      *
      * @return array{synced: int, marked_revoked: int, errors: array<string>}
      */
     public function syncForBrand(Brand $brand): array
     {
-        if (! $this->blotato->ping()) {
+        $workspace = $brand->workspace;
+        if (! $workspace) {
             return [
                 'synced' => 0,
                 'marked_revoked' => 0,
-                'errors' => ['Could not reach Blotato. Verify BLOTATO_API_KEY at eiaaw-smt-prod/prod/BLOTATO_API_KEY.'],
+                'errors' => ['Brand has no workspace — refusing to sync.'],
             ];
         }
 
         try {
-            $accounts = $this->blotato->listAccounts();
+            $blotato = BlotatoClient::forWorkspace($workspace);
+        } catch (\Throwable $e) {
+            return [
+                'synced' => 0,
+                'marked_revoked' => 0,
+                'errors' => [$e->getMessage()],
+            ];
+        }
+
+        if (! $blotato->ping()) {
+            return [
+                'synced' => 0,
+                'marked_revoked' => 0,
+                'errors' => [sprintf(
+                    'Could not reach Blotato for workspace #%d (%s). Verify the API key at %s.',
+                    $workspace->id,
+                    $workspace->slug,
+                    $workspace->blotato_api_key_handle,
+                )],
+            ];
+        }
+
+        // First successful ping for this workspace — record it so the UI
+        // can flip its "Connected" indicator from grey to green.
+        if ($workspace->blotato_connected_at === null) {
+            $workspace->forceFill(['blotato_connected_at' => now()])->save();
+        }
+
+        try {
+            $accounts = $blotato->listAccounts();
         } catch (\Throwable $e) {
             Log::error('PlatformSyncService::syncForBrand listAccounts failed', [
+                'workspace_id' => $workspace->id,
                 'brand_id' => $brand->id,
                 'error' => $e->getMessage(),
             ]);

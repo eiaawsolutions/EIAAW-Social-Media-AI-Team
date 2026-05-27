@@ -38,10 +38,16 @@ return [
         'services.voyage.api_key',
 
         // Publishing
+        // services.blotato.api_key is the HQ-only fallback (resolved at boot
+        // from the .env handle). Per-workspace keys live on
+        // workspaces.blotato_api_key_handle and are resolved on demand by
+        // BlotatoClient::forWorkspace() — they're NOT in this allow-list
+        // because they're per-row and there's no fixed config path to rewrite.
         'services.blotato.api_key',
 
         // Mail
         'services.mailgun.secret',
+        'services.resend.key',
         'mail.mailers.smtp.password',
 
         // Storage (Cloudflare R2 via S3-compatible disk)

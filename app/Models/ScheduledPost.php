@@ -12,6 +12,7 @@ class ScheduledPost extends Model
         'scheduled_for', 'status', 'blotato_post_id',
         'platform_post_id', 'platform_post_url', 'last_error',
         'attempt_count', 'submitted_at', 'published_at',
+        'queued_for_period_at',
     ];
 
     protected function casts(): array
@@ -20,6 +21,7 @@ class ScheduledPost extends Model
             'scheduled_for' => 'datetime',
             'submitted_at' => 'datetime',
             'published_at' => 'datetime',
+            'queued_for_period_at' => 'datetime',
         ];
     }
 

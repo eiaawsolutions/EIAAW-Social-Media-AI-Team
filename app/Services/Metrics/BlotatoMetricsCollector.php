@@ -37,12 +37,25 @@ class BlotatoMetricsCollector
     {
         if (! $post->blotato_post_id) return [];
 
+        // Per-workspace client — Blotato's getPostStatus only returns data
+        // for posts created via the same API key, so a global fallback
+        // would silently return empty metrics for every post not made by
+        // HQ. Resolve from the post's brand's workspace handle.
+        $workspace = $post->brand?->workspace;
+        if (! $workspace) {
+            Log::warning('BlotatoMetricsCollector: post has no workspace context', [
+                'post_id' => $post->id,
+            ]);
+            return [];
+        }
+
         try {
-            $client = BlotatoClient::fromConfig();
+            $client = BlotatoClient::forWorkspace($workspace);
             $status = $client->getPostStatus($post->blotato_post_id);
         } catch (\Throwable $e) {
             Log::warning('BlotatoMetricsCollector: getPostStatus failed', [
                 'post_id' => $post->id,
+                'workspace_id' => $workspace->id,
                 'error' => $e->getMessage(),
             ]);
             return [];

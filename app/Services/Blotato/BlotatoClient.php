@@ -2,6 +2,8 @@
 
 namespace App\Services\Blotato;
 
+use App\Models\Workspace;
+use App\Services\Secrets\InfisicalResolver;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -49,14 +51,60 @@ class BlotatoClient
     }
 
     /**
-     * Construct from Laravel config — single source of truth for app code.
-     * Equivalent to `app(BlotatoClient::class)` if registered as a singleton,
-     * but keeps construction explicit + testable.
+     * Construct from Laravel config — HQ-only fallback path.
+     *
+     * Use this ONLY when (a) running an HQ-scoped artisan command without a
+     * workspace context, or (b) bootstrapping/smoke-testing the integration
+     * before per-workspace handles are provisioned. Every customer-facing
+     * code path MUST use forWorkspace() instead — otherwise a customer's
+     * sync run uses HQ's Blotato account and leaks cross-tenant data into
+     * platform_connections.
      */
     public static function fromConfig(): self
     {
         return new self(
             apiKey: (string) config('services.blotato.api_key'),
+            baseUrl: rtrim((string) config('services.blotato.base_url', 'https://backend.blotato.com'), '/'),
+            timeout: (int) config('services.blotato.request_timeout', 30),
+        );
+    }
+
+    /**
+     * Resolve the Workspace's own Blotato handle and construct a client
+     * scoped to that workspace's Blotato account.
+     *
+     * Why: Blotato has no native multi-workspace primitive — one API key =
+     * one Blotato account = one set of connected social handles. To isolate
+     * customers we provision one Blotato account per workspace and store
+     * the Infisical handle on workspaces.blotato_api_key_handle. Per the
+     * EIAAW Deploy Contract the raw key NEVER lands in the DB; only the
+     * handle does, and InfisicalResolver fetches the value at request time.
+     *
+     * The resolver memoizes per-request, so repeated forWorkspace($ws)
+     * calls inside a single Filament action or queue job cost one HTTP
+     * hit to Infisical regardless of N.
+     *
+     * @throws RuntimeException when the workspace has no handle configured.
+     *         Callers should catch and surface a "connect your Blotato
+     *         account" UX flow rather than retrying — the operator must
+     *         provision the Infisical secret manually.
+     */
+    public static function forWorkspace(Workspace $workspace): self
+    {
+        $handle = (string) ($workspace->blotato_api_key_handle ?? '');
+        if ($handle === '') {
+            throw new RuntimeException(
+                "Workspace #{$workspace->id} ({$workspace->slug}) has no Blotato API key configured. "
+                . 'Operator must (1) create a Blotato account for this workspace, (2) generate its API key, '
+                . '(3) store at eiaaw-smt-prod/prod/BLOTATO_API_KEY_WS_' . $workspace->id . ' in Infisical, '
+                . "(4) set workspaces.blotato_api_key_handle to that handle. See /agency/settings/integrations."
+            );
+        }
+
+        $apiKey = app(InfisicalResolver::class)->resolve($handle);
+
+        return new self(
+            apiKey: $apiKey,
             baseUrl: rtrim((string) config('services.blotato.base_url', 'https://backend.blotato.com'), '/'),
             timeout: (int) config('services.blotato.request_timeout', 30),
         );

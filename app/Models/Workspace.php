@@ -52,6 +52,9 @@ class Workspace extends Model
         'publishing_paused',
         'publishing_paused_at',
         'publishing_paused_reason',
+        'blotato_api_key_handle',
+        'blotato_account_email',
+        'blotato_connected_at',
     ];
 
     protected function casts(): array
@@ -63,6 +66,7 @@ class Workspace extends Model
             'suspended_at' => 'datetime',
             'publishing_paused' => 'boolean',
             'publishing_paused_at' => 'datetime',
+            'blotato_connected_at' => 'datetime',
             'settings' => 'array',
         ];
     }
@@ -133,5 +137,77 @@ class Workspace extends Model
         return $this->subscription_status === 'trialing'
             && $this->trial_ends_at !== null
             && $this->trial_ends_at->isPast();
+    }
+
+    /**
+     * True iff this workspace has no Blotato account wired yet. UI surfaces
+     * a "Connect your Blotato account" empty state in /agency/platforms and
+     * publishing jobs short-circuit with a clear failure message instead of
+     * leaking HQ's accounts via the legacy fromConfig() path.
+     */
+    public function needsBlotatoSetup(): bool
+    {
+        return empty($this->blotato_api_key_handle);
+    }
+
+    /**
+     * Active (non-archived) brand count. Drives PlanCaps::canAddBrand —
+     * archived brands free up the slot so an operator can rotate without
+     * an upgrade.
+     */
+    public function activeBrandsCount(): int
+    {
+        return $this->brands()->whereNull('archived_at')->count();
+    }
+
+    /**
+     * Published-post count for the current calendar month in the workspace's
+     * timezone. Used by PlanCaps::canPublishMorePosts to gate
+     * SubmitScheduledPost. Counts `status='published'` rows whose
+     * `published_at` falls in this month. Does NOT count posts deferred to
+     * next period (status='queued_next_period') because those rows haven't
+     * been billed against Blotato yet.
+     */
+    public function publishedPostsThisMonth(): int
+    {
+        $tz = (string) ($this->settings['timezone'] ?? config('app.timezone', 'UTC'));
+        $startOfMonth = now($tz)->startOfMonth()->utc();
+
+        return \App\Models\ScheduledPost::query()
+            ->whereHas('brand', fn ($q) => $q->where('workspace_id', $this->id))
+            ->where('status', 'published')
+            ->where('published_at', '>=', $startOfMonth)
+            ->count();
+    }
+
+    /**
+     * AI-video generations for the current calendar month. Counts AiCost
+     * rows where agent_role='video' AND provider='fal' for any brand in
+     * this workspace. Used by PlanCaps::canGenerateMoreAiVideos to gate
+     * VideoAgent before the FAL call (cost is incurred at generation, so
+     * gate before, not after).
+     */
+    public function aiVideosThisMonth(): int
+    {
+        $tz = (string) ($this->settings['timezone'] ?? config('app.timezone', 'UTC'));
+        $startOfMonth = now($tz)->startOfMonth()->utc();
+
+        return AiCost::query()
+            ->where('workspace_id', $this->id)
+            ->where('agent_role', 'video')
+            ->where('provider', 'fal')
+            ->where('called_at', '>=', $startOfMonth)
+            ->count();
+    }
+
+    /**
+     * True iff the workspace has both provisioned a Blotato handle AND we've
+     * successfully pinged it at least once. Drives the green/grey "Connected"
+     * pill in the platforms page and the operator-side health dashboard.
+     */
+    public function hasBlotatoConnected(): bool
+    {
+        return ! empty($this->blotato_api_key_handle)
+            && $this->blotato_connected_at !== null;
     }
 }

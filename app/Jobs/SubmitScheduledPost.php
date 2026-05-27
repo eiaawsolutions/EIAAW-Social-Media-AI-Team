@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\ScheduledPost;
+use App\Services\Billing\PlanCaps;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Blotato\PlatformRules;
 use App\Services\Publishing\PostVerificationRules;
@@ -60,14 +61,9 @@ class SubmitScheduledPost implements ShouldQueue
         }
         if ($post->status === 'submitted') {
             if ($post->blotato_post_id) {
-                try {
-                    $client = BlotatoClient::fromConfig();
-                } catch (\Throwable $e) {
-                    Log::warning('SubmitScheduledPost: poll-only client init failed', [
-                        'id' => $post->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                    return;
+                $client = $this->resolveClient($post);
+                if ($client === null) {
+                    return; // resolveClient() logged the reason
                 }
                 $this->pollAndAdvance($post, $client);
             }
@@ -94,6 +90,33 @@ class SubmitScheduledPost implements ShouldQueue
             return; // stays in 'queued', will be picked up after resume
         }
 
+        // Monthly published-posts cap. When the workspace is at-cap, the
+        // row flips to `queued_next_period` with `queued_for_period_at` =
+        // first of next calendar month at 00:05 workspace TZ. The
+        // posts:release-queued-next-period cron then flips it back to
+        // 'queued' so the regular dispatcher picks it up. Customer keeps
+        // their content (no failures) — they just see "queued for next
+        // period" in the live feed.
+        if ($brand && $brand->workspace
+            && ! app(PlanCaps::class)->canPublishMorePosts($brand->workspace)) {
+            $tz = (string) ($brand->workspace->settings['timezone'] ?? config('app.timezone', 'UTC'));
+            $releaseAt = now($tz)->addMonthNoOverflow()->startOfMonth()->addMinutes(5)->utc();
+            $post->update([
+                'status' => 'queued_next_period',
+                'queued_for_period_at' => $releaseAt,
+                'last_error' => sprintf(
+                    'Plan cap reached for this month. Auto-publishing on %s. Upgrade your plan at /agency/billing to publish now.',
+                    $releaseAt->copy()->setTimezone($tz)->toDayDateTimeString(),
+                ),
+            ]);
+            Log::info('SubmitScheduledPost: deferred — plan cap reached', [
+                'id' => $post->id,
+                'workspace_id' => $brand->workspace_id,
+                'release_at' => $releaseAt->toIso8601String(),
+            ]);
+            return;
+        }
+
         if ($post->platformConnection->status !== 'active') {
             $this->markFailed($post, 'Platform connection is not active (status=' . $post->platformConnection->status . ').');
             return;
@@ -104,10 +127,13 @@ class SubmitScheduledPost implements ShouldQueue
             'attempt_count' => $post->attempt_count + 1,
         ]);
 
-        try {
-            $client = BlotatoClient::fromConfig();
-        } catch (\Throwable $e) {
-            $this->markFailed($post, 'Blotato config error: ' . $e->getMessage());
+        $client = $this->resolveClient($post);
+        if ($client === null) {
+            $this->markFailed(
+                $post,
+                'Workspace #' . ($brand->workspace_id ?? '?') . ' has no Blotato API key configured. '
+                . 'Operator must provision a per-workspace Blotato account before this post can publish.',
+            );
             return;
         }
 
@@ -261,6 +287,36 @@ class SubmitScheduledPost implements ShouldQueue
 
         // Poll once now; subsequent polls happen via the cron poller.
         $this->pollAndAdvance($post, $client);
+    }
+
+    /**
+     * Build a BlotatoClient scoped to the post's owning workspace. Returns
+     * null (and logs) when the workspace has no Blotato handle configured
+     * or Infisical resolution fails. Callers must handle null explicitly —
+     * we deliberately don't fall back to HQ's key, because that would
+     * publish a customer's post via HQ's Blotato account.
+     */
+    private function resolveClient(ScheduledPost $post): ?BlotatoClient
+    {
+        $workspace = $post->brand?->workspace;
+        if (! $workspace) {
+            Log::warning('SubmitScheduledPost: post has no workspace context', [
+                'id' => $post->id,
+                'brand_id' => $post->brand_id ?? null,
+            ]);
+            return null;
+        }
+
+        try {
+            return BlotatoClient::forWorkspace($workspace);
+        } catch (\Throwable $e) {
+            Log::warning('SubmitScheduledPost: per-workspace Blotato client init failed', [
+                'id' => $post->id,
+                'workspace_id' => $workspace->id,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
     }
 
     private function pollAndAdvance(ScheduledPost $post, BlotatoClient $client): void

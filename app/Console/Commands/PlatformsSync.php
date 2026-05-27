@@ -40,11 +40,27 @@ class PlatformsSync extends Command
 
         $this->info("Brand: #{$brand->id} ({$brand->slug}) — workspace #{$brand->workspace_id}");
 
-        $blotato = BlotatoClient::fromConfig();
+        $workspace = $brand->workspace;
+        if (! $workspace) {
+            $this->error('Brand has no workspace.');
+            return self::FAILURE;
+        }
+        if ($workspace->needsBlotatoSetup()) {
+            $this->error("Workspace #{$workspace->id} ({$workspace->slug}) has no Blotato API key configured.");
+            $this->line('Set workspaces.blotato_api_key_handle to a secret:// handle pointing at the workspace\'s Blotato API key in Infisical.');
+            return self::FAILURE;
+        }
 
-        $this->line('Pinging Blotato...');
+        try {
+            $blotato = BlotatoClient::forWorkspace($workspace);
+        } catch (\Throwable $e) {
+            $this->error('Per-workspace Blotato client init failed: ' . $e->getMessage());
+            return self::FAILURE;
+        }
+
+        $this->line('Pinging Blotato (per-workspace key)...');
         if (! $blotato->ping()) {
-            $this->error('Blotato unreachable. Check BLOTATO_API_KEY at eiaaw-smt-prod/prod/BLOTATO_API_KEY.');
+            $this->error('Blotato unreachable. Check ' . $workspace->blotato_api_key_handle . ' in Infisical.');
             return self::FAILURE;
         }
         $this->info('  Blotato OK.');
@@ -71,7 +87,7 @@ class PlatformsSync extends Command
             return self::SUCCESS;
         }
 
-        $sync = new PlatformSyncService($blotato);
+        $sync = new PlatformSyncService();
         $result = $sync->syncForBrand($brand);
 
         $this->newLine();

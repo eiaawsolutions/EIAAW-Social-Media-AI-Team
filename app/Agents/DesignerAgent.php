@@ -114,12 +114,18 @@ class DesignerAgent extends BaseAgent
                 /** @var \App\Models\BrandAsset $asset */
                 $asset = $picked['asset'];
 
-                // Re-host through Blotato so /v2/posts accepts it.
+                // Re-host through THIS WORKSPACE'S Blotato account so /v2/posts
+                // accepts it. The media URL returned by Blotato is scoped to
+                // the uploading account — if HQ uploads it, a customer's
+                // createPost() call gets 403 because the account doesn't own
+                // that media. Always upload via the brand's workspace's key.
                 try {
-                    $blotatoUrl = BlotatoClient::fromConfig()->uploadMediaFromUrl($asset->public_url);
+                    $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
+                        ->uploadMediaFromUrl($asset->public_url);
                 } catch (\Throwable $e) {
                     Log::warning('DesignerAgent: library asset Blotato upload failed; falling back to FAL', [
                         'asset_id' => $asset->id,
+                        'workspace_id' => $brand->workspace_id,
                         'error' => $e->getMessage(),
                     ]);
                     $blotatoUrl = null;
@@ -261,15 +267,16 @@ class DesignerAgent extends BaseAgent
             }
         }
 
-        // Re-host on Blotato unless explicitly skipped.
+        // Re-host on Blotato (this workspace's account) unless explicitly skipped.
         $finalUrl = $urlForBlotato;
         if (empty($input['skip_blotato_upload'])) {
             try {
-                $blotato = BlotatoClient::fromConfig();
+                $blotato = BlotatoClient::forWorkspace($brand->workspace);
                 $finalUrl = $blotato->uploadMediaFromUrl($urlForBlotato);
             } catch (\Throwable $e) {
                 Log::error('DesignerAgent: Blotato media upload failed', [
                     'draft_id' => $draft->id,
+                    'workspace_id' => $brand->workspace_id,
                     'fal_url' => $falUrl,
                     'error' => $e->getMessage(),
                 ]);

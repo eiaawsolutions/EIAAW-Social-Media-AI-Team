@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\ScheduledPost;
+use App\Models\Workspace;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Publishing\PostVerificationRules;
 use Illuminate\Console\Command;
@@ -41,14 +42,15 @@ class PostsReconcilePublished extends Command
         $platformFilter = strtolower(trim((string) $this->option('platform'))) ?: null;
         $apply = (bool) $this->option('apply');
 
-        try {
-            $client = BlotatoClient::fromConfig();
-        } catch (\Throwable $e) {
-            $this->error('Blotato config error: ' . $e->getMessage());
-            return self::FAILURE;
-        }
+        // Per-workspace clients are resolved inside the row loop. We process
+        // posts across many workspaces in a single reconcile run, so a single
+        // up-front client would route every status fetch through HQ's
+        // Blotato account — which only returns data for HQ-submitted posts
+        // (silently empty results for every customer post). Cache by
+        // workspace id so we don't re-resolve Infisical for every row.
+        $clientByWorkspace = [];
 
-        $q = ScheduledPost::with('draft')
+        $q = ScheduledPost::with(['draft', 'brand.workspace'])
             ->where('status', 'published')
             ->whereNotNull('blotato_post_id')
             ->orderBy('id')
@@ -76,6 +78,30 @@ class PostsReconcilePublished extends Command
             if ($existing['verified']) {
                 $stats['verified_pre_existing']++;
                 $this->line(sprintf('SP%d %s — already verified (%s)', $post->id, $platform, $existing['reason']));
+                continue;
+            }
+
+            // Per-workspace client (cached so multiple posts in the same
+            // workspace share one resolved key). Skip rows whose workspace
+            // hasn't been wired to Blotato — they can't be reconciled.
+            $workspace = $post->brand?->workspace;
+            if (! $workspace) {
+                $stats['errors']++;
+                $this->warn(sprintf('SP%d skipped — no workspace context.', $post->id));
+                continue;
+            }
+
+            if (! isset($clientByWorkspace[$workspace->id])) {
+                try {
+                    $clientByWorkspace[$workspace->id] = BlotatoClient::forWorkspace($workspace);
+                } catch (\Throwable $e) {
+                    $clientByWorkspace[$workspace->id] = false; // memoize the failure
+                    $this->warn(sprintf('Workspace #%d Blotato unconfigured: %s', $workspace->id, $e->getMessage()));
+                }
+            }
+            $client = $clientByWorkspace[$workspace->id];
+            if ($client === false) {
+                $stats['errors']++;
                 continue;
             }
 

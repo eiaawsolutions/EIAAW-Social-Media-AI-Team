@@ -5,6 +5,7 @@ namespace App\Agents;
 use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\Draft;
+use App\Services\Billing\PlanCaps;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Branding\BrandVideoComposer;
 use App\Services\Branding\FalTtsClient;
@@ -97,6 +98,22 @@ class VideoAgent extends BaseAgent
             return AgentResult::fail("Platform '{$draft->platform}' does not accept short-form video — skip VideoAgent on this draft.");
         }
 
+        // Plan cap gate — hard-fail before any FAL call. Cost is incurred at
+        // generation (unlike publishing, which is incurred at submission),
+        // so we cannot defer to next period; the customer must either skip
+        // video for this draft or upgrade. We surface the limit + upgrade
+        // path in the failure message so the operator can act on it.
+        if ($brand->workspace
+            && ! app(PlanCaps::class)->canGenerateMoreAiVideos($brand->workspace)) {
+            $caps = app(PlanCaps::class)->capsFor($brand->workspace);
+            return AgentResult::fail(sprintf(
+                'Monthly AI-video cap reached (%d/%d on the %s plan). Use a still image for this draft, or upgrade at /agency/billing for more video credit.',
+                $brand->workspace->aiVideosThisMonth(),
+                $caps['max_ai_videos_per_month'],
+                ucfirst((string) $brand->workspace->plan),
+            ));
+        }
+
         // Already video? Idempotent no-op. Detect by .mp4 extension or
         // asset_urls history containing a video entry.
         if ($this->draftAlreadyHasVideo($draft)) {
@@ -116,11 +133,15 @@ class VideoAgent extends BaseAgent
             if ($picked) {
                 /** @var \App\Models\BrandAsset $asset */
                 $asset = $picked['asset'];
+                // Upload through THIS WORKSPACE's Blotato — the returned URL
+                // is account-scoped and createPost() on another account 403s.
                 try {
-                    $blotatoUrl = BlotatoClient::fromConfig()->uploadMediaFromUrl($asset->public_url);
+                    $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
+                        ->uploadMediaFromUrl($asset->public_url);
                 } catch (\Throwable $e) {
                     Log::warning('VideoAgent: library asset Blotato upload failed; falling back to FAL', [
                         'asset_id' => $asset->id,
+                        'workspace_id' => $brand->workspace_id,
                         'error' => $e->getMessage(),
                     ]);
                     $blotatoUrl = null;
@@ -263,15 +284,16 @@ class VideoAgent extends BaseAgent
             }
         }
 
-        // Re-host on Blotato so it's publishable.
+        // Re-host on Blotato (this workspace's account) so it's publishable.
         $finalUrl = $urlForBlotato;
         if (empty($input['skip_blotato_upload'])) {
             try {
-                $blotato = BlotatoClient::fromConfig();
+                $blotato = BlotatoClient::forWorkspace($brand->workspace);
                 $finalUrl = $blotato->uploadMediaFromUrl($urlForBlotato);
             } catch (\Throwable $e) {
                 Log::error('VideoAgent: Blotato media upload failed', [
                     'draft_id' => $draft->id,
+                    'workspace_id' => $brand->workspace_id,
                     'fal_url' => $falUrl,
                     'error' => $e->getMessage(),
                 ]);
