@@ -132,7 +132,11 @@ class VideoAgent extends BaseAgent
         }
 
         // Library-first routing for videos — same shape as DesignerAgent.
-        $forceFal = ! empty($input['force_fal']) || ! empty($input['skip_library']);
+        // EIAAW-internal brands prefer bespoke Wan generation from the scripted
+        // brief over a generic stock-library clip (config-gated).
+        $internalPrefersAi = EiaawBrandLock::appliesTo($brand)
+            && (bool) config('services.fal.internal_prefers_ai', true);
+        $forceFal = ! empty($input['force_fal']) || ! empty($input['skip_library']) || $internalPrefersAi;
         $libraryFirst = (bool) config('services.fal.library_first', true);
 
         if (! $forceFal && $libraryFirst) {

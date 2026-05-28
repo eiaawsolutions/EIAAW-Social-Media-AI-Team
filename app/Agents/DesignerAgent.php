@@ -102,12 +102,19 @@ class DesignerAgent extends BaseAgent
         }
 
         // Library-first routing. If the brand has uploaded assets, semantically
-        // pick the best match before burning FAL credit. Three escape hatches
-        // for the operator to skip this and force AI generation:
+        // pick the best match before burning FAL credit. Escape hatches to
+        // skip this and force AI generation:
         //   - $input['force_fal'] = true        (per-call override from UI)
         //   - $input['skip_library'] = true     (legacy alias)
-        //   - DesignerAgent\Pickerss disabled via config (services.fal.library_first = false)
-        $forceFal = ! empty($input['force_fal']) || ! empty($input['skip_library']);
+        //   - services.fal.library_first = false (global disable)
+        //   - EIAAW-internal brand + services.fal.internal_prefers_ai = true:
+        //     the house brand gets a bespoke FAL image from the scripted scene
+        //     brief instead of a generic stock-library match, so every internal
+        //     post is on-message. Client workspaces keep library-first (they
+        //     upload their own brand-correct photography).
+        $internalPrefersAi = EiaawBrandLock::appliesTo($brand)
+            && (bool) config('services.fal.internal_prefers_ai', true);
+        $forceFal = ! empty($input['force_fal']) || ! empty($input['skip_library']) || $internalPrefersAi;
         $libraryFirst = (bool) config('services.fal.library_first', true);
 
         if (! $forceFal && $libraryFirst) {

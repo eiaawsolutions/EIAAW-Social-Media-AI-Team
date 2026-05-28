@@ -34,6 +34,17 @@ return [
         // cost) instead of calling FAL. Operator can force AI generation
         // per-draft via the 'Generate via FAL' UI action.
         'library_first' => (bool) env('FAL_LIBRARY_FIRST', true),
+        // Cosine-distance ceiling for the library matcher. Lower = stricter
+        // (only a genuinely on-topic uploaded asset is reused; otherwise we
+        // fall through to bespoke AI generation that depicts the post). Was
+        // 0.45 (loose) — tightened to 0.32 so generic stock no longer wins a
+        // weak match over a scripted-brief generation.
+        'library_match_distance' => (float) env('FAL_LIBRARY_MATCH_DISTANCE', 0.32),
+        // EIAAW house brand: prefer bespoke FAL generation from the scripted
+        // scene brief over reusing a generic stock-library asset, so every
+        // internal post gets an on-message visual. Client workspaces keep
+        // library-first (they upload their own brand-correct photography).
+        'internal_prefers_ai' => (bool) env('FAL_INTERNAL_PREFERS_AI', true),
         // Wan 2.6 i2v is the Q2 2026 quality leader for short-form vertical
         // ($0.50/clip, 5s 720p). Wan 2.6 t2v is the fallback when no still
         // exists yet. Veo 3 sits at higher quality + price; switch later.

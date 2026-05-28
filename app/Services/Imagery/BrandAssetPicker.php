@@ -22,10 +22,18 @@ use Illuminate\Support\Facades\Log;
  */
 class BrandAssetPicker
 {
-    /** Cosine distance ceiling — anything > this is too unrelated. 0.45 is moderately strict. */
-    private const MAX_COSINE_DISTANCE = 0.45;
+    /** Fallback cosine distance ceiling when config is unset. The live ceiling
+     *  is services.fal.library_match_distance (default 0.32) — tightened from
+     *  the old 0.45 so a generic stock asset no longer wins a weak semantic
+     *  match over a scripted-brief AI generation. */
+    private const DEFAULT_MAX_COSINE_DISTANCE = 0.32;
 
     public function __construct(private readonly EmbeddingService $embeddings) {}
+
+    private function maxDistance(): float
+    {
+        return (float) config('services.fal.library_match_distance', self::DEFAULT_MAX_COSINE_DISTANCE);
+    }
 
     /**
      * @return array{asset: BrandAsset, distance: float}|null
@@ -59,23 +67,21 @@ class BrandAssetPicker
         );
 
         if (empty($rows)) {
-            // Library empty (or all assets un-tagged). Fall back: latest
-            // brand_approved asset of the right type so caller still gets
-            // SOMETHING brand-correct rather than dropping to FAL.
-            $fallback = BrandAsset::where('brand_id', $brand->id)
-                ->where('media_type', $mediaType)
-                ->where('brand_approved', true)
-                ->whereNull('archived_at')
-                ->orderBy('last_used_at') // stale first
-                ->orderBy('use_count')    // least-used first
-                ->latest('id')
-                ->first();
-            return $fallback ? ['asset' => $fallback, 'distance' => 1.0] : null;
+            // No embedded candidates at all (library empty / all un-tagged).
+            // Previously we force-picked the latest brand_approved asset here
+            // at distance=1.0 — which BYPASSED the distance floor and let a
+            // generic off-topic stock photo land on the post. That is the
+            // exact "image unrelated to the script" bug. Return null instead
+            // so the caller falls through to a scripted-brief AI generation.
+            return null;
         }
 
         // Filter by distance ceiling.
-        $usable = array_filter($rows, fn ($r) => (float) $r->distance <= self::MAX_COSINE_DISTANCE);
-        if (empty($usable)) return null;
+        $max = $this->maxDistance();
+        $usable = array_filter($rows, fn ($r) => (float) $r->distance <= $max);
+        if (empty($usable)) {
+            return null;
+        }
 
         // Hydrate then tie-break.
         $ids = array_column($usable, 'id');
