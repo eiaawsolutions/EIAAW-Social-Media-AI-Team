@@ -2,9 +2,11 @@
 
 namespace App\Console\Commands;
 
+use App\Mail\BlotatoAccountReady;
 use App\Models\Workspace;
 use App\Services\Blotato\BlotatoClient;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Mail;
 
 /**
  * workspace:set-blotato-handle — operator-only command to wire a workspace's
@@ -34,6 +36,9 @@ class WorkspaceSetBlotatoHandle extends Command
                             {workspace : Workspace ID}
                             {handle? : secret:// handle pointing at the Infisical secret}
                             {--email= : Blotato account email for operator reference}
+                            {--login-url= : Blotato login URL to surface to the customer (default: https://my.blotato.com/)}
+                            {--temp-password= : Temp password to email to the customer (only used with --notify-customer)}
+                            {--notify-customer : Email the customer the Blotato login URL + (optional) temp password}
                             {--verify-only : Just ping with the existing handle, don\'t change it}
                             {--clear : Remove the handle (disconnect)}';
 
@@ -55,6 +60,11 @@ class WorkspaceSetBlotatoHandle extends Command
                 'blotato_api_key_handle' => null,
                 'blotato_account_email' => null,
                 'blotato_connected_at' => null,
+                'blotato_login_url' => null,
+                'blotato_credentials_sent_at' => null,
+                // Intentionally NOT clearing blotato_setup_requested_at —
+                // if HQ disconnects and re-provisions, the original request
+                // timestamp is still the user-visible "you asked on date X".
             ])->save();
             $this->info('Cleared. This workspace can no longer publish or sync via Blotato until a new handle is set.');
             return self::SUCCESS;
@@ -82,14 +92,65 @@ class WorkspaceSetBlotatoHandle extends Command
             return self::FAILURE;
         }
 
+        $loginUrl = (string) ($this->option('login-url') ?: $workspace->blotato_login_url ?: 'https://my.blotato.com/');
+
         $workspace->forceFill([
             'blotato_api_key_handle' => $handle,
             'blotato_account_email' => $this->option('email') ?: $workspace->blotato_account_email,
+            'blotato_login_url' => $loginUrl,
             'blotato_connected_at' => null, // re-verify after change
         ])->save();
         $this->info('Handle set. Verifying with Blotato ping…');
 
-        return $this->verifyAndRecord($workspace) ? self::SUCCESS : self::FAILURE;
+        $verified = $this->verifyAndRecord($workspace);
+
+        if ($verified && $this->option('notify-customer')) {
+            $this->notifyCustomer($workspace, $loginUrl);
+        } elseif (! $verified && $this->option('notify-customer')) {
+            $this->warn('--notify-customer skipped because verification failed. Fix the handle and re-run with --verify-only --notify-customer, or just re-run this command.');
+        }
+
+        return $verified ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Send the customer the BlotatoAccountReady email. Stamps
+     * blotato_credentials_sent_at so the PlatformSetup page flips to the
+     * "credentialed, awaiting verify" state.
+     *
+     * --temp-password is optional. If omitted, the email tells the customer
+     * to use Blotato's "Forgot password" flow instead — safer when the
+     * operator wants to avoid putting a password in email at all.
+     */
+    private function notifyCustomer(Workspace $workspace, string $loginUrl): void
+    {
+        $owner = $workspace->owner;
+        if (! $owner || ! $owner->email) {
+            $this->error('--notify-customer set but workspace has no owner email. Cannot send.');
+            return;
+        }
+
+        $blotatoEmail = (string) ($workspace->blotato_account_email ?: $owner->email);
+        $tempPassword = $this->option('temp-password') ?: null;
+        if ($tempPassword !== null) {
+            $tempPassword = (string) $tempPassword;
+        }
+
+        try {
+            Mail::to($owner->email)->queue(new BlotatoAccountReady(
+                workspace: $workspace,
+                loginUrl: $loginUrl,
+                blotatoAccountEmail: $blotatoEmail,
+                tempPassword: $tempPassword,
+            ));
+            $workspace->forceFill(['blotato_credentials_sent_at' => now()])->save();
+            $this->info('✓ Customer notified at ' . $owner->email . ' (Blotato email: ' . $blotatoEmail . ').');
+            if ($tempPassword === null) {
+                $this->line('  (No --temp-password supplied — email points the customer at Blotato\'s "Forgot password" flow.)');
+            }
+        } catch (\Throwable $e) {
+            $this->error('Failed to queue customer notification: ' . $e->getMessage());
+        }
     }
 
     /**

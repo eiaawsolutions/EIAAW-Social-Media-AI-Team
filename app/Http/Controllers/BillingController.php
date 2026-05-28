@@ -37,8 +37,8 @@ class BillingController extends Controller
 
     /**
      * Step 3: user submitted name+email+workspace from /signup/{plan}.
-     * Lazy-create the Stripe Price, create a Stripe Checkout Session with a
-     * 14-day trial, redirect to Stripe.
+     * Lazy-create the Stripe Price, create a Stripe Checkout Session that
+     * charges immediately (no trial — see config/billing.php), redirect to Stripe.
      */
     public function checkout(Request $request, string $plan): RedirectResponse
     {
@@ -88,6 +88,22 @@ class BillingController extends Controller
         // charged 8% SST and B2B customers can supply a tax ID.
         $taxEnabled = (bool) config('billing.tax.enabled', false);
 
+        // v1: no free trial. Each workspace requires a paid Blotato account
+        // (~$29-$97/mo) that HQ provisions manually — eating that cost on
+        // non-converters would be a margin killer. Customers are charged
+        // on Checkout completion. We still send `trial_period_days` when
+        // it's > 0 in config so the path is easy to flip back later.
+        $subscriptionData = [
+            'metadata' => [
+                'plan'           => $plan,
+                'workspace_name' => $validated['workspace_name'],
+            ],
+        ];
+        $trialDays = (int) ($planConfig['trial_days'] ?? 0);
+        if ($trialDays > 0) {
+            $subscriptionData['trial_period_days'] = $trialDays;
+        }
+
         $sessionArgs = array_merge($customerArg, [
             'mode'                 => 'subscription',
             'payment_method_types' => ['card'],
@@ -96,13 +112,7 @@ class BillingController extends Controller
                 'quantity' => 1,
             ]],
             'billing_address_collection' => 'required',
-            'subscription_data' => [
-                'trial_period_days' => $planConfig['trial_days'],
-                'metadata'          => [
-                    'plan'           => $plan,
-                    'workspace_name' => $validated['workspace_name'],
-                ],
-            ],
+            'subscription_data' => $subscriptionData,
             'metadata' => [
                 'plan'           => $plan,
                 'name'           => $validated['name'],
@@ -186,31 +196,56 @@ class BillingController extends Controller
 
         // Geography gate (v1 = Malaysia only). Stripe captured the billing
         // address during checkout; if the customer is outside the allowed
-        // list, refund the subscription (still in trial, no charge yet) and
-        // bounce them. Trial subscriptions can be cancelled cleanly with no
-        // refund mechanics needed; paid subscriptions are rarer here (only
-        // if trial_period_days=0 someday) but the same cancel call works.
+        // list, cancel the subscription AND refund the just-charged invoice
+        // (no trial means the customer was charged before we got here).
+        // Cancelling alone wouldn't refund the first invoice.
         $allowedCountries = (array) config('billing.allowed_countries', ['MY']);
         $customerCountry = $session->customer_details?->address?->country ?? null;
         if ($customerCountry && ! in_array($customerCountry, $allowedCountries, true)) {
-            Log::warning('billing.success: non-allowed country, cancelling subscription', [
+            Log::warning('billing.success: non-allowed country, cancelling + refunding', [
                 'session_id' => $sessionId,
                 'country' => $customerCountry,
                 'allowed' => $allowedCountries,
             ]);
-            // Best-effort cancel; if it fails we still refuse provisioning.
+
             try {
                 if ($subscription?->id) {
                     Cashier::stripe()->subscriptions->cancel($subscription->id);
                 }
+                // If the subscription is `active` (not `trialing`), the
+                // customer was charged. Refund the latest invoice's payment
+                // intent. Best-effort; if it fails, we still refuse
+                // provisioning and surface a support contact line so the
+                // operator can issue the refund manually.
+                $isTrialing = ($subscription?->status ?? null) === 'trialing';
+                if (! $isTrialing && $subscription?->latest_invoice) {
+                    $invoiceId = is_string($subscription->latest_invoice)
+                        ? $subscription->latest_invoice
+                        : ($subscription->latest_invoice->id ?? null);
+                    if ($invoiceId) {
+                        $invoice = Cashier::stripe()->invoices->retrieve($invoiceId);
+                        $paymentIntentId = $invoice->payment_intent ?? null;
+                        if ($paymentIntentId) {
+                            Cashier::stripe()->refunds->create([
+                                'payment_intent' => is_string($paymentIntentId)
+                                    ? $paymentIntentId
+                                    : $paymentIntentId->id,
+                                'reason' => 'requested_by_customer',
+                            ]);
+                            Log::info('billing.success: refund issued for non-allowed country', [
+                                'invoice_id' => $invoiceId,
+                            ]);
+                        }
+                    }
+                }
             } catch (\Throwable $e) {
-                Log::error('billing.success: cancel failed for non-allowed country', [
+                Log::error('billing.success: cancel/refund failed for non-allowed country', [
                     'error' => $e->getMessage(),
                 ]);
             }
             return redirect()->route('signup.picker')
                 ->with('error', sprintf(
-                    'EIAAW Social Media AI Team is currently available in Malaysia only. Your trial has been cancelled and no charge will be made. Email %s if you\'d like to be notified when we launch in %s.',
+                    'EIAAW Social Media AI Team is currently available in Malaysia only. Your subscription has been cancelled and any charge will be refunded within 5-10 business days. Email %s if you\'d like to be notified when we launch in %s.',
                     'eiaawsolutions@gmail.com',
                     $customerCountry,
                 ));
@@ -264,9 +299,17 @@ class BillingController extends Controller
                     ? $session->customer
                     : ($session->customer->id ?? null);
 
+                // Status + trial mirror the Stripe subscription. With
+                // trial_days=0 (v1) Stripe returns status='active' and
+                // trial_end=null — Workspace::hasActiveAccess() reads
+                // 'active' as live entitlement. We preserve the trialing
+                // path so flipping trial_days back on in config still
+                // works without re-editing this provision step.
+                $stripeStatus = $subscription->status ?? 'active';
+                $workspaceStatus = $stripeStatus === 'trialing' ? 'trialing' : 'active';
                 $trialEndsAt = ($subscription && ! empty($subscription->trial_end))
                     ? Carbon::createFromTimestamp($subscription->trial_end)
-                    : now()->addDays(config("billing.plans.{$plan}.trial_days", 14));
+                    : null;
 
                 $workspace = Workspace::create([
                     'slug'                 => $slug,
@@ -274,7 +317,7 @@ class BillingController extends Controller
                     'owner_id'             => $user->id,
                     'type'                 => $plan === 'solo' ? 'solo' : 'agency',
                     'plan'                 => $plan,
-                    'subscription_status'  => 'trialing',
+                    'subscription_status'  => $workspaceStatus,
                     'trial_ends_at'        => $trialEndsAt,
                     'stripe_customer_id'   => $stripeCustomerId,
                 ]);

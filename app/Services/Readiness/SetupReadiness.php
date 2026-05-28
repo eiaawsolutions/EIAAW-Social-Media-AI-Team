@@ -37,7 +37,60 @@ class SetupReadiness
 
         $brandReadinesses = $brands->map(fn (Brand $b) => $this->forBrand($b))->all();
 
-        return new WorkspaceReadiness($workspace, ...$brandReadinesses);
+        return new WorkspaceReadiness(
+            $workspace,
+            $this->stage0_blotatoAccount($workspace),
+            ...$brandReadinesses,
+        );
+    }
+
+    /**
+     * Workspace-level stage 0: a dedicated Blotato account is provisioned
+     * AND verified for this workspace. Blocks platform connections — without
+     * a Blotato key, syncing handles or publishing is impossible.
+     *
+     * State comes from Workspace::blotatoSetupState():
+     *   connected    → done; user can proceed
+     *   credentialed → blocked, user must verify in /agency/platform-setup
+     *   requested    → blocked, HQ has not provisioned yet
+     *   not_requested → blocked, user must click "Request setup"
+     */
+    private function stage0_blotatoAccount(Workspace $workspace): ReadinessStage
+    {
+        $state = $workspace->blotatoSetupState();
+        $done = $state === 'connected';
+
+        [$cta, $evidence] = match ($state) {
+            'connected' => [
+                'View platform setup',
+                'Blotato account verified ' . optional($workspace->blotato_connected_at)->diffForHumans(),
+            ],
+            'credentialed' => [
+                'Verify Blotato connection',
+                'Credentials sent ' . optional($workspace->blotato_credentials_sent_at)->diffForHumans() . ' — waiting for you to verify',
+            ],
+            'requested' => [
+                'View setup status',
+                'Setup requested ' . optional($workspace->blotato_setup_requested_at)->diffForHumans() . ' — our team is provisioning',
+            ],
+            default => [
+                'Request Blotato setup',
+                null,
+            ],
+        };
+
+        return new ReadinessStage(
+            id: 'blotato_account',
+            order: 0,
+            label: 'Publishing account ready',
+            description: 'EIAAW publishes through a dedicated Blotato account per workspace. Our team provisions this for you within 1 business day of signup — you log in, connect your social handles, then verify here.',
+            done: $done,
+            skippable: false,
+            ctaLabel: $cta,
+            ctaUrl: url('/agency/platform-setup'),
+            blockedBy: null,
+            evidence: $evidence,
+        );
     }
 
     public function forBrand(Brand $brand): BrandReadiness
@@ -149,6 +202,15 @@ class SetupReadiness
             ? $active->map(fn ($c) => ucfirst($c->platform).' (@'.($c->display_handle ?: 'unknown').')')->implode(', ')
             : null;
 
+        // Workspace must have a verified Blotato account before any brand
+        // can connect platforms — the Sync action calls Blotato's API to
+        // pull in handles. Without a connected workspace key, connections
+        // either fail or silently leak HQ's handles (see
+        // [[blotato-per-workspace-isolation]]).
+        $blockedBy = (! $done && ! $brand->workspace?->hasBlotatoConnected())
+            ? 'blotato_account'
+            : null;
+
         return new ReadinessStage(
             id: 'platform_connected',
             order: 4,
@@ -158,7 +220,7 @@ class SetupReadiness
             skippable: false,
             ctaLabel: $done ? 'Manage connections' : 'Connect a platform',
             ctaUrl: $this->cta('platforms', $brand),
-            blockedBy: null,
+            blockedBy: $blockedBy,
             evidence: $evidence,
         );
     }

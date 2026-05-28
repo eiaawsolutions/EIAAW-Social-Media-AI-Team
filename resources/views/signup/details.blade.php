@@ -1,7 +1,7 @@
 @extends('layouts.eiaaw')
 
 @section('title', 'Tell us about you — EIAAW Social Media Team')
-@section('description', 'Step 2 of 2. Your details, then a Stripe-hosted card capture. We never see your card. Trial starts the moment you confirm.')
+@section('description', 'Step 2 of 2. Your details, then a Stripe-hosted card capture. We never see your card. Your subscription starts the moment you confirm.')
 
 @section('content')
 
@@ -19,7 +19,7 @@
             Tell us your name and email.
           </h1>
           <p class="lead" style="margin-top: 18px; max-width: 56ch;">
-            We need these to set up your workspace. The next screen is Stripe — we never see your card. Your 14-day trial starts the moment you confirm.
+            We need these to set up your workspace. The next screen is Stripe — we never see your card. Your subscription is charged the moment you confirm, and our team provisions your dedicated Blotato account within 1 business day.
           </p>
         </div>
 
@@ -87,7 +87,7 @@
           </div>
 
           <p style="margin-top: 12px; font-size: 12px; line-height: 1.55; color: var(--mute);">
-            By continuing you agree to our <a href="/terms" style="color: var(--primary-dark);">Terms</a> and <a href="/privacy" style="color: var(--primary-dark);">Privacy</a>. The trial is fully refundable until your first charge.
+            By continuing you agree to our <a href="/terms" style="color: var(--primary-dark);">Terms</a> and <a href="/privacy" style="color: var(--primary-dark);">Privacy</a>. Cancel any time from the billing page; future renewals stop immediately.
           </p>
         </form>
       </div>
@@ -104,12 +104,12 @@
               {{ $plan['description'] }}
             </div>
             <div style="margin-top: 22px; padding-top: 22px; border-top: 1px dashed var(--line); font-size: 14px; color: var(--ink-2); line-height: 1.7;">
-              <div style="display: flex; justify-content: space-between;"><span>Trial</span><strong style="color: var(--ink);">{{ $plan['trial_days'] }} days free</strong></div>
-              <div style="display: flex; justify-content: space-between;"><span>Then</span><strong style="color: var(--ink);">RM {{ number_format($plan['price_myr'], 0) }} / month</strong></div>
-              <div style="display: flex; justify-content: space-between;"><span>Today</span><strong style="color: var(--primary-dark);">RM 0.00</strong></div>
+              <div style="display: flex; justify-content: space-between;"><span>Monthly</span><strong style="color: var(--ink);">RM {{ number_format($plan['price_myr'], 0) }}</strong></div>
+              <div style="display: flex; justify-content: space-between;"><span>Today</span><strong style="color: var(--primary-dark);">RM {{ number_format($plan['price_myr'], 0) }}</strong></div>
+              <div style="display: flex; justify-content: space-between;"><span>Renews</span><strong style="color: var(--ink);">Monthly</strong></div>
             </div>
             <p style="margin-top: 22px; font-size: 12px; color: var(--mute); line-height: 1.5;">
-              You can cancel any time during the trial and you won't be charged. After the trial we charge automatically &mdash; cancel from your billing page.
+              Charged today. Our team provisions your dedicated Blotato account within 1 business day &mdash; you'll get an email with your Blotato login. Cancel any time from the billing page; renewals stop immediately.
             </p>
           </div>
         </div>

@@ -55,6 +55,9 @@ class Workspace extends Model
         'blotato_api_key_handle',
         'blotato_account_email',
         'blotato_connected_at',
+        'blotato_setup_requested_at',
+        'blotato_login_url',
+        'blotato_credentials_sent_at',
     ];
 
     protected function casts(): array
@@ -67,6 +70,8 @@ class Workspace extends Model
             'publishing_paused' => 'boolean',
             'publishing_paused_at' => 'datetime',
             'blotato_connected_at' => 'datetime',
+            'blotato_setup_requested_at' => 'datetime',
+            'blotato_credentials_sent_at' => 'datetime',
             'settings' => 'array',
         ];
     }
@@ -209,5 +214,30 @@ class Workspace extends Model
     {
         return ! empty($this->blotato_api_key_handle)
             && $this->blotato_connected_at !== null;
+    }
+
+    /**
+     * One-of-four state machine for the /agency/platform-setup wizard:
+     *
+     *   - 'connected'  → handle is wired AND a ping has succeeded; user can publish
+     *   - 'credentialed' → HQ sent the customer their Blotato login; they need to verify
+     *   - 'requested'  → customer asked, HQ has not yet provisioned
+     *   - 'not_requested' → fresh workspace; customer must request HQ provision
+     *
+     * Order of checks matters — "connected" wins over everything once the
+     * ping has succeeded, even if credentials_sent_at is older.
+     */
+    public function blotatoSetupState(): string
+    {
+        if ($this->hasBlotatoConnected()) {
+            return 'connected';
+        }
+        if (! empty($this->blotato_login_url) && $this->blotato_credentials_sent_at !== null) {
+            return 'credentialed';
+        }
+        if ($this->blotato_setup_requested_at !== null) {
+            return 'requested';
+        }
+        return 'not_requested';
     }
 }

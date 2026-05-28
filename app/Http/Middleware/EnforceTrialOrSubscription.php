@@ -7,22 +7,24 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Trial-expiry guard. Runs after Filament's Authenticate middleware in the
- * Agency panel.
+ * Trial-expiry + platform-setup guard. Runs after Filament's Authenticate
+ * middleware in the Agency panel.
  *
- * Decision tree:
+ * Decision tree (in order):
  *   - super admin                  → bypass (EIAAW staff)
  *   - no current workspace         → bypass (Filament/setup will redirect)
  *   - workspace plan=eiaaw_internal → bypass (HQ workspaces never billed)
  *   - workspace has NO Cashier subscription record → log out + redirect to /signup
- *     (orphan account — somehow created without going through Stripe Checkout;
- *      strict invariant: every paying workspace must have a subscriptions row)
- *   - workspace hasActiveAccess()  → continue (trialing in-window | active | past_due in 3d grace)
- *   - else                         → redirect to /agency/billing (paywall),
- *                                    unless on an allowed billing/profile/logout route
+ *   - workspace has expired access → redirect to /agency/trial-expired
+ *   - workspace lacks Blotato connection → redirect to /agency/platform-setup
+ *     (unless they're on platform-setup / billing / profile / auth — those
+ *      routes remain available so the user can complete or pay or escape)
+ *   - else → continue
  *
- * The paywall is sticky: an expired-trial workspace cannot reach any
- * resource, dashboard, or setup wizard route until they subscribe.
+ * The Blotato gate is added because every workspace requires a paid Blotato
+ * account that HQ provisions manually (see [[blotato-per-workspace-isolation]]).
+ * Without it, publishing is impossible — gating the panel forces the customer
+ * to walk through PlatformSetup before they can configure brands they can't use.
  */
 class EnforceTrialOrSubscription
 {
@@ -37,6 +39,20 @@ class EnforceTrialOrSubscription
         'filament.agency.auth.*',
         'filament.agency.pages.billing',
         'filament.agency.pages.trial-expired',
+        'filament.agency.resources.profile.*',
+        'filament.agency.profile',
+    ];
+
+    /**
+     * Additional routes accessible while the Blotato gate is closed.
+     * Superset of ALLOWED_ROUTE_PATTERNS — the customer needs to reach the
+     * platform-setup page to advance, and they may still want to view
+     * billing or change their password.
+     */
+    private const BLOTATO_ALLOWED_ROUTE_PATTERNS = [
+        'filament.agency.auth.*',
+        'filament.agency.pages.billing',
+        'filament.agency.pages.platform-setup',
         'filament.agency.resources.profile.*',
         'filament.agency.profile',
     ];
@@ -91,6 +107,15 @@ class EnforceTrialOrSubscription
             // Refresh status if trial just ticked over (cheap — only writes
             // when state actually changed).
             $this->reconcileTrialStatus($workspace);
+
+            // Second gate: Blotato connection. Only enforced AFTER active-access
+            // is confirmed — we never bounce a paying-but-Blotato-unwired
+            // customer to the trial-expired page; we send them to the
+            // platform-setup wizard so they can move forward.
+            if (! $workspace->hasBlotatoConnected() && ! $this->isAllowedRouteFor($request, self::BLOTATO_ALLOWED_ROUTE_PATTERNS)) {
+                return redirect('/agency/platform-setup');
+            }
+
             return $next($request);
         }
 
@@ -121,7 +146,15 @@ class EnforceTrialOrSubscription
 
     private function isAllowedRoute(Request $request): bool
     {
-        foreach (self::ALLOWED_ROUTE_PATTERNS as $pattern) {
+        return $this->isAllowedRouteFor($request, self::ALLOWED_ROUTE_PATTERNS);
+    }
+
+    /**
+     * @param array<int, string> $patterns
+     */
+    private function isAllowedRouteFor(Request $request, array $patterns): bool
+    {
+        foreach ($patterns as $pattern) {
             if ($request->routeIs($pattern)) {
                 return true;
             }

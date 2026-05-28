@@ -1,7 +1,7 @@
 @extends('layouts.eiaaw')
 
 @section('title', 'Choose your plan — EIAAW Social Media Team')
-@section('description', 'Start your 14-day free trial. Pick the plan that fits your brand count. Flat pricing, no per-user tax. Cancel any time.')
+@section('description', 'Pick the plan that fits your brand count. Flat pricing, no per-user tax. Cancel any time.')
 
 @section('content')
 
@@ -10,9 +10,9 @@
     <div class="section-head">
       <div class="label"><span class="eyebrow">Sign up &middot; step 1 of 2</span></div>
       <h1 class="title section-h">
-        Pick your plan. <em>14 days free.</em>
+        Pick your plan. <em>Charged today.</em>
       </h1>
-      <div class="aside">Card required &middot; you won't be charged until your trial ends. All tiers include the full 6-agent team and complete receipts.</div>
+      <div class="aside">Charged on signup &middot; cancel any time. All tiers include the full 6-agent team, complete receipts, and a dedicated Blotato account provisioned by our team within 1 business day.</div>
     </div>
 
     @if (session('error'))
@@ -41,7 +41,7 @@
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: {{ $t['whitelabel'] ? 'var(--ink-2)' : 'var(--mute)' }};"><span style="width: 4px; height: 4px; border-radius: 50%; background: {{ $t['whitelabel'] ? 'var(--primary)' : 'var(--mute)' }};"></span>{{ $t['whitelabel'] ? 'White-label client portal' : 'No white-label (upgrade to Studio)' }}</li>
           </ul>
           <p style="margin-top: 20px; font-size: 13px; color: var(--ink-2); line-height: 1.5; font-style: italic;">{{ $t['best'] }}</p>
-          <a href="{{ url('/signup/' . $t['key']) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Start 14-day trial <span class="arrow">&rarr;</span></a>
+          <a href="{{ url('/signup/' . $t['key']) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Subscribe now <span class="arrow">&rarr;</span></a>
         </div>
       @endforeach
     </div>

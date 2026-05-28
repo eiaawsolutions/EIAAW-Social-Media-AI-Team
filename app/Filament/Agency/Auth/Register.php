@@ -72,14 +72,21 @@ class Register extends BaseRegister
             $slug = $slug . '-' . Str::lower(Str::random(6));
         }
 
+        // No free trial in v1 — every workspace burns a paid Blotato slot
+        // immediately, so we can't give one away. Workspaces created here
+        // start in `subscription_status='none'` and the trial-or-subscription
+        // middleware will bounce them to /agency/billing to complete payment.
+        // This direct path is only reached if a user navigates to
+        // /agency/register without going through /signup; the normal funnel
+        // creates the workspace from BillingController::success post-Stripe.
         $workspace = Workspace::create([
             'slug' => $slug,
             'name' => $workspaceName,
             'owner_id' => $user->id,
             'type' => $plan === 'agency' ? 'agency' : ($plan === 'studio' ? 'agency' : 'solo'),
             'plan' => $plan,
-            'subscription_status' => 'trialing',
-            'trial_ends_at' => now()->addDays(14),
+            'subscription_status' => 'none',
+            'trial_ends_at' => null,
         ]);
 
         WorkspaceMember::create([

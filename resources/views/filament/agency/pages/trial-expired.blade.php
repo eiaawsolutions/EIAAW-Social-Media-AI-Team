@@ -10,11 +10,11 @@
 
             <div class="space-y-2">
                 <h2 class="text-2xl font-semibold tracking-tight">
-                    Your 14-day trial has ended
+                    Your subscription is not active
                 </h2>
                 @if ($endedAtHuman)
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                        Trial ended {{ $endedAtHuman }}.
+                        Access ended {{ $endedAtHuman }}.
                         Subscribe to {{ $planLabel }} to keep your brand running.
                     </p>
                 @endif

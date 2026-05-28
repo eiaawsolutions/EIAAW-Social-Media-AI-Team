@@ -182,6 +182,29 @@
                 </div>
             @endif
 
+            {{-- Workspace-level platform stage (Blotato account). Renders ABOVE
+                 the per-brand ladder because it blocks every brand. --}}
+            @php($_platformStage = $this->workspaceReadiness()->platformStage)
+            @if ($_platformStage && ! $_platformStage->done)
+                <div class="wizard-stage wizard-stage-todo" style="margin-bottom: 20px; background: var(--eiaaw-bg-warm);">
+                    <div class="wizard-stage-icon">{{ $this->statusIcon($_platformStage->status()) }}</div>
+                    <div>
+                        <div class="wizard-stage-num">Step 0 · workspace-wide blocker</div>
+                        <div class="wizard-stage-label">{{ $_platformStage->label }}</div>
+                        <div class="wizard-stage-desc">{{ $_platformStage->description }}</div>
+                        @if ($_platformStage->evidence)
+                            <div class="wizard-stage-evidence">→ {{ $_platformStage->evidence }}</div>
+                        @endif
+                    </div>
+                    <div>
+                        <a href="{{ $_platformStage->ctaUrl }}" class="wizard-cta">
+                            {{ $_platformStage->ctaLabel }}
+                            <span aria-hidden="true">→</span>
+                        </a>
+                    </div>
+                </div>
+            @endif
+
             {{-- Progress hero --}}
             <div class="wizard-progress">
                 <div class="wizard-progress-num">{{ $this->brandReadiness()->percent }}%</div>

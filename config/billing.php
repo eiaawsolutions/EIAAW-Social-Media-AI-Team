@@ -34,7 +34,12 @@ return [
         'solo' => [
             'name'        => 'Solo',
             'price_myr'   => 549,
-            'trial_days'  => 14,
+            // No free trial in v1. Each workspace requires a dedicated paid
+            // Blotato account (~$29-$97/mo USD) that HQ provisions manually
+            // — a free trial would mean EIAAW eats that cost for every
+            // signup, including non-converters. Customers are charged on
+            // checkout completion; access is gated until they pay.
+            'trial_days'  => 0,
             'description' => '1 brand · 60 posts/mo · all 6 agents · audit log',
             'features'    => '1 brand, 60 posts/mo, 6 specialised agents, hard compliance gate, full audit log',
             'caps' => [
@@ -57,7 +62,7 @@ return [
         'studio' => [
             'name'        => 'Studio',
             'price_myr'   => 1099,
-            'trial_days'  => 14,
+            'trial_days'  => 0,
             'description' => '3 brands · 300 posts/mo · white-label included',
             'features'    => '3 brands, 300 posts/mo, white-label client portal, all 6 agents',
             'caps' => [
@@ -71,7 +76,7 @@ return [
         'agency' => [
             'name'        => 'Agency',
             'price_myr'   => 3499,
-            'trial_days'  => 14,
+            'trial_days'  => 0,
             'description' => '12 brands · unlimited posts · per-client guardrails',
             'features'    => '12 brands, unlimited posts, per-client guardrail isolation, priority support',
             'caps' => [
