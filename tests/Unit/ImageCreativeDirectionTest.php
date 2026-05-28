@@ -45,4 +45,46 @@ class ImageCreativeDirectionTest extends TestCase
             $this->assertStringContainsString($token, $negative);
         }
     }
+
+    public function test_stills_block_does_not_use_banned_flux_terms(): void
+    {
+        // The Flux optimisation rules explicitly ban "photorealistic" and "4K"
+        // — they push Flux toward the glossy AI look the contract fights.
+        $block = ImageCreativeDirection::realismBlock();
+
+        $this->assertStringNotContainsStringIgnoringCase('photorealistic', $block);
+        $this->assertStringNotContainsString('4K', $block);
+    }
+
+    public function test_video_block_carries_kinetic_and_motion_signals(): void
+    {
+        $block = ImageCreativeDirection::videoRealismBlock();
+
+        // Camera-motion vocabulary — the steering that makes Wan move like
+        // real footage rather than an AI swirl.
+        $this->assertStringContainsStringIgnoringCase('camera', $block);
+        $this->assertStringContainsStringIgnoringCase('dolly', $block);
+        $this->assertStringContainsStringIgnoringCase('handheld', $block);
+
+        // Believable physics + pacing + anatomy-in-motion.
+        $this->assertStringContainsStringIgnoringCase('momentum', $block);
+        $this->assertStringContainsStringIgnoringCase('pacing', $block);
+        $this->assertStringContainsStringIgnoringCase('anatomy', $block);
+
+        // In-prompt negative reinforcement.
+        $this->assertStringContainsStringIgnoringCase('AVOID', $block);
+    }
+
+    public function test_video_negative_prompt_targets_temporal_artifacts_and_fits_wan_limit(): void
+    {
+        $negative = ImageCreativeDirection::videoNegativePrompt();
+
+        // Temporal artefacts unique to video.
+        foreach (['morphing face', 'flickering', 'warping limbs', 'strobing'] as $token) {
+            $this->assertStringContainsString($token, $negative);
+        }
+
+        // Wan 2.5/2.6 caps negative_prompt at 500 chars — must stay under.
+        $this->assertLessThanOrEqual(500, strlen($negative));
+    }
 }

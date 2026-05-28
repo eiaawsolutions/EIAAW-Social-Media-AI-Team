@@ -13,6 +13,7 @@ use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
+use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
@@ -79,7 +80,12 @@ class VideoAgent extends BaseAgent
     ];
 
     public function role(): string { return 'video'; }
-    public function promptVersion(): string { return 'video.v1.2'; }
+    // v1.3 — every prompt now carries the ImageCreativeDirection video realism
+    // contract (motivated camera motion, believable physics, natural human
+    // movement, in-prompt anti-AI-aesthetic list) and a structured
+    // negative_prompt is sent to Wan 2.6 (which honours the field, max 500
+    // chars). v1.2 retained: separate provider-filtered cost cap + aspect pin.
+    public function promptVersion(): string { return 'video.v1.3'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -210,6 +216,8 @@ class VideoAgent extends BaseAgent
                 'aspect_ratio' => $aspect,
                 'resolution' => '720p',
                 'duration' => $duration,
+                // Wan 2.5/2.6 honours negative_prompt (max 500 chars).
+                'negative_prompt' => ImageCreativeDirection::videoNegativePrompt(),
             ]));
         } catch (\Throwable $e) {
             Log::error('VideoAgent: FAL generation failed', [
@@ -418,7 +426,7 @@ class VideoAgent extends BaseAgent
             };
 
             return sprintf(
-                '%d-second %s video for EIAAW Solutions on %s. %s. %s%s Subject: %s. No on-screen text, no captions, no watermarks baked in.',
+                '%d-second %s video for EIAAW Solutions on %s. %s. %s%s Subject: %s. %s No on-screen text, no captions, no watermarks baked in.',
                 5,
                 $orientation,
                 ucfirst($draft->platform),
@@ -426,6 +434,7 @@ class VideoAgent extends BaseAgent
                 EiaawBrandLock::videoDirective(),
                 $directionHint,
                 $bodyLead,
+                ImageCreativeDirection::videoRealismBlock(),
             );
         }
 
@@ -446,7 +455,7 @@ class VideoAgent extends BaseAgent
         };
 
         return sprintf(
-            '%d-second %s video for "%s" on %s. %s.%s Subject: %s. Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s.',
+            '%d-second %s video for "%s" on %s. %s.%s Subject: %s. %s Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s.',
             5,
             $orientation,
             $brand->name,
@@ -454,6 +463,7 @@ class VideoAgent extends BaseAgent
             $platformHint,
             $directionHint,
             $bodyLead,
+            ImageCreativeDirection::videoRealismBlock(),
         );
     }
 
