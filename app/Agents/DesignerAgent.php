@@ -9,6 +9,7 @@ use App\Services\Blotato\BlotatoClient;
 use App\Services\Branding\BrandImageStamper;
 use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
+use App\Services\Imagery\DraftSceneBrief;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\ImageCreativeDirection;
@@ -70,14 +71,13 @@ class DesignerAgent extends BaseAgent
     }
 
     public function role(): string { return 'designer'; }
-    // v1.4 — every prompt now carries the ImageCreativeDirection realism
-    // contract (natural lighting, prime-lens DoF, real texture, correct
-    // anatomy, in-prompt anti-AI-aesthetic list) and a structured
-    // negative_prompt is sent to FAL (honoured by negative-capable models;
-    // flux-pro v1.1 ignores it, which is why the realism block also folds
-    // the negatives into the positive prompt). v1.3 retained: learner-aware
-    // art direction + cap-filter + draft_id attribution.
-    public function promptVersion(): string { return 'designer.v1.4'; }
+    // v1.5 — the image is now anchored to the SCRIPTED post content via
+    // DraftSceneBrief (hook + distilled quote + CTA + target emotion +
+    // visual_direction), not a raw truncated body slice. The poster now
+    // depicts what the caption actually says, in lockstep with the video
+    // built from the same brief. v1.4 retained: ImageCreativeDirection realism
+    // contract + structured negative_prompt.
+    public function promptVersion(): string { return 'designer.v1.5'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -342,11 +342,16 @@ class DesignerAgent extends BaseAgent
 
     private function buildPrompt(Brand $brand, Draft $draft): string
     {
-        $entry = $draft->calendarEntry;
-        $bodyLead = (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 24, ' …');
-
-        $direction = trim((string) ($entry->visual_direction ?? ''));
-        $directionHint = $direction !== '' ? " Visual direction from strategist: {$direction}." : '';
+        // Anchor the image to the SCRIPTED post content (hook, distilled quote,
+        // CTA, target emotion, visual_direction) — not a raw slice of the body.
+        // This is what keeps the poster about the same thing the caption says,
+        // and in lockstep with the video built from the same brief.
+        $sceneBrief = DraftSceneBrief::for($draft, 24);
+        if ($sceneBrief === '') {
+            // No scripted signal at all (empty draft) — degrade to a topic line.
+            $sceneBrief = 'Depict the topic of this post (do NOT render text in the image): '
+                . (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 24, ' …') . '.';
+        }
 
         // Carousel-aware: when the Writer produced a slide arc, anchor the hero
         // image to the FIRST (hook) slide's visual direction so the cover frame
@@ -355,7 +360,7 @@ class DesignerAgent extends BaseAgent
         // future per-slide pass can iterate platform_payload.carousel_slides.
         $hookSlide = $this->hookSlideDirection($draft);
         if ($hookSlide !== '') {
-            $directionHint .= " Carousel cover (hook slide): {$hookSlide}.";
+            $sceneBrief .= " Carousel cover (hook slide): {$hookSlide}.";
         }
 
         $platformComposition = match ($draft->platform) {
@@ -373,13 +378,12 @@ class DesignerAgent extends BaseAgent
         // ~/.claude/skills/full-stack-engineer/references/eiaaw-design-system.md.
         if (EiaawBrandLock::appliesTo($brand)) {
             return sprintf(
-                'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for EIAAW Solutions on %s. %s. %s %s%s Topic interpretation: %s. %s ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If your model wants to add text, replace it with a photographic subject instead.',
+                'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for EIAAW Solutions on %s. %s. %s %s %s %s ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If your model wants to add text, replace it with a photographic subject instead.',
                 ucfirst($draft->platform),
                 $platformComposition,
                 EiaawBrandLock::imageDirective(),
                 EiaawBrandLock::typographyHint(),
-                $directionHint,
-                $bodyLead,
+                $sceneBrief,
                 ImageCreativeDirection::realismBlock(),
             );
         }
@@ -409,13 +413,12 @@ class DesignerAgent extends BaseAgent
         };
 
         return sprintf(
-            'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for the brand "%s" on %s. %s.%s%s Topic interpretation: %s. %s ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If the model wants to add text, replace with a photographic subject instead. Anti-slop: avoid generic purple/magenta gradient backgrounds, radial glows, stock-photo poses, clip-art icons, and AI-swirl effects.',
+            'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for the brand "%s" on %s. %s.%s %s %s ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If the model wants to add text, replace with a photographic subject instead. Anti-slop: avoid generic purple/magenta gradient backgrounds, radial glows, stock-photo poses, clip-art icons, and AI-swirl effects.',
             $brand->name,
             ucfirst($draft->platform),
             $platformAesthetic,
             $paletteHint,
-            $directionHint,
-            $bodyLead,
+            $sceneBrief,
             ImageCreativeDirection::realismBlock(),
         );
     }

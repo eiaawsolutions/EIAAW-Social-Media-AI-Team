@@ -80,12 +80,13 @@ class VideoAgent extends BaseAgent
     ];
 
     public function role(): string { return 'video'; }
-    // v1.3 — every prompt now carries the ImageCreativeDirection video realism
-    // contract (motivated camera motion, believable physics, natural human
-    // movement, in-prompt anti-AI-aesthetic list) and a structured
-    // negative_prompt is sent to Wan 2.6 (which honours the field, max 500
-    // chars). v1.2 retained: separate provider-filtered cost cap + aspect pin.
-    public function promptVersion(): string { return 'video.v1.3'; }
+    // v1.4 — the clip is now anchored to the SCRIPTED post content via
+    // DraftSceneBrief (hook + distilled quote + CTA + target emotion +
+    // visual_direction) plus the voiceover narrative, so the motion matches
+    // what the post says and stays in lockstep with the Designer still built
+    // from the same brief. v1.3 retained: video realism contract +
+    // negative_prompt to Wan.
+    public function promptVersion(): string { return 'video.v1.4'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -398,11 +399,20 @@ class VideoAgent extends BaseAgent
 
     private function buildPrompt(Brand $brand, Draft $draft, string $aspect = '9:16'): string
     {
-        $entry = $draft->calendarEntry;
-        $bodyLead = (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 30, ' …');
-
-        $direction = trim((string) ($entry->visual_direction ?? ''));
-        $directionHint = $direction !== '' ? " Visual brief: {$direction}." : '';
+        // Anchor the clip to the SCRIPTED post content (hook, distilled quote,
+        // CTA, target emotion, visual_direction) — the same brief the Designer
+        // uses for the still, so image and video tell one coherent story. The
+        // voiceover script is layered in so the on-screen motion matches what
+        // the narration is saying.
+        $sceneBrief = DraftSceneBrief::for($draft, 30);
+        if ($sceneBrief === '') {
+            $sceneBrief = 'Depict the topic of this post (do NOT render text on screen): '
+                . (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 30, ' …') . '.';
+        }
+        $voiceover = DraftSceneBrief::voiceover($draft);
+        if ($voiceover !== '') {
+            $sceneBrief .= " The motion should match this voiceover narrative: \"{$voiceover}\"";
+        }
 
         $orientation = $this->orientationLabel($aspect); // "vertical 9:16" | "landscape 16:9" | "square 1:1"
         $videoForm = $this->videoFormLabel($draft->platform, $aspect); // "Reel" | "long-form video" | etc.
@@ -426,14 +436,13 @@ class VideoAgent extends BaseAgent
             };
 
             return sprintf(
-                '%d-second %s video for EIAAW Solutions on %s. %s. %s%s Subject: %s. %s No on-screen text, no captions, no watermarks baked in.',
+                '%d-second %s video for EIAAW Solutions on %s. %s. %s %s %s No on-screen text, no captions, no watermarks baked in.',
                 5,
                 $orientation,
                 ucfirst($draft->platform),
                 $platformHint,
                 EiaawBrandLock::videoDirective(),
-                $directionHint,
-                $bodyLead,
+                $sceneBrief,
                 ImageCreativeDirection::videoRealismBlock(),
             );
         }
@@ -455,14 +464,13 @@ class VideoAgent extends BaseAgent
         };
 
         return sprintf(
-            '%d-second %s video for "%s" on %s. %s.%s Subject: %s. %s Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s.',
+            '%d-second %s video for "%s" on %s. %s. %s %s Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s.',
             5,
             $orientation,
             $brand->name,
             ucfirst($draft->platform),
             $platformHint,
-            $directionHint,
-            $bodyLead,
+            $sceneBrief,
             ImageCreativeDirection::videoRealismBlock(),
         );
     }
