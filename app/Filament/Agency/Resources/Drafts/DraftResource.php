@@ -319,9 +319,97 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('pickImage')
-                    ->label(fn (Draft $r) => empty($r->asset_url) ? 'Pick / generate image' : 'Replace image')
+                \Filament\Actions\Action::make('replaceMedia')
+                    ->label(fn (Draft $r) => empty($r->asset_url) ? 'Add image / video' : 'Replace image / video')
                     ->icon('heroicon-o-photo')
+                    ->color('primary')
+                    ->visible(fn (Draft $r) => ! in_array($r->status, ['published', 'rejected']))
+                    ->modalHeading(fn (Draft $r) => empty($r->asset_url)
+                        ? "Add media to Draft #{$r->id}"
+                        : "Replace media on Draft #{$r->id}")
+                    ->modalSubmitActionLabel('Apply media')
+                    ->schema([
+                        \Filament\Forms\Components\Radio::make('source')
+                            ->label('Where should the media come from?')
+                            ->options([
+                                'library' => 'Choose from asset library',
+                                'upload' => 'Upload from this computer',
+                            ])
+                            ->descriptions([
+                                'library' => 'Pick any brand-approved image or video you have already uploaded.',
+                                'upload' => 'Pick a file from your desktop. Zero AI cost.',
+                            ])
+                            ->default('library')
+                            ->required()
+                            ->live(),
+
+                        // ---- Library path ----
+                        \Filament\Forms\Components\Select::make('brand_asset_id')
+                            ->label('Asset from library')
+                            ->options(fn (Draft $r) => self::libraryAssetOptions($r))
+                            ->searchable()
+                            ->preload()
+                            ->native(false)
+                            ->placeholder('Search your asset library…')
+                            ->helperText(fn (Draft $r) => self::draftNeedsVideo($r)
+                                ? 'This is a video format on a video-capable platform — only videos are listed.'
+                                : 'Images and videos from this brand\'s library.')
+                            ->visible(fn (callable $get) => $get('source') === 'library')
+                            ->required(fn (callable $get) => $get('source') === 'library'),
+
+                        \Filament\Forms\Components\Placeholder::make('library_empty')
+                            ->label('')
+                            ->content('No assets in this brand\'s library yet. Switch to "Upload from this computer", or add files on the Asset library page first.')
+                            ->visible(fn (callable $get, Draft $r) => $get('source') === 'library' && empty(self::libraryAssetOptions($r))),
+
+                        // ---- Upload path ----
+                        \Filament\Forms\Components\FileUpload::make('upload_file')
+                            ->label('File to upload')
+                            ->disk(fn () => self::preferredUploadDisk())
+                            ->directory(fn (Draft $r) => 'brand-assets/' . $r->brand_id)
+                            ->visibility('public')
+                            ->preserveFilenames()
+                            ->acceptedFileTypes([
+                                'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+                                'video/mp4', 'video/quicktime', 'video/webm',
+                            ])
+                            ->maxSize(50 * 1024) // 50 MB
+                            ->helperText('We check the file against this platform\'s publishing limits on apply. '
+                                . 'Images that are too large are auto-compressed to fit; videos that fail are returned with the exact fixes needed.')
+                            ->visible(fn (callable $get) => $get('source') === 'upload')
+                            ->required(fn (callable $get) => $get('source') === 'upload'),
+
+                        \Filament\Forms\Components\Toggle::make('save_to_library')
+                            ->label('Also save this file to the asset library')
+                            ->helperText('Keep it for reuse — the Designer/Video agents and future drafts can pick it. Tagged via Claude vision on save.')
+                            ->default(true)
+                            ->visible(fn (callable $get) => $get('source') === 'upload'),
+                    ])
+                    ->action(function (Draft $r, array $data): void {
+                        @set_time_limit(300);
+                        try {
+                            $note = self::applyManualMedia($r, $data);
+                        } catch (\App\Services\Imagery\MediaComplianceException $e) {
+                            self::sendMediaComplianceFailure($e);
+                            return;
+                        } catch (\Throwable $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Could not apply media')
+                                ->body(substr($e->getMessage(), 0, 240))
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+                        \Filament\Notifications\Notification::make()
+                            ->title('Media applied')
+                            ->body($note)
+                            ->success()
+                            ->send();
+                    }),
+
+                \Filament\Actions\Action::make('pickImage')
+                    ->label(fn (Draft $r) => empty($r->asset_url) ? 'Auto-pick / generate image' : 'Auto-regenerate image')
+                    ->icon('heroicon-o-sparkles')
                     ->color('gray')
                     ->visible(fn (Draft $r) => ! in_array($r->status, ['published', 'rejected']))
                     ->requiresConfirmation()
@@ -652,6 +740,419 @@ class DraftResource extends Resource
         $format = strtolower((string) ($entry->format ?? ''));
         if (! in_array($format, ['reel', 'video', 'story'], true)) return false;
         return \App\Services\Imagery\FalAiClient::platformAcceptsVideo($draft->platform);
+    }
+
+    /**
+     * Options for the "choose from library" select on the replace-media modal.
+     * Keyed by brand_asset_id => human label. Scoped strictly to the draft's
+     * own brand (the modal already runs inside the tenant-isolated table query,
+     * but we re-scope by brand_id here so the select can never list another
+     * brand's assets). When the draft is a video format on a video-capable
+     * platform we list videos only — picking an image there would leave the
+     * publish target as a still and trip the static-image-as-video scrub.
+     *
+     * @return array<int, string>
+     */
+    private static function libraryAssetOptions(Draft $draft): array
+    {
+        $query = \App\Models\BrandAsset::query()
+            ->where('brand_id', $draft->brand_id)
+            ->whereNull('archived_at')
+            ->orderByDesc('id');
+
+        if (self::draftNeedsVideo($draft)) {
+            $query->where('media_type', 'video');
+        }
+
+        return $query->limit(200)->get()->mapWithKeys(function (\App\Models\BrandAsset $a): array {
+            $name = $a->original_filename ?: ($a->description ? \Illuminate\Support\Str::limit($a->description, 40) : "Asset #{$a->id}");
+            $label = sprintf(
+                '%s · %s%s',
+                strtoupper($a->media_type),
+                $name,
+                $a->brand_approved ? '' : ' (not approved)',
+            );
+            return [$a->id => $label];
+        })->all();
+    }
+
+    /** R2 if configured, else local public disk. Mirrors ManageBrandAssets. */
+    private static function preferredUploadDisk(): string
+    {
+        return config('filesystems.disks.r2.bucket') ? 'r2' : 'public';
+    }
+
+    /**
+     * Apply operator-chosen media to a draft. Two source paths converge on the
+     * same persistence step:
+     *
+     *   library → resolve the BrandAsset, use its public_url, recordUse()
+     *   upload  → the FileUpload already wrote the file to the preferred disk;
+     *             resolve a public URL, and (optionally) register it as a
+     *             BrandAsset so it's reusable + gets vision-tagged.
+     *
+     * Both then re-host through THIS WORKSPACE'S Blotato account so /v2/posts
+     * accepts the media at publish time (Blotato rejects external mediaUrls,
+     * and media is scoped to the uploading account — see DesignerAgent for the
+     * cross-tenant rationale). Finally we persist asset_url + push the new URL
+     * (and its source) into the asset_urls history.
+     *
+     * Returns a short human note for the success toast.
+     */
+    private static function applyManualMedia(Draft $draft, array $data): string
+    {
+        $brand = $draft->brand;
+        if (! $brand) {
+            throw new \RuntimeException('Draft has no brand.');
+        }
+
+        $source = $data['source'] ?? 'library';
+
+        if ($source === 'library') {
+            $assetId = (int) ($data['brand_asset_id'] ?? 0);
+            /** @var \App\Models\BrandAsset|null $asset */
+            $asset = \App\Models\BrandAsset::where('id', $assetId)
+                ->where('brand_id', $draft->brand_id)
+                ->whereNull('archived_at')
+                ->first();
+            if (! $asset) {
+                throw new \RuntimeException('Selected library asset not found for this brand.');
+            }
+
+            $mediaType = $asset->media_type === 'video' ? 'video' : 'image';
+            $sourceUrl = (string) $asset->public_url;
+
+            // Compliance gate. Library assets can predate the media rules, so
+            // we re-validate every pick. Probe a local copy (real path for
+            // local disks, temp download for R2).
+            [$localPath, $cleanup] = self::localCopyOf((string) $asset->storage_disk, (string) $asset->storage_path, $sourceUrl);
+            try {
+                $compNote = self::enforceMediaCompliance(
+                    $localPath,
+                    $draft->platform,
+                    $mediaType,
+                    onImageCompressed: function (string $compressedPath) use ($asset, &$sourceUrl): void {
+                        // Persist the compressed image back over the library
+                        // asset's stored file so future picks are compliant too.
+                        $sourceUrl = self::overwriteStoredFile(
+                            (string) $asset->storage_disk,
+                            (string) $asset->storage_path,
+                            $compressedPath,
+                        );
+                        $asset->forceFill([
+                            'public_url' => $sourceUrl,
+                            'file_size_bytes' => @filesize($compressedPath) ?: $asset->file_size_bytes,
+                        ])->save();
+                    },
+                );
+            } finally {
+                $cleanup();
+            }
+
+            $blotatoUrl = self::rehostOnBlotato($brand, $sourceUrl);
+            self::persistDraftMedia($draft, $blotatoUrl, [$blotatoUrl, $sourceUrl]);
+            $asset->recordUse();
+
+            return sprintf(
+                'Library %s "%s" attached%s%s.',
+                $mediaType,
+                $asset->original_filename ?: "#{$asset->id}",
+                $mediaType === 'video' ? '' : ' · no AI cost',
+                $compNote,
+            );
+        }
+
+        // ---- Upload path ----
+        $disk = self::preferredUploadDisk();
+        $relativePath = $data['upload_file'] ?? null;
+        if (is_array($relativePath)) {
+            $relativePath = $relativePath[0] ?? null;
+        }
+        if (! $relativePath) {
+            throw new \RuntimeException('No file was uploaded.');
+        }
+
+        $storage = \Illuminate\Support\Facades\Storage::disk($disk);
+        $sourceUrl = $storage->url($relativePath);
+        $mime = $storage->mimeType($relativePath) ?: '';
+        $isVideo = str_starts_with($mime, 'video/');
+        $mediaType = $isVideo ? 'video' : 'image';
+
+        // Compliance gate BEFORE Blotato re-host. For images we auto-compress
+        // and write the compliant file back over the upload; for videos a
+        // failure throws MediaComplianceException → fail popup with fixes.
+        [$localPath, $cleanup] = self::localCopyOf($disk, $relativePath, $sourceUrl);
+        try {
+            $compNote = self::enforceMediaCompliance(
+                $localPath,
+                $draft->platform,
+                $mediaType,
+                onImageCompressed: function (string $compressedPath) use ($disk, $relativePath, &$sourceUrl): void {
+                    $sourceUrl = self::overwriteStoredFile($disk, $relativePath, $compressedPath);
+                },
+            );
+        } finally {
+            $cleanup();
+        }
+
+        $blotatoUrl = self::rehostOnBlotato($brand, $sourceUrl);
+
+        $savedNote = '';
+        if (! empty($data['save_to_library'])) {
+            $asset = \App\Models\BrandAsset::create([
+                'brand_id' => $draft->brand_id,
+                'uploaded_by_user_id' => auth()->id(),
+                'media_type' => $mediaType,
+                'source' => 'upload',
+                'storage_disk' => $disk,
+                'storage_path' => $relativePath,
+                'public_url' => $sourceUrl,
+                'original_filename' => basename($relativePath),
+                'mime_type' => $mime ?: null,
+                'file_size_bytes' => $storage->size($relativePath) ?: null,
+                'brand_approved' => true,
+                'use_count' => 1,
+                'last_used_at' => now(),
+            ]);
+            try {
+                app(\App\Services\Imagery\BrandAssetTagger::class)->tag($asset);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('replaceMedia: tagger failed', [
+                    'asset_id' => $asset->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+            $savedNote = ' · saved to library';
+        }
+
+        self::persistDraftMedia($draft, $blotatoUrl, [$blotatoUrl, $sourceUrl]);
+
+        return sprintf('Uploaded %s attached%s%s.', $mediaType, $savedNote, $compNote);
+    }
+
+    /**
+     * Run the media-file compliance gate on a local file and resolve it.
+     *
+     *   - PASS                          → return '' (no note)
+     *   - FAIL, image, compressible     → auto-compress, re-check; on success
+     *                                      invoke $onImageCompressed(path) so
+     *                                      the caller can persist the fixed file,
+     *                                      and return a " · auto-compressed …" note
+     *   - FAIL, otherwise (video, or an
+     *     image that compression can't
+     *     rescue, or non-compressible
+     *     image issues like aspect)     → throw MediaComplianceException with the
+     *                                      structured reasons + suggestions
+     *
+     * @param  callable(string):void  $onImageCompressed  receives the compressed local path
+     */
+    private static function enforceMediaCompliance(
+        string $localPath,
+        string $platform,
+        string $mediaType,
+        callable $onImageCompressed,
+    ): string {
+        $checker = app(\App\Services\Imagery\MediaComplianceChecker::class);
+        $result = $checker->check($localPath, $platform, $mediaType);
+
+        if ($result['passed']) {
+            return '';
+        }
+
+        // Advisory-only failures (e.g. ffprobe unavailable for video) must not
+        // block — strip them; if nothing blocking remains, pass.
+        $blocking = array_values(array_filter(
+            $result['violations'],
+            fn (array $v) => ($v['kind'] ?? '') !== 'probe_advisory',
+        ));
+        if (empty($blocking)) {
+            return '';
+        }
+
+        // Only attempt compression when EVERY blocking violation is
+        // compression-fixable AND this is an image. A mix (e.g. oversize +
+        // wrong aspect) can't be fully fixed by compression, so we fail with
+        // the full reason list rather than half-fixing and re-failing.
+        $allFixable = collect($blocking)->every(fn (array $v) => ! empty($v['fixable_by_compression']));
+
+        if ($mediaType === 'image' && $allFixable) {
+            try {
+                $compressed = app(\App\Services\Imagery\ImageAutoCompressor::class)
+                    ->compressForPlatform($localPath, $platform);
+            } catch (\Throwable $e) {
+                // Compression itself failed — surface as a compliance failure
+                // with the original reasons plus why we couldn't auto-fix.
+                throw new \App\Services\Imagery\MediaComplianceException(
+                    violations: array_merge($blocking, [[
+                        'kind' => 'compression_failed',
+                        'reason' => 'We tried to compress the image but couldn\'t: ' . substr($e->getMessage(), 0, 160),
+                        'suggestion' => 'Re-export the image smaller (e.g. 1080px wide JPEG) and upload again.',
+                        'fixable_by_compression' => false,
+                        'detail' => [],
+                    ]]),
+                    platform: $platform,
+                    mediaType: $mediaType,
+                );
+            }
+
+            // Re-check the compressed output to be certain it now passes.
+            $recheck = $checker->check($compressed['path'], $platform, $mediaType);
+            $recheckBlocking = array_values(array_filter(
+                $recheck['violations'],
+                fn (array $v) => ($v['kind'] ?? '') !== 'probe_advisory',
+            ));
+            if (! empty($recheckBlocking)) {
+                @unlink($compressed['path']);
+                throw new \App\Services\Imagery\MediaComplianceException(
+                    violations: $recheckBlocking,
+                    platform: $platform,
+                    mediaType: $mediaType,
+                    message: 'Compressed image still does not meet the platform rules.',
+                );
+            }
+
+            try {
+                $onImageCompressed($compressed['path']);
+            } finally {
+                @unlink($compressed['path']);
+            }
+
+            return sprintf(
+                ' · auto-compressed to %d×%d, %s (q%d)',
+                $compressed['width'],
+                $compressed['height'],
+                \App\Services\Blotato\PlatformMediaRules::humanBytes($compressed['bytes']),
+                $compressed['quality'],
+            );
+        }
+
+        // Not auto-fixable (video, or image with non-compressible issues).
+        throw new \App\Services\Imagery\MediaComplianceException(
+            violations: $blocking,
+            platform: $platform,
+            mediaType: $mediaType,
+        );
+    }
+
+    /**
+     * Obtain a readable LOCAL path for a stored file. Local disks expose the
+     * real path directly; cloud disks (R2) require a temp download. Returns
+     * [localPath, cleanupCallable] — always call cleanup() in a finally.
+     *
+     * @return array{0:string, 1:callable():void}
+     */
+    private static function localCopyOf(string $disk, string $relativePath, string $publicUrl): array
+    {
+        $storage = \Illuminate\Support\Facades\Storage::disk($disk);
+
+        // Local/public disks expose a filesystem path.
+        try {
+            $real = $storage->path($relativePath);
+            if (is_string($real) && is_file($real)) {
+                return [$real, fn () => null];
+            }
+        } catch (\Throwable) {
+            // Driver without path() (cloud) — fall through to download.
+        }
+
+        // Cloud disk: download to a temp file.
+        $tmp = tempnam(sys_get_temp_dir(), 'media_chk_');
+        $ext = pathinfo($relativePath, PATHINFO_EXTENSION);
+        if ($ext !== '') {
+            $tmpWithExt = $tmp . '.' . $ext;
+            @rename($tmp, $tmpWithExt);
+            $tmp = $tmpWithExt;
+        }
+
+        $bytes = null;
+        try {
+            $bytes = $storage->get($relativePath);
+        } catch (\Throwable) {
+            // Fall back to fetching the public URL.
+            $bytes = @file_get_contents($publicUrl) ?: null;
+        }
+        if ($bytes === null || $bytes === '') {
+            @unlink($tmp);
+            throw new \RuntimeException('Could not read the media file for compliance checking.');
+        }
+        file_put_contents($tmp, $bytes);
+
+        return [$tmp, function () use ($tmp): void { @unlink($tmp); }];
+    }
+
+    /**
+     * Overwrite a stored file with the bytes from a local path and return the
+     * (unchanged) public URL. Used to persist an auto-compressed image back
+     * over the original upload / library asset so the publishable copy and the
+     * stored copy agree.
+     */
+    private static function overwriteStoredFile(string $disk, string $relativePath, string $localPath): string
+    {
+        $storage = \Illuminate\Support\Facades\Storage::disk($disk);
+        $bytes = file_get_contents($localPath);
+        if ($bytes === false) {
+            throw new \RuntimeException('Could not read compressed image to store.');
+        }
+        $storage->put($relativePath, $bytes, 'public');
+        return $storage->url($relativePath);
+    }
+
+    /**
+     * Render the media-compliance failure as a persistent danger notification
+     * (the "fail popup") listing every reason and the suggested fix.
+     */
+    private static function sendMediaComplianceFailure(\App\Services\Imagery\MediaComplianceException $e): void
+    {
+        $lines = collect($e->violations)->map(function (array $v): string {
+            $reason = trim((string) ($v['reason'] ?? ''));
+            $suggestion = trim((string) ($v['suggestion'] ?? ''));
+            return $suggestion !== ''
+                ? "• {$reason}\n   → {$suggestion}"
+                : "• {$reason}";
+        })->implode("\n");
+
+        $verb = $e->mediaType === 'video'
+            ? 'This video can\'t be auto-fixed — please re-export it:'
+            : 'Here\'s what needs fixing:';
+
+        \Filament\Notifications\Notification::make()
+            ->title(ucfirst($e->mediaType) . ' failed ' . ucfirst($e->platform) . ' compliance')
+            ->body($verb . "\n\n" . $lines)
+            ->danger()
+            ->persistent()
+            ->send();
+    }
+
+    /**
+     * Re-host a media URL through the brand's workspace Blotato account so it's
+     * publishable. Per the per-workspace-isolation invariant we always use
+     * forWorkspace(), never fromConfig().
+     */
+    private static function rehostOnBlotato(\App\Models\Brand $brand, string $url): string
+    {
+        if (! $brand->workspace) {
+            throw new \RuntimeException('Brand has no workspace — cannot resolve Blotato account.');
+        }
+        return \App\Services\Blotato\BlotatoClient::forWorkspace($brand->workspace)
+            ->uploadMediaFromUrl($url);
+    }
+
+    /**
+     * Persist the chosen media on the draft. asset_url becomes the
+     * Blotato-hosted (publishable) URL; asset_urls keeps a de-duplicated
+     * history including the original source URL for provenance.
+     *
+     * @param  array<int, string>  $urlsToRemember
+     */
+    private static function persistDraftMedia(Draft $draft, string $publishableUrl, array $urlsToRemember): void
+    {
+        $draft->update([
+            'asset_url' => $publishableUrl,
+            'asset_urls' => array_values(array_unique(array_merge(
+                is_array($draft->asset_urls) ? $draft->asset_urls : [],
+                array_filter($urlsToRemember),
+            ))),
+        ]);
     }
 
     public static function getPages(): array
