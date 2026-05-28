@@ -1,7 +1,7 @@
 @extends('layouts.eiaaw')
 
 @section('title', 'Terms of Service — EIAAW Social Media Team')
-@section('description', 'The terms governing your subscription to EIAAW Social Media Team, operated by EIAAW Solutions Sdn Bhd in Malaysia.')
+@section('description', 'The terms governing your subscription to EIAAW Social Media Team, operated by EIAAW SOLUTIONS in Malaysia.')
 
 @section('content')
 <x-legal-shell
@@ -10,7 +10,7 @@
   updated="28 May 2026"
   intro="These terms govern your use of EIAAW Social Media Team. By subscribing you agree to them. If you are accepting on behalf of a company, you confirm you are authorised to bind it."
 >
-  <p class="meta">EIAAW Solutions Sdn Bhd · Governed by the laws of Malaysia</p>
+  <p class="meta">EIAAW SOLUTIONS · SSM Reg. No. 202603133419 (CT0164540-H) · Governed by the laws of Malaysia</p>
 
   <h2>1. The service</h2>
   <p>
@@ -57,7 +57,7 @@
   <h2>7. Intellectual property</h2>
   <ul>
     <li><strong>Your content</strong> (brand assets, generated drafts you own the inputs to) remains yours. You grant us the licence needed to operate the service on your behalf.</li>
-    <li><strong>Our platform</strong> — software, agents, and design — remains the property of EIAAW Solutions Sdn Bhd.</li>
+    <li><strong>Our platform</strong> — software, agents, and design — remains the property of EIAAW SOLUTIONS.</li>
   </ul>
 
   <h2>8. Third-party services</h2>
@@ -87,7 +87,7 @@
 
   <h2>13. Contact</h2>
   <p>
-    EIAAW Solutions Sdn Bhd, Kuala Lumpur, Malaysia ·
+    EIAAW SOLUTIONS (SSM Reg. No. 202603133419 / CT0164540-H), Kuala Lumpur, Malaysia ·
     <a href="mailto:eiaawsolutions@gmail.com">eiaawsolutions@gmail.com</a>.
     See also our <a href="/privacy">Privacy Policy</a> and <a href="/security">Security</a> page.
   </p>

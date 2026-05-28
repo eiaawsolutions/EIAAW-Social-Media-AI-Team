@@ -1,7 +1,7 @@
 @extends('layouts.eiaaw')
 
 @section('title', 'Privacy Policy — EIAAW Social Media Team')
-@section('description', 'How EIAAW Solutions Sdn Bhd collects, uses, stores, and protects your data under the Malaysian Personal Data Protection Act 2010 (PDPA).')
+@section('description', 'How EIAAW SOLUTIONS collects, uses, stores, and protects your data under the Malaysian Personal Data Protection Act 2010 (PDPA).')
 
 @section('content')
 <x-legal-shell
@@ -10,11 +10,11 @@
   updated="28 May 2026"
   intro="This policy explains what personal data EIAAW Social Media Team collects, why we collect it, who we share it with, and the rights you hold under Malaysia's <strong>Personal Data Protection Act 2010 (PDPA)</strong>. The service is offered in Malaysia only in v1."
 >
-  <p class="meta">EIAAW Solutions Sdn Bhd · Kuala Lumpur, Malaysia · Data controller</p>
+  <p class="meta">EIAAW SOLUTIONS · SSM Reg. No. 202603133419 (CT0164540-H) · Kuala Lumpur, Malaysia · Data controller</p>
 
   <h2>1. Who we are</h2>
   <p>
-    EIAAW Social Media Team is operated by <strong>EIAAW Solutions Sdn Bhd</strong> ("EIAAW", "we", "us"), a company registered in Malaysia. For the purposes of the PDPA, we are the <strong>data user</strong> (controller) for account and billing data, and a <strong>data processor</strong> for the brand content you submit for processing. Questions about this policy can be sent to
+    EIAAW Social Media Team is operated by <strong>EIAAW SOLUTIONS</strong> (SSM Reg. No. 202603133419 / CT0164540-H) ("EIAAW", "we", "us"), a business registered in Malaysia. For the purposes of the PDPA, we are the <strong>data user</strong> (controller) for account and billing data, and a <strong>data processor</strong> for the brand content you submit for processing. Questions about this policy can be sent to
     <a href="mailto:eiaawsolutions@gmail.com">eiaawsolutions@gmail.com</a>.
   </p>
 
@@ -116,7 +116,7 @@
 
   <h2>10. Contact</h2>
   <p>
-    EIAAW Solutions Sdn Bhd, Kuala Lumpur, Malaysia ·
+    EIAAW SOLUTIONS (SSM Reg. No. 202603133419 / CT0164540-H), Kuala Lumpur, Malaysia ·
     <a href="mailto:eiaawsolutions@gmail.com">eiaawsolutions@gmail.com</a>.
     See also our <a href="/terms">Terms of Service</a> and <a href="/security">Security</a> page.
   </p>

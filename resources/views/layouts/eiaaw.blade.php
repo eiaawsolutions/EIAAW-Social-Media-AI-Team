@@ -82,7 +82,7 @@
       </div>
     </div>
     <div class="footer-bottom">
-      <span>&copy; {{ date('Y') }} EIAAW Solutions Sdn Bhd</span>
+      <span>&copy; {{ date('Y') }} EIAAW SOLUTIONS &middot; SSM Reg. No. 202603133419 (CT0164540-H)</span>
       <span>Kuala Lumpur &middot; Malaysia</span>
     </div>
   </div>
