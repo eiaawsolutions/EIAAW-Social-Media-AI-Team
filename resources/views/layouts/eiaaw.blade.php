@@ -31,10 +31,10 @@
     </span>
   </a>
   <div class="nav-links">
-    <a href="#how">How it works</a>
-    <a href="#agents">The team</a>
-    <a href="#receipts">Receipts</a>
-    <a href="#pricing">Pricing</a>
+    <a href="{{ url('/') }}#how">How it works</a>
+    <a href="{{ url('/') }}#agents">The team</a>
+    <a href="{{ url('/') }}#receipts">Receipts</a>
+    <a href="{{ url('/') }}#pricing">Pricing</a>
     @auth
       <a href="{{ url('/agency') }}" class="btn btn-primary">Open dashboard <span class="arrow">&rarr;</span></a>
     @else
@@ -63,10 +63,10 @@
       </div>
       <div class="footer-col">
         <strong>Product</strong>
-        <a href="#how">How it works</a>
-        <a href="#agents">The six agents</a>
-        <a href="#receipts">Receipts &amp; provenance</a>
-        <a href="#pricing">Pricing</a>
+        <a href="{{ url('/') }}#how">How it works</a>
+        <a href="{{ url('/') }}#agents">The six agents</a>
+        <a href="{{ url('/') }}#receipts">Receipts &amp; provenance</a>
+        <a href="{{ url('/') }}#pricing">Pricing</a>
       </div>
       <div class="footer-col">
         <strong>Company</strong>
