@@ -77,7 +77,13 @@ class FalAiClient
      *   num_images?: int,
      *   seed?: int,
      *   safety_tolerance?: string,
+     *   negative_prompt?: string,
      * } $options
+     *
+     * Note: the default model fal-ai/flux-pro/v1.1 has no negative_prompt
+     * field and silently ignores it (it does not error on unknown keys).
+     * Negative-capable models a workspace may configure (flux/dev, recraft-v3,
+     * SD-family) honour it. See ImageCreativeDirection::negativePrompt().
      *
      * @return array{url:string, model:string, latency_ms:int, prompt:string, content_type:?string}
      */

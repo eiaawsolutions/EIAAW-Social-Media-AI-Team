@@ -11,6 +11,7 @@ use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
+use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
@@ -69,13 +70,14 @@ class DesignerAgent extends BaseAgent
     }
 
     public function role(): string { return 'designer'; }
-    // v1.3 — Designer is now learner-aware: when learned rules for the
-    // platform exist (e.g. recurring "media required" rejections), they're
-    // exposed as art-direction signal so the model never under-produces
-    // media for a media-required platform. The cap-filter + draft_id
-    // attribution fixes (2026-05-05) ship under the same prompt version
-    // bump so redrafts are eligible.
-    public function promptVersion(): string { return 'designer.v1.3'; }
+    // v1.4 — every prompt now carries the ImageCreativeDirection realism
+    // contract (natural lighting, prime-lens DoF, real texture, correct
+    // anatomy, in-prompt anti-AI-aesthetic list) and a structured
+    // negative_prompt is sent to FAL (honoured by negative-capable models;
+    // flux-pro v1.1 ignores it, which is why the realism block also folds
+    // the negatives into the positive prompt). v1.3 retained: learner-aware
+    // art direction + cap-filter + draft_id attribution.
+    public function promptVersion(): string { return 'designer.v1.4'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -190,6 +192,10 @@ class DesignerAgent extends BaseAgent
         try {
             $generated = $fal->generateImage($prompt, [
                 'image_size' => FalAiClient::imageSizeForPlatform($draft->platform),
+                // Honoured by negative-capable models (flux/dev, recraft, SD).
+                // flux-pro/v1.1 ignores it — the realism block folds the same
+                // negatives into the positive prompt for that model.
+                'negative_prompt' => ImageCreativeDirection::negativePrompt(),
             ]);
         } catch (\Throwable $e) {
             Log::error('DesignerAgent: FAL generation failed', [
@@ -367,13 +373,14 @@ class DesignerAgent extends BaseAgent
         // ~/.claude/skills/full-stack-engineer/references/eiaaw-design-system.md.
         if (EiaawBrandLock::appliesTo($brand)) {
             return sprintf(
-                'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for EIAAW Solutions on %s. %s. %s %s%s Topic interpretation: %s. ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If your model wants to add text, replace it with a photographic subject instead.',
+                'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for EIAAW Solutions on %s. %s. %s %s%s Topic interpretation: %s. %s ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If your model wants to add text, replace it with a photographic subject instead.',
                 ucfirst($draft->platform),
                 $platformComposition,
                 EiaawBrandLock::imageDirective(),
                 EiaawBrandLock::typographyHint(),
                 $directionHint,
                 $bodyLead,
+                ImageCreativeDirection::realismBlock(),
             );
         }
 
@@ -402,13 +409,14 @@ class DesignerAgent extends BaseAgent
         };
 
         return sprintf(
-            'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for the brand "%s" on %s. %s.%s%s Topic interpretation: %s. ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If the model wants to add text, replace with a photographic subject instead. Anti-slop: avoid generic purple/magenta gradient backgrounds, radial glows, stock-photo poses, clip-art icons, and AI-swirl effects.',
+            'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for the brand "%s" on %s. %s.%s%s Topic interpretation: %s. %s ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If the model wants to add text, replace with a photographic subject instead. Anti-slop: avoid generic purple/magenta gradient backgrounds, radial glows, stock-photo poses, clip-art icons, and AI-swirl effects.',
             $brand->name,
             ucfirst($draft->platform),
             $platformAesthetic,
             $paletteHint,
             $directionHint,
             $bodyLead,
+            ImageCreativeDirection::realismBlock(),
         );
     }
 }
