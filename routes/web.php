@@ -9,6 +9,15 @@ use Laravel\Cashier\Http\Middleware\VerifyWebhookSignature;
 
 Route::get('/', fn () => view('landing'))->name('landing');
 
+// Static info / legal pages linked from the site footer. Plain view routes
+// (no controller) — content is fully static so there is nothing to compute.
+// These MUST exist: a paid SaaS with Stripe billing cannot 404 on Privacy /
+// Terms, and the PDPA requires a reachable privacy notice.
+Route::view('/privacy', 'legal.privacy')->name('legal.privacy');
+Route::view('/terms', 'legal.terms')->name('legal.terms');
+Route::view('/security', 'legal.security')->name('legal.security');
+Route::view('/changelog', 'legal.changelog')->name('legal.changelog');
+
 Route::redirect('/login', '/agency/login')->name('login');
 
 // Filament's login route name is filament.agency.auth.login. We reference it
