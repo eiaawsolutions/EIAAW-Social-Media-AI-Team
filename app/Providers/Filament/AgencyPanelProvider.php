@@ -14,6 +14,7 @@ use App\Filament\Agency\Pages\Billing;
 use App\Filament\Agency\Pages\TrialExpired;
 use App\Http\Middleware\EnforceTrialOrSubscription;
 use Filament\Auth\MultiFactor\App\AppAuthentication;
+use Filament\Navigation\NavigationItem;
 use Filament\Auth\Pages\Login;
 use Filament\Auth\Pages\PasswordReset\RequestPasswordReset;
 use Filament\Auth\Pages\PasswordReset\ResetPassword;
@@ -84,6 +85,17 @@ class AgencyPanelProvider extends PanelProvider
                 Billing::class,
                 TrialExpired::class,
                 Dashboard::class,
+            ])
+            // Super-admin-only sidebar link to the HQ admin panel (separate
+            // Filament app at /admin). Sorted just after "Agents" (sort 91).
+            // Customers never see it — visible() gates on is_super_admin.
+            ->navigationItems([
+                NavigationItem::make('admin')
+                    ->label('admin')
+                    ->icon('heroicon-o-shield-check')
+                    ->url('/admin', shouldOpenInNewTab: false)
+                    ->sort(92)
+                    ->visible(fn (): bool => (bool) auth()->user()?->is_super_admin),
             ])
             ->discoverWidgets(in: app_path('Filament/Agency/Widgets'), for: 'App\\Filament\\Agency\\Widgets')
             ->widgets([
