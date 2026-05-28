@@ -125,15 +125,20 @@ class ResearcherAgent extends BaseAgent
         }
         unset($angle);
 
+        // Merge, don't clobber: the Strategist seeds research_brief.creative
+        // (target_emotion + content_angle). Preserve any keys it set rather
+        // than overwriting the whole column with just our angles.
+        $existing = is_array($entry->research_brief) ? $entry->research_brief : [];
+
         $entry->forceFill([
-            'research_brief' => [
+            'research_brief' => array_merge($existing, [
                 'angles' => array_slice($angles, 0, 5), // hard cap at 5 even if model overshoots
                 'generated_at' => now()->toIso8601String(),
                 'model_id' => $result->modelId,
                 'prompt_version' => $result->promptVersion,
                 'cost_usd' => (float) ($result->costUsd ?? 0),
                 'corpus_size_seen' => count($similar),
-            ],
+            ]),
         ])->save();
 
         return AgentResult::ok([

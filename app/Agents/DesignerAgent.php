@@ -317,6 +317,23 @@ class DesignerAgent extends BaseAgent
      *   - The draft body's first sentence (subject anchor)
      *   - Aspect-ratio + platform-specific aesthetic hints
      */
+    /**
+     * The first (hook) carousel slide's visual_direction, if the Writer
+     * (v1.5+) produced a slide arc in draft.platform_payload. Empty string
+     * otherwise — non-carousel drafts and pre-v1.5 drafts both degrade
+     * gracefully to the normal single-image prompt.
+     */
+    private function hookSlideDirection(Draft $draft): string
+    {
+        $payload = $draft->platform_payload;
+        $slides = is_array($payload['carousel_slides'] ?? null) ? $payload['carousel_slides'] : [];
+        $first = $slides[0] ?? null;
+        if (! is_array($first)) {
+            return '';
+        }
+        return trim((string) ($first['visual_direction'] ?? $first['title'] ?? ''));
+    }
+
     private function buildPrompt(Brand $brand, Draft $draft): string
     {
         $entry = $draft->calendarEntry;
@@ -324,6 +341,16 @@ class DesignerAgent extends BaseAgent
 
         $direction = trim((string) ($entry->visual_direction ?? ''));
         $directionHint = $direction !== '' ? " Visual direction from strategist: {$direction}." : '';
+
+        // Carousel-aware: when the Writer produced a slide arc, anchor the hero
+        // image to the FIRST (hook) slide's visual direction so the cover frame
+        // sets up the carousel narrative rather than illustrating the whole
+        // body generically. We still render one image here (the cover); a
+        // future per-slide pass can iterate platform_payload.carousel_slides.
+        $hookSlide = $this->hookSlideDirection($draft);
+        if ($hookSlide !== '') {
+            $directionHint .= " Carousel cover (hook slide): {$hookSlide}.";
+        }
 
         $platformComposition = match ($draft->platform) {
             'instagram', 'facebook' => 'square 1:1 composition, generous negative space',

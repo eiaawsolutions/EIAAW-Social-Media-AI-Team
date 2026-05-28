@@ -4,6 +4,23 @@ namespace App\Agents\Prompts;
 
 final class WriterPrompt
 {
+    // v1.5 — creative-director enrichment. Adds optional structured copy
+    // fields the Writer can now emit alongside the body:
+    //   - headline:  the scroll-stopping first line as its own field (the
+    //                body should still open with it, but surfacing it lets
+    //                the operator scan/AB-test hooks).
+    //   - cta:       the explicit call-to-action line (still woven into body
+    //                where natural, but named so it's never accidentally
+    //                dropped).
+    //   - hook_pattern: which of the 8 hook patterns this draft uses (telemetry
+    //                + variety enforcement across a calendar).
+    //   - carousel_slides: ONLY when the calendar entry format is "carousel" —
+    //                a slide-by-slide narrative (hook slide → value slides →
+    //                payoff → CTA slide) the Designer turns into per-slide art.
+    // All four are OPTIONAL and fold into draft.platform_payload (existing
+    // JSON column) — no migration. The required body/quote/voiceover contract
+    // from v1.3 is unchanged.
+    //
     // v1.3 — every draft is now REQUIRED to produce two short branded
     // artefacts alongside the body:
     //   - quote: 6–14 word declarative line stamped onto the Designer image
@@ -29,7 +46,7 @@ final class WriterPrompt
     // tension/audience. The Writer is asked to PICK ONE angle and draft from
     // it (rather than generating from the one-line strategist angle alone).
     // Falls back gracefully when the brief is null (Researcher off / failed).
-    public const VERSION = 'writer.v1.4';
+    public const VERSION = 'writer.v1.5';
 
     /**
      * Per-platform character limits enforced both in the schema and in the
@@ -89,6 +106,45 @@ does.
    - Ends on a complete thought (no "..." cliff-hanger).
    - No URLs spelled out, no hashtag reading, no "link in bio", no "swipe
      up", no "comment below". Same voice as the quote.
+
+# Hook — the first line earns the rest
+
+The body's FIRST line is the hook. It must stop the scroll in under 1.5
+seconds. Build it from ONE of these patterns and report which in hook_pattern:
+
+- curiosity_gap — open a loop the reader needs closed.
+- problem_agitation — name a pain the audience feels, sharply.
+- contrarian — challenge a belief the category takes for granted.
+- relatable — "if you've ever…" recognition.
+- authority_insight — a non-obvious truth only an insider knows.
+- shock_statistic — a real, GROUNDED number (must be in your evidence; if you
+  can't source it, pick another pattern — never invent the stat).
+- transformation — before → after the brand's offering.
+- story — a specific moment, told in scene.
+
+If the calendar entry supplies a target_emotion, the hook + body must actually
+evoke THAT feeling — don't default every post to the same register.
+
+# Structured copy fields (optional, fold into the schema)
+
+- headline — the hook line on its own. The body should still open with it; this
+  field just surfaces it for scanning/AB-testing. Keep it under ~120 chars.
+- cta — the single explicit call-to-action (e.g. "Book a 15-min teardown",
+  "Save this for your next launch"). Still weave it naturally into the body —
+  naming it here guarantees it's never dropped. Omit only for pure-awareness
+  posts where a CTA would feel forced.
+
+# Carousel — slide-by-slide (ONLY when the entry format is "carousel")
+
+When the calendar entry's format is "carousel", populate carousel_slides with a
+narrative arc the Designer turns into per-slide art:
+- Slide 1: HOOK slide — the scroll-stopper as a short on-image line.
+- Middle slides: one idea each — value / step / proof. Don't cram.
+- Penultimate slide: the emotional payoff / the "aha".
+- Final slide: the CTA slide.
+Each slide needs: title (≤7 words), body (≤25 words), visual_direction (what the
+Designer should render). 4–8 slides total. For non-carousel formats, OMIT
+carousel_slides entirely (do not emit an empty array's worth of filler).
 
 # Platform-specific guidance
 
@@ -166,6 +222,33 @@ PROMPT.self::platformGuide($platform)."\n\n# Research brief (when supplied)\n\nI
                 'voiceover' => [
                     'type' => 'string',
                     'description' => '25–45 word script (2–3 short sentences) for the VideoAgent voiceover at ~150 wpm. Reads aloud naturally. No URLs spelled out, no hashtag reading, no "link in bio", no "swipe up". Same voice as quote.',
+                ],
+                'headline' => [
+                    'type' => 'string',
+                    'description' => 'The scroll-stopping hook line on its own (≤120 chars). The body should still open with it.',
+                ],
+                'cta' => [
+                    'type' => 'string',
+                    'description' => 'The single explicit call-to-action. Also woven into the body. Omit for pure-awareness posts.',
+                ],
+                'hook_pattern' => [
+                    'type' => 'string',
+                    'enum' => ['curiosity_gap', 'problem_agitation', 'contrarian', 'relatable', 'authority_insight', 'shock_statistic', 'transformation', 'story'],
+                    'description' => 'Which hook pattern the first line uses.',
+                ],
+                'carousel_slides' => [
+                    'type' => 'array',
+                    'description' => 'ONLY when the calendar entry format is "carousel". Slide-by-slide arc: hook → value → payoff → CTA. 4–8 slides. Omit entirely for non-carousel formats.',
+                    'items' => [
+                        'type' => 'object',
+                        'additionalProperties' => false,
+                        'required' => ['title', 'body', 'visual_direction'],
+                        'properties' => [
+                            'title' => ['type' => 'string', 'description' => 'Slide title, ≤7 words.'],
+                            'body' => ['type' => 'string', 'description' => 'Slide body, ≤25 words.'],
+                            'visual_direction' => ['type' => 'string', 'description' => 'What the Designer should render for this slide.'],
+                        ],
+                    ],
                 ],
             ],
         ];

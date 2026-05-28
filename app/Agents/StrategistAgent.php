@@ -139,6 +139,15 @@ class StrategistAgent extends BaseAgent
                     (int) ($entry['day_offset'] ?? 0),
                 ));
 
+                // Creative intent (target_emotion + content_angle) is folded
+                // into research_brief.creative — no migration. ResearcherAgent
+                // merges (preserves) this key when it later writes angles, and
+                // the Writer/Designer read it for emotional + hook direction.
+                $creative = array_filter([
+                    'content_angle' => isset($entry['content_angle']) ? (string) $entry['content_angle'] : null,
+                    'target_emotion' => isset($entry['target_emotion']) ? (string) $entry['target_emotion'] : null,
+                ], fn ($v) => $v !== null && $v !== '');
+
                 CalendarEntry::create([
                     'content_calendar_id' => $calendar->id,
                     'brand_id' => $brand->id,
@@ -151,6 +160,7 @@ class StrategistAgent extends BaseAgent
                     'platforms' => $platforms,
                     'objective' => $entry['objective'] ?? 'engagement',
                     'visual_direction' => $entry['visual_direction'] ?? null,
+                    'research_brief' => $creative ? ['creative' => $creative] : null,
                     'status' => 'planned',
                 ]);
             }

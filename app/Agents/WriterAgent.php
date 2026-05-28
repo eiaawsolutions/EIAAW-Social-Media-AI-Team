@@ -121,6 +121,12 @@ class WriterAgent extends BaseAgent
             // consume the same authored text.
             $brandingPayload = self::extractBrandingPayload($payload);
 
+            // Structured copy fields — Writer v1.5. headline / cta /
+            // hook_pattern / carousel_slides fold into platform_payload
+            // (existing JSON column, no migration). Designer reads
+            // carousel_slides for per-slide art direction.
+            $platformPayload = self::extractPlatformPayload($payload, (string) $entry->format);
+
             $promptInputs = [
                 'calendar_entry_id' => $entry->id,
                 'brand_style_version' => $brand->currentStyle->version ?? null,
@@ -145,6 +151,7 @@ class WriterAgent extends BaseAgent
                         'hashtags' => $hashtags,
                         'mentions' => $payload['mentions'] ?? [],
                         'branding_payload' => $brandingPayload,
+                        'platform_payload' => $platformPayload,
                         // Refresh provenance — this is a new generation, even
                         // though the row id is preserved.
                         'model_id' => $result->modelId,
@@ -175,6 +182,7 @@ class WriterAgent extends BaseAgent
                 'hashtags' => $hashtags,
                 'mentions' => $payload['mentions'] ?? [],
                 'branding_payload' => $brandingPayload,
+                'platform_payload' => $platformPayload,
                 // Provenance
                 'agent_role' => $this->role(),
                 'model_id' => $result->modelId,
@@ -243,6 +251,67 @@ class WriterAgent extends BaseAgent
             'distilled_at' => now()->toIso8601String(),
             'source' => 'writer', // distinguishes Writer-v1.3 cache from QuoteWriter fallback
         ];
+    }
+
+    /**
+     * Extract the structured copy fields (Writer v1.5) into draft.platform_payload.
+     * headline / cta / hook_pattern always carry through when present;
+     * carousel_slides is kept ONLY when the calendar entry asked for a carousel
+     * (the model occasionally emits slides for non-carousel formats — drop them
+     * so the Designer doesn't render a slideshow for a single-image post).
+     *
+     * Returns null when nothing useful was produced, so the column stays clean.
+     *
+     * @param  array<string,mixed>  $payload  raw Writer JSON
+     * @param  string  $entryFormat  the calendar entry's format (carousel gate)
+     * @return array<string,mixed>|null
+     */
+    private static function extractPlatformPayload(array $payload, string $entryFormat): ?array
+    {
+        $out = [];
+
+        $headline = trim((string) ($payload['headline'] ?? ''));
+        if ($headline !== '') {
+            $out['headline'] = mb_substr($headline, 0, 120);
+        }
+
+        $cta = trim((string) ($payload['cta'] ?? ''));
+        if ($cta !== '') {
+            $out['cta'] = mb_substr($cta, 0, 160);
+        }
+
+        $hookPattern = trim((string) ($payload['hook_pattern'] ?? ''));
+        if ($hookPattern !== '') {
+            $out['hook_pattern'] = $hookPattern;
+        }
+
+        // Slides only make sense for a carousel entry. Drop them otherwise.
+        $slides = strtolower($entryFormat) === 'carousel' && is_array($payload['carousel_slides'] ?? null)
+            ? $payload['carousel_slides']
+            : [];
+        $normalised = [];
+        foreach ($slides as $slide) {
+            if (! is_array($slide)) {
+                continue;
+            }
+            $title = trim((string) ($slide['title'] ?? ''));
+            $body = trim((string) ($slide['body'] ?? ''));
+            $vis = trim((string) ($slide['visual_direction'] ?? ''));
+            if ($title === '' && $body === '') {
+                continue;
+            }
+            $normalised[] = [
+                'title' => mb_substr($title, 0, 80),
+                'body' => mb_substr($body, 0, 240),
+                'visual_direction' => mb_substr($vis, 0, 280),
+            ];
+        }
+        // Keep slides only when there are at least 2 real ones. Cap at 8.
+        if (count($normalised) >= 2) {
+            $out['carousel_slides'] = array_slice($normalised, 0, 8);
+        }
+
+        return $out === [] ? null : $out;
     }
 
     /**
@@ -320,6 +389,7 @@ class WriterAgent extends BaseAgent
     ): string {
         $similarBlock = $this->renderSimilarBlock($similar);
         $researchBlock = $this->renderResearchBrief($entry);
+        $creativeLines = $this->renderCreativeIntent($entry);
 
         $priorBody = (string) ($redraftContext['prior_body'] ?? '');
         $failures = $redraftContext['failures'] ?? [];
@@ -362,7 +432,7 @@ PRIOR_DRAFT
 - Pillar: {$entry->pillar}
 - Format: {$entry->format}
 - Objective: {$entry->objective}
-- Visual direction: {$entry->visual_direction}
+- Visual direction: {$entry->visual_direction}{$creativeLines}
 {$researchBlock}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
@@ -378,6 +448,7 @@ MSG;
     {
         $similarBlock = $this->renderSimilarBlock($similar);
         $researchBlock = $this->renderResearchBrief($entry);
+        $creativeLines = $this->renderCreativeIntent($entry);
 
         return <<<MSG
 BRAND: {$brand->name}
@@ -389,7 +460,7 @@ PLATFORM: {$platform}
 - Pillar: {$entry->pillar}
 - Format: {$entry->format}
 - Objective: {$entry->objective}
-- Visual direction: {$entry->visual_direction}
+- Visual direction: {$entry->visual_direction}{$creativeLines}
 {$researchBlock}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
@@ -426,5 +497,34 @@ MSG;
             ->implode("\n\n");
 
         return "\n# Research brief — 5 angles (pick ONE that best fits the platform/format/objective)\n{$lines}\n";
+    }
+
+    /**
+     * Render the Strategist's creative intent (target_emotion + content_angle)
+     * stored at research_brief.creative. Returns lines appended to the calendar
+     * entry block so the Writer evokes the planned emotion and builds the planned
+     * hook. Empty string when the Strategist didn't supply them (older calendars
+     * planned before Strategist v1.2) — graceful degradation, no header noise.
+     */
+    private function renderCreativeIntent(CalendarEntry $entry): string
+    {
+        $creative = is_array($entry->research_brief['creative'] ?? null)
+            ? $entry->research_brief['creative']
+            : [];
+        if (empty($creative)) {
+            return '';
+        }
+
+        $lines = '';
+        $emotion = trim((string) ($creative['target_emotion'] ?? ''));
+        if ($emotion !== '') {
+            $lines .= "\n- Target emotion (make the hook + body evoke THIS): {$emotion}";
+        }
+        $angle = trim((string) ($creative['content_angle'] ?? ''));
+        if ($angle !== '') {
+            $lines .= "\n- Content angle (build the hook from this direction): {$angle}";
+        }
+
+        return $lines;
     }
 }
