@@ -253,9 +253,10 @@
     const msgs = document.getElementById('smt-chat-msgs');
     const el = document.createElement('div');
     el.className = 'smt-chat-bubble bot';
-    el.textContent = text;
+    el.innerHTML = renderMarkdown(text); // safe: renderMarkdown escapes first, then formats
     msgs.appendChild(el);
     msgs.scrollTop = msgs.scrollHeight;
+    // Store the raw text (not HTML) so the history sent back to the model stays clean.
     chatHistory.push({ role: 'assistant', content: text });
   }
   function addUserMessage(text) {
@@ -337,6 +338,41 @@
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  /**
+   * Tiny, SAFE markdown renderer for assistant replies. Escapes the whole
+   * string FIRST (so no raw HTML/script from the model can execute), then turns
+   * a small allow-list of markdown into formatting:
+   *   **bold**, *italic*, `code`, [text](https/mailto links only),
+   *   - / * / • bullet lists, and blank-line paragraph breaks.
+   * Anything outside this set renders as plain (escaped) text. No external lib.
+   */
+  function renderMarkdown(src) {
+    let s = escapeHtml(String(src).trim());
+
+    // Inline: links FIRST (before bold/italic touch the brackets), restricted
+    // to safe schemes. The url is already escaped; we re-check the scheme.
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+      (m, label, url) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Block: group consecutive bullet lines into a <ul>; everything else into
+    // paragraphs split on blank lines, with single newlines as <br>.
+    const blocks = s.split(/\n{2,}/);
+    const html = blocks.map(block => {
+      const lines = block.split('\n');
+      const isList = lines.every(l => /^\s*[-*•]\s+/.test(l)) && lines.length > 0;
+      if (isList) {
+        const items = lines.map(l => `<li>${l.replace(/^\s*[-*•]\s+/, '')}</li>`).join('');
+        return `<ul>${items}</ul>`;
+      }
+      return `<p>${block.replace(/\n/g, '<br>')}</p>`;
+    }).join('');
+
+    return html;
   }
 
   // ---------- Public API + CTA hooks ----------
