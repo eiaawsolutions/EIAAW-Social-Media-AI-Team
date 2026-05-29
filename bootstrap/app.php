@@ -132,9 +132,18 @@ return Application::configure(basePath: dirname(__DIR__))
         // CSP report endpoint: the browser sends violation reports without
         // our XSRF token; the handler only writes log lines, never mutates
         // state, so the lack of CSRF is acceptable.
+        // Floating support chatbot endpoints: the PUBLIC landing widget posts
+        // without a session/XSRF token (same as the corporate site's chatbot),
+        // and the panel widgets reuse the same endpoints. Abuse is bounded by
+        // tight per-IP rate limits (routes/web.php), input validation, and the
+        // LlmGateway prompt-injection detector — not CSRF, which a logged-out
+        // visitor can't carry. No state is mutated by /api/chatbot; /api/contact
+        // only inserts a lead row + sends a notification.
         $middleware->validateCsrfTokens(except: [
             'stripe/webhook',
             'csp-report',
+            'api/chatbot',
+            'api/contact',
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

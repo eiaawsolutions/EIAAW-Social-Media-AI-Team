@@ -304,7 +304,7 @@
         </p>
         <div class="rvl" style="margin-top: 36px; display: flex; gap: 18px; flex-wrap: wrap;">
           <a href="{{ url('/signup') }}" class="btn btn-primary btn-lg">Start your subscription <span class="arrow">&rarr;</span></a>
-          <a href="mailto:eiaawsolutions@gmail.com" class="btn btn-ghost btn-lg">Talk to a human</a>
+          <a href="#" data-smt="contact" class="btn btn-ghost btn-lg">Talk to us</a>
         </div>
       </div>
     </div>
@@ -312,3 +312,8 @@
 </section>
 
 @endsection
+
+@push('scripts')
+  {{-- Floating support chatbot — landing surface (sale-conversion mode). --}}
+  @include('partials.smt-chat-widget', ['surface' => 'landing'])
+@endpush

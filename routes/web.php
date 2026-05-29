@@ -3,11 +3,25 @@
 use App\Http\Controllers\BillingController;
 use App\Http\Controllers\CspReportController;
 use App\Http\Controllers\SignupController;
+use App\Http\Controllers\SupportChatController;
 use App\Http\Controllers\StripeWebhookController;
 use Illuminate\Support\Facades\Route;
 use Laravel\Cashier\Http\Middleware\VerifyWebhookSignature;
 
 Route::get('/', fn () => view('landing'))->name('landing');
+
+// Floating support chatbot — public, CSRF-exempt (the landing widget carries no
+// session token; panel widgets reuse the same endpoint). Both are tightly rate-
+// limited: AI chat costs tokens per call, and the contact form is a lead-write.
+// The chat surface enforces its own scope/guardrails in ChatbotPrompts + the
+// LlmGateway injection detector. CSRF exemption is declared in bootstrap/app.php.
+Route::post('/api/chatbot', [SupportChatController::class, 'chat'])
+    ->middleware('throttle:10,1')
+    ->name('support.chatbot');
+
+Route::post('/api/contact', [SupportChatController::class, 'contact'])
+    ->middleware('throttle:6,1')
+    ->name('support.contact');
 
 // Static info / legal pages linked from the site footer. Plain view routes
 // (no controller) — content is fully static so there is nothing to compute.

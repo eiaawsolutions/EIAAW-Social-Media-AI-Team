@@ -128,4 +128,14 @@ return [
         'from_name' => env('CAP_WARNING_FROM_NAME', 'EIAAW Social Media Team'),
     ],
 
+    // "Talk to us" lead notifications from the floating support chatbot.
+    // Pinned to Resend (same rationale as cap_warning). `to` is where HQ reads
+    // enquiries; the lead is ALSO persisted to support_enquiries either way.
+    'support_enquiry' => [
+        'mailer' => env('SUPPORT_ENQUIRY_MAILER', 'resend'),
+        'to' => env('SUPPORT_ENQUIRY_TO', 'eiaawsolutions@gmail.com'),
+        'from_address' => env('SUPPORT_ENQUIRY_FROM', 'noreply@eiaawsolutions.com'),
+        'from_name' => env('SUPPORT_ENQUIRY_FROM_NAME', 'EIAAW SMT — Website'),
+    ],
+
 ];

@@ -11,12 +11,14 @@ use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
+use Filament\View\PanelsRenderHook;
 use Filament\Widgets\AccountWidget;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Facades\Blade;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 
 class AdminPanelProvider extends PanelProvider
@@ -72,6 +74,14 @@ class AdminPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
-            ]);
+            ])
+            // Floating support chatbot — HQ surface (guide-steps + enquiry).
+            // Injected at body-end so it floats over every HQ page. The server
+            // re-derives the surface and won't serve the guide prompt to an
+            // unauthenticated caller; here the operator is always authenticated.
+            ->renderHook(
+                PanelsRenderHook::BODY_END,
+                fn (): string => Blade::render("@include('partials.smt-chat-widget', ['surface' => 'hq'])"),
+            );
     }
 }

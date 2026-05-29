@@ -139,6 +139,14 @@ class AgencyPanelProvider extends PanelProvider
             ->renderHook(
                 PanelsRenderHook::AUTH_PASSWORD_RESET_RESET_FORM_BEFORE,
                 fn (): string => view('filament.agency.auth.return-link')->render(),
+            )
+            // Floating support chatbot — client surface (guide-steps + enquiry).
+            // Body-end so it floats over every dashboard page for the logged-in
+            // customer. NOT scoped to auth screens (a prospect on the login page
+            // doesn't need the in-app guide; the landing widget covers them).
+            ->renderHook(
+                PanelsRenderHook::BODY_END,
+                fn (): string => Blade::render("@include('partials.smt-chat-widget', ['surface' => 'client'])"),
             );
     }
 }
