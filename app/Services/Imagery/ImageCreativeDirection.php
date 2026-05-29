@@ -4,7 +4,7 @@ namespace App\Services\Imagery;
 
 /**
  * Canonical creative-direction contract for AI visual generation — both
- * still images (FAL Flux) and short-form video (FAL Wan 2.6).
+ * still images (FAL Nano Banana) and short-form video (FAL Google Veo 3 Fast).
  *
  * Encodes the realism + anti-AI-aesthetic rules every DesignerAgent and
  * VideoAgent prompt must carry so generated social creative looks naturally
@@ -25,13 +25,15 @@ namespace App\Services\Imagery;
  *     flux-pro/v1.1 silently ignores it; negative-capable models a workspace
  *     may flip to (flux/dev, recraft-v3, SD-family) honour it.
  *
- * VIDEO (Wan 2.6) — per FAL Wan optimisation rules: kinetic descriptions,
- * camera-motion parameters, 9:16-native phrasing, believable physics:
+ * VIDEO (Veo 3 Fast) — kinetic descriptions, camera-motion parameters,
+ * 9:16-native phrasing, believable physics:
  *   - videoRealismBlock()  → positive kinetic + camera-motion clauses appended
- *     to the video prompt.
- *   - videoNegativePrompt() → structured negative passed to generateVideo.
- *     Wan 2.5/2.6 DOES honour negative_prompt (max 500 chars — this string
- *     stays well under that).
+ *     to the video prompt. This is the ONLY steering Veo Fast honours — its
+ *     endpoint has no negative_prompt field, so the in-prompt "AVOID …" list
+ *     stands in for one (same role it plays for no-negative image models).
+ *   - videoNegativePrompt() → structured negative still passed to generateVideo;
+ *     Veo drops it (FalAiClient strips it for Veo), but a Wan rollback honours
+ *     it (max 500 chars — this string stays well under that).
  *
  * Single source of truth: the EIAAW house-brand path and the client path in
  * both DesignerAgent::buildPrompt() and VideoAgent::buildPrompt() consume
@@ -281,11 +283,12 @@ final class ImageCreativeDirection
     }
 
     /**
-     * Positive kinetic + camera-motion clauses for Wan 2.6 short-form video.
-     * Covers, per the FAL Wan optimisation rules: motion dynamics, camera
-     * movement, pacing, believable physics, real lighting in motion, and
-     * natural human movement — plus the in-prompt "avoid" list. Phrased
-     * 9:16-native by default (the agent still passes aspect_ratio explicitly).
+     * Positive kinetic + camera-motion clauses for Veo 3 Fast short-form video.
+     * Covers motion dynamics, camera movement, pacing, believable physics, real
+     * lighting in motion, and natural human movement — plus the in-prompt
+     * "avoid" list (Veo Fast has no negative_prompt field, so this list is the
+     * negative). Phrased 9:16-native by default (the agent still passes
+     * aspect_ratio explicitly).
      */
     public static function videoRealismBlock(): string
     {
@@ -303,9 +306,10 @@ final class ImageCreativeDirection
     }
 
     /**
-     * Structured negative prompt for Wan 2.6 video. Kept under Wan's 500-char
-     * limit. Targets temporal artefacts (flicker, morph, warp) on top of the
-     * still-image AI tells.
+     * Structured negative prompt for video. Veo Fast ignores it (no field), but
+     * a Wan rollback honours it — kept under Wan's 500-char limit. Targets
+     * temporal artefacts (flicker, morph, warp) on top of the still-image AI
+     * tells.
      */
     public static function videoNegativePrompt(): string
     {

@@ -140,8 +140,8 @@
             ['Strategist', 'Builds the monthly calendar from your brand evidence + historical performance.'],
             ['Researcher', 'Pulls competitor + market signal into the brief so the Writer isn\'t guessing.'],
             ['Writer', 'Drafts captions grounded in your real high-performing posts, with citation chips on every phrase.'],
-            ['Designer', 'Generates on-brand stills via FAL.AI Flux — locked to your palette, typography, logo placement.'],
-            ['Video', 'Generates short-form vertical via FAL.AI Wan 2.6 (Reels / TikTok / Shorts). Voiceover + music + subtitles when EIAAW brand-lock is on.'],
+            ['Designer', 'Generates on-brand stills via FAL.AI Nano Banana (Gemini 2.5 Flash Image) — locked to your palette, typography, logo placement.'],
+            ['Video', 'Generates short-form video via FAL.AI Google Veo 3 (Reels / TikTok / Shorts), narrated from the scripted caption with native synced audio.'],
             ['Compliance', 'The hard gate. Seven checks per post (platform-publishability, learned-rules, banned-phrases, embargo, dedup, brand-voice, factual-grounding). Fail = held.'],
           ];
         @endphp
@@ -181,7 +181,7 @@
           ],
           [
             'h' => 'Image &amp; video receipts',
-            'b' => 'Prompt used, model + version (Flux Schnell for stills, Wan 2.6 for vertical video), source assets composited, brand-DNA pass/fail per token (palette, typography, logo placement). Every image and clip carries an explicit AI-generated flag — honest disclosure ready for Meta, TikTok, and YouTube\'s synthetic-media policies.',
+            'b' => 'Prompt used, model + version (Nano Banana for stills, Google Veo 3 Fast for video), source assets composited, brand-DNA pass/fail per token (palette, typography, logo placement). Every image and clip carries an explicit AI-generated flag — honest disclosure ready for Meta, TikTok, and YouTube\'s synthetic-media policies.',
           ],
           [
             'h' => 'Recommendation receipts',

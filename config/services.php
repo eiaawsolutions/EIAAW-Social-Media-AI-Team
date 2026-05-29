@@ -22,7 +22,7 @@ return [
     ],
 
     'fal' => [
-        // FAL.AI gateway for image generation (Nano Banana default, Wan for video)
+        // FAL.AI gateway for image generation (Nano Banana default, Veo 3 Fast for video)
         'api_key' => env('FAL_API_KEY'),
         // Nano Banana (Gemini 2.5 Flash Image), ~$0.039/image: best prompt
         // adherence in its class — it depicts what the scripted scene brief
@@ -51,11 +51,30 @@ return [
         // internal post gets an on-message visual. Client workspaces keep
         // library-first (they upload their own brand-correct photography).
         'internal_prefers_ai' => (bool) env('FAL_INTERNAL_PREFERS_AI', true),
-        // Wan 2.6 i2v is the Q2 2026 quality leader for short-form vertical
-        // ($0.50/clip, 5s 720p). Wan 2.6 t2v is the fallback when no still
-        // exists yet. Veo 3 sits at higher quality + price; switch later.
-        'video_model_image' => env('FAL_VIDEO_MODEL_IMAGE', 'fal-ai/wan-25-preview/image-to-video'),
-        'video_model_text' => env('FAL_VIDEO_MODEL_TEXT', 'fal-ai/wan-25-preview/text-to-video'),
+        // Google Veo 3 Fast is the Q2 2026 quality leader for short-form: far
+        // better realism, motion coherence and prompt adherence than Wan, plus
+        // NATIVE synced audio (Veo speaks/scores the clip from the prompt). We
+        // feed it the caption-derived scene brief + the distilled voiceover as
+        // spoken dialogue, so the clip says what the post says.
+        //   - i2v: fal-ai/veo3/fast/image-to-video — used when a Designer still
+        //     exists (keyframe → brand consistency).
+        //   - t2v: fal-ai/veo3/fast — used when no still exists yet.
+        // Pricing (FAL, 2026-05): $0.10/sec audio-off, $0.15/sec audio-on. A 6s
+        // audio-on clip ≈ $0.90; an 8s ≈ $1.20. Veo accepts ONLY 4s/6s/8s
+        // durations and 16:9/9:16 aspect (i2v also 'auto'); NO 1:1. The
+        // FalAiClient maps our integer seconds → Veo's "Ns" string and clamps
+        // aspect, so flipping these IDs is safe.
+        // Roll back to Wan by setting these to fal-ai/wan-25-preview/* .
+        'video_model_image' => env('FAL_VIDEO_MODEL_IMAGE', 'fal-ai/veo3/fast/image-to-video'),
+        'video_model_text' => env('FAL_VIDEO_MODEL_TEXT', 'fal-ai/veo3/fast'),
+        // Veo native audio: when true the model generates its own dialogue/SFX/
+        // music from the prompt and we SKIP the FFmpeg voiceover+music composer.
+        // Set false to mute Veo and keep the legacy Kokoro voiceover+music+subs
+        // brand composer (only meaningful while a Wan-style model is active).
+        'video_native_audio' => (bool) env('FAL_VIDEO_NATIVE_AUDIO', true),
+        // Default clip length in seconds. Veo snaps to {4,6,8}; 6s is the sweet
+        // spot for a hook + line + resolve at ~150 wpm without overspending.
+        'video_duration_seconds' => (int) env('FAL_VIDEO_DURATION_SECONDS', 6),
         'request_timeout' => (int) env('FAL_REQUEST_TIMEOUT', 180),
         'video_request_timeout' => (int) env('FAL_VIDEO_REQUEST_TIMEOUT', 360),
         // Per-workspace daily caps. Video is 10x image so kept separate

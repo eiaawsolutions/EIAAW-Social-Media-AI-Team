@@ -27,7 +27,7 @@ class DraftsRegenerateImage extends Command
 {
     protected $signature = 'drafts:regenerate-image
                             {id : the Draft id to regenerate the visual for}
-                            {--video : regenerate a video (Wan) instead of a still image (Flux)}
+                            {--video : regenerate a video (Veo 3 Fast) instead of a still image (Nano Banana)}
                             {--force : skip the confirmation prompt (for non-interactive/prod use)}
                             {--dry-run : show what would happen without clearing or generating}';
 

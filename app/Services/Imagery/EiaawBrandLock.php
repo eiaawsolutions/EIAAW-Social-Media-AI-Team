@@ -42,7 +42,7 @@ final class EiaawBrandLock
     }
 
     /**
-     * Art-direction fragment for short-form video generation (FAL Wan 2.6).
+     * Art-direction fragment for short-form video generation (FAL Veo 3 Fast).
      * Same brand spine, adapted to motion: easing without overshoot, no
      * bouncy springs, no rapid cuts.
      */

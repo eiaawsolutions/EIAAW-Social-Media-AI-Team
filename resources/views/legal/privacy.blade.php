@@ -72,7 +72,7 @@
   </p>
   <ul>
     <li><strong>Anthropic (Claude)</strong> — caption drafting, strategy, and compliance reasoning.</li>
-    <li><strong>FAL.AI</strong> — image (Flux) and short-form video (Wan 2.6) generation.</li>
+    <li><strong>FAL.AI</strong> — image (Nano Banana / Gemini 2.5 Flash Image) and short-form video (Google Veo 3) generation.</li>
     <li><strong>Stripe</strong> — payment processing and subscription management.</li>
     <li><strong>Blotato</strong> — social scheduling and publishing.</li>
     <li><strong>Cloud infrastructure &amp; email</strong> — hosting, storage, and transactional email delivery.</li>

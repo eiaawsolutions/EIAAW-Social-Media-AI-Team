@@ -19,48 +19,59 @@ use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 
 /**
- * Generates one short-form vertical video per Draft via FAL.AI Wan 2.6,
+ * Generates one short-form video per Draft via FAL.AI Google Veo 3 Fast,
  * then re-hosts it on Blotato so it can attach to /v2/posts. Reels /
  * Shorts / TikTok are the highest-CPM organic distribution in 2026 —
  * skipping vertical video = leaving 60%+ of platform performance on
  * the table.
  *
+ * The clip is generated from the SCRIPTED post content: DraftSceneBrief
+ * (hook + distilled quote + CTA + target emotion + visual_direction) drives
+ * the motion, and the distilled voiceover is passed to Veo as SPOKEN DIALOGUE
+ * so the clip literally narrates what the post says — not a generic stock
+ * motion. Veo 3 generates its own synced audio (voice + ambience) from that
+ * prompt, so when native audio is on we ship the Veo clip directly and skip
+ * the legacy FFmpeg voiceover/music composer.
+ *
  * Routing:
- *   - If draft.asset_url is a still image → image-to-video (Wan 2.6 i2v)
+ *   - If draft.asset_url is a still image → image-to-video (Veo 3 Fast i2v)
  *     uses the still as keyframe — better brand consistency, faster
  *     prompt convergence.
- *   - Else → text-to-video (Wan 2.6 t2v) directly from caption + visual_direction.
+ *   - Else → text-to-video (Veo 3 Fast t2v) directly from the scene brief.
  *
  * Output: replaces draft.asset_url with the Blotato-hosted .mp4 URL,
  * keeps the original still in asset_urls history.
  *
- * Cost: ~\$0.50/clip (5s 720p Wan 2.6) — 12x more expensive than a still.
- * Separate daily cap (services.fal.video_daily_cap_usd, default \$2/day).
+ * Cost: Veo 3 Fast is $0.10/sec (audio off) / $0.15/sec (audio on). A 6s
+ * audio-on clip ≈ \$0.90. Separate daily cap (services.fal.video_daily_cap_usd,
+ * default \$5/day → ~5 clips/day).
  *
  * Required input:
  *   - draft_id (int)
  *
  * Optional input:
  *   - prompt_override (string)
- *   - duration_seconds (int, max 8 for Wan)
+ *   - duration_seconds (int — snapped to Veo's 4/6/8s steps)
  *   - skip_blotato_upload (bool) — dev-only
  */
 class VideoAgent extends BaseAgent
 {
     protected array $requiredStages = ['brand_style'];
 
-    /** $5/workspace/day cap — ~10 video generations at FAL Wan 2.6 720p
-     *  ($0.50/clip). The previous $2/day cap tripped on day 5 of normal use
-     *  (5 brands × ~1 video/week + redraft headroom). */
+    /** $5/workspace/day cap — ~5 Veo 3 Fast clips at 6s audio-on ($0.90 each).
+     *  Operator lifts via services.fal.video_daily_cap_usd (Infisical). */
     private const DEFAULT_DAILY_CAP_USD = 5.00;
 
-    /** Approx Wan 2.6 5s 720p cost. */
-    private const FAL_WAN_USD_PER_VIDEO = 0.50;
+    /** Veo 3 Fast per-second pricing (FAL, 2026-05). Audio-on clips cost more
+     *  because the model also generates the synced voice/ambience. Actual clip
+     *  cost is computed as rate × duration in handle(). */
+    private const VEO_FAST_USD_PER_SEC_AUDIO = 0.15;
+    private const VEO_FAST_USD_PER_SEC_SILENT = 0.10;
 
-    /** Allowed aspect ratios. Anything else is rejected at resolveAspectRatio
-     *  to keep FAL + ffmpeg branches finite. '4:5' (IG square-ish) can be
-     *  added later but isn't supported by Wan 2.6. */
-    private const ALLOWED_ASPECTS = ['9:16', '16:9', '1:1'];
+    /** Allowed aspect ratios. Veo 3 Fast supports landscape + vertical only —
+     *  it rejects 1:1, so it is intentionally NOT here (a square draft falls
+     *  through resolveAspectRatio to 9:16). */
+    private const ALLOWED_ASPECTS = ['9:16', '16:9'];
 
     /** Per-platform default video aspect when the draft does not specify
      *  one. Picked for primary feed surface, not the auxiliary one:
@@ -80,13 +91,13 @@ class VideoAgent extends BaseAgent
     ];
 
     public function role(): string { return 'video'; }
-    // v1.4 — the clip is now anchored to the SCRIPTED post content via
-    // DraftSceneBrief (hook + distilled quote + CTA + target emotion +
-    // visual_direction) plus the voiceover narrative, so the motion matches
-    // what the post says and stays in lockstep with the Designer still built
-    // from the same brief. v1.3 retained: video realism contract +
-    // negative_prompt to Wan.
-    public function promptVersion(): string { return 'video.v1.4'; }
+    // v2.0 — switched to Google Veo 3 Fast. The clip is still anchored to the
+    // SCRIPTED post content via DraftSceneBrief (hook + distilled quote + CTA +
+    // target emotion + visual_direction), but the distilled voiceover is now
+    // passed to Veo as SPOKEN DIALOGUE so the model narrates the post copy in
+    // its own native synced audio — no separate Kokoro voiceover/music pass.
+    // v1.4 retained: scene-brief anchoring + lockstep with the Designer still.
+    public function promptVersion(): string { return 'video.veo3.v2.0'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -132,7 +143,7 @@ class VideoAgent extends BaseAgent
         }
 
         // Library-first routing for videos — same shape as DesignerAgent.
-        // EIAAW-internal brands prefer bespoke Wan generation from the scripted
+        // EIAAW-internal brands prefer bespoke Veo generation from the scripted
         // brief over a generic stock-library clip (config-gated).
         $internalPrefersAi = EiaawBrandLock::appliesTo($brand)
             && (bool) config('services.fal.internal_prefers_ai', true);
@@ -205,7 +216,10 @@ class VideoAgent extends BaseAgent
 
         $aspect = $this->resolveAspectRatio($draft, $input);
         $prompt = (string) ($input['prompt_override'] ?? $this->buildPrompt($brand, $draft, $aspect));
-        $duration = max(3, min(8, (int) ($input['duration_seconds'] ?? 5)));
+        // Veo accepts only 4/6/8s; the client snaps to the nearest step, so any
+        // value here is safe. Default comes from config (6s sweet spot).
+        $requestedDuration = (int) ($input['duration_seconds'] ?? config('services.fal.video_duration_seconds', 6));
+        $duration = max(3, min(8, $requestedDuration));
 
         try {
             $fal = FalAiClient::fromConfig();
@@ -221,7 +235,9 @@ class VideoAgent extends BaseAgent
                 'aspect_ratio' => $aspect,
                 'resolution' => '720p',
                 'duration' => $duration,
-                // Wan 2.5/2.6 honours negative_prompt (max 500 chars).
+                // Veo Fast has no negative_prompt field (the client drops it for
+                // Veo); the realism "AVOID …" clauses live in the positive prompt.
+                // Forwarded anyway so a Wan rollback still gets its negative.
                 'negative_prompt' => ImageCreativeDirection::videoNegativePrompt(),
             ]));
         } catch (\Throwable $e) {
@@ -234,9 +250,13 @@ class VideoAgent extends BaseAgent
         }
 
         $falUrl = $generated['url'];
+        $hasNativeAudio = (bool) ($generated['has_native_audio'] ?? false);
         $brandedLocalPath = null;
 
-        // Log cost.
+        // Log cost — Veo bills per second, and audio-on costs more (the model
+        // also generated the voice). Compute from the resolved duration so the
+        // ledger and daily-cap breaker reflect what we actually spent.
+        $costUsd = $this->clipCostUsd($duration, $hasNativeAudio);
         try {
             AiCost::create([
                 'workspace_id' => $brand->workspace_id,
@@ -248,8 +268,8 @@ class VideoAgent extends BaseAgent
                 'input_tokens' => 0,
                 'output_tokens' => 0,
                 'image_count' => 1,
-                'cost_usd' => self::FAL_WAN_USD_PER_VIDEO,
-                'cost_myr' => round(self::FAL_WAN_USD_PER_VIDEO * 4.7, 4),
+                'cost_usd' => $costUsd,
+                'cost_myr' => round($costUsd * 4.7, 4),
                 'called_at' => now(),
             ]);
         } catch (\Throwable $e) {
@@ -257,10 +277,14 @@ class VideoAgent extends BaseAgent
         }
 
         // EIAAW house brand: layer voiceover + music + subtitles + logo.
-        // Soft-fail: if any step breaks, publish the raw FAL clip — we'd
-        // rather ship an unbranded video than nothing on a media-required
-        // platform.
-        if (EiaawBrandLock::appliesTo($brand) && (bool) config('services.branding.enabled', true)) {
+        // SKIPPED when Veo already generated native audio (the clip narrates
+        // the post copy itself), so we don't double up a synthetic voice over
+        // Veo's. Only runs on the legacy/silent path (e.g. Wan rollback or
+        // generate_audio off). Soft-fail: if any step breaks, publish the raw
+        // FAL clip rather than nothing on a media-required platform.
+        if (! $hasNativeAudio
+            && EiaawBrandLock::appliesTo($brand)
+            && (bool) config('services.branding.enabled', true)) {
             try {
                 $artifact = app(QuoteWriter::class)->distil($draft, $brand);
                 $tts = FalTtsClient::fromConfig()->synthesize($artifact['voiceover'], $brand);
@@ -337,15 +361,31 @@ class VideoAgent extends BaseAgent
             'aspect_ratio' => $aspect,
             'duration_seconds' => $duration,
             'used_keyframe' => (bool) $stillUrl,
-            'cost_usd' => self::FAL_WAN_USD_PER_VIDEO,
+            'native_audio' => $hasNativeAudio,
+            'cost_usd' => $costUsd,
             'latency_ms' => $generated['latency_ms'],
             'prompt' => $prompt,
         ], [
             'model' => $generated['model'],
             'aspect_ratio' => $aspect,
-            'cost_usd' => self::FAL_WAN_USD_PER_VIDEO,
+            'native_audio' => $hasNativeAudio,
+            'cost_usd' => $costUsd,
             'latency_ms' => $generated['latency_ms'],
         ]);
+    }
+
+    /**
+     * Cost of one Veo 3 Fast clip = per-second rate × duration. Audio-on costs
+     * more because the model also generates the synced voice/ambience. Used for
+     * the ai_costs ledger and (summed) the daily-cap breaker.
+     */
+    private function clipCostUsd(int $durationSeconds, bool $hasNativeAudio): float
+    {
+        $rate = $hasNativeAudio
+            ? self::VEO_FAST_USD_PER_SEC_AUDIO
+            : self::VEO_FAST_USD_PER_SEC_SILENT;
+
+        return round($rate * max(1, $durationSeconds), 4);
     }
 
     /**
@@ -405,20 +445,29 @@ class VideoAgent extends BaseAgent
     {
         // Anchor the clip to the SCRIPTED post content (hook, distilled quote,
         // CTA, target emotion, visual_direction) — the same brief the Designer
-        // uses for the still, so image and video tell one coherent story. The
-        // voiceover script is layered in so the on-screen motion matches what
-        // the narration is saying.
+        // uses for the still, so image and video tell one coherent story.
         $sceneBrief = DraftSceneBrief::for($draft, 30);
         if ($sceneBrief === '') {
             $sceneBrief = 'Depict the topic of this post (do NOT render text on screen): '
                 . (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 30, ' …') . '.';
         }
+
+        // The distilled voiceover IS the post's message in spoken form. With Veo
+        // native audio on, we tell the model to SPEAK it as the clip's narration
+        // (synced audio Veo generates itself) — so the video literally says what
+        // the caption says. With native audio off (Wan rollback / silent path)
+        // we fall back to "match the motion to this narrative", since the spoken
+        // track is added later by the FFmpeg composer.
+        $nativeAudio = self::audioIsNative();
         $voiceover = DraftSceneBrief::voiceover($draft);
+        $duration = max(3, min(8, (int) config('services.fal.video_duration_seconds', 6)));
         if ($voiceover !== '') {
-            $sceneBrief .= " The motion should match this voiceover narrative: \"{$voiceover}\"";
+            $sceneBrief .= $nativeAudio
+                ? " AUDIO — a single calm narrator speaks exactly this line, clearly and unhurried, as the only dialogue (no other speech, no on-screen captions): \"{$voiceover}\""
+                : " The motion should match this voiceover narrative: \"{$voiceover}\"";
         }
 
-        $orientation = $this->orientationLabel($aspect); // "vertical 9:16" | "landscape 16:9" | "square 1:1"
+        $orientation = $this->orientationLabel($aspect); // "vertical 9:16" | "landscape 16:9"
         $videoForm = $this->videoFormLabel($draft->platform, $aspect); // "Reel" | "long-form video" | etc.
 
         // EIAAW-internal workspace: pace to the house editorial motion contract,
@@ -441,7 +490,7 @@ class VideoAgent extends BaseAgent
 
             return sprintf(
                 '%d-second %s video for EIAAW Solutions on %s. %s. %s %s %s No on-screen text, no captions, no watermarks baked in.',
-                5,
+                $duration,
                 $orientation,
                 ucfirst($draft->platform),
                 $platformHint,
@@ -469,7 +518,7 @@ class VideoAgent extends BaseAgent
 
         return sprintf(
             '%d-second %s video for "%s" on %s. %s. %s %s Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s.',
-            5,
+            $duration,
             $orientation,
             $brand->name,
             ucfirst($draft->platform),
@@ -479,11 +528,23 @@ class VideoAgent extends BaseAgent
         );
     }
 
+    /**
+     * Whether the active video model produces its own synced audio (Veo native
+     * audio). Reads config so buildPrompt() knows to write the voiceover as
+     * SPOKEN dialogue (Veo) vs a motion-matching cue (Wan + FFmpeg composer).
+     * Mirrors the gate in FalAiClient::generateVideo so the prompt and the
+     * payload stay in agreement.
+     */
+    private static function audioIsNative(): bool
+    {
+        return FalAiClient::isVeoModel((string) config('services.fal.video_model_text'))
+            && (bool) config('services.fal.video_native_audio', true);
+    }
+
     private function orientationLabel(string $aspect): string
     {
         return match ($aspect) {
             '16:9' => 'landscape 16:9',
-            '1:1'  => 'square 1:1',
             default => 'vertical 9:16',
         };
     }

@@ -34,6 +34,7 @@ class FalAiClient
         private readonly ?string $videoModelImage = null,
         private readonly ?string $videoModelText = null,
         private readonly int $videoTimeout = 360,
+        private readonly bool $videoNativeAudio = true,
     ) {
         if ($apiKey === '') {
             throw new RuntimeException(
@@ -48,9 +49,10 @@ class FalAiClient
             apiKey: (string) config('services.fal.api_key'),
             imageModel: (string) config('services.fal.image_model', 'fal-ai/nano-banana'),
             timeout: (int) config('services.fal.request_timeout', 180),
-            videoModelImage: (string) config('services.fal.video_model_image', 'fal-ai/wan-25-preview/image-to-video'),
-            videoModelText: (string) config('services.fal.video_model_text', 'fal-ai/wan-25-preview/text-to-video'),
+            videoModelImage: (string) config('services.fal.video_model_image', 'fal-ai/veo3/fast/image-to-video'),
+            videoModelText: (string) config('services.fal.video_model_text', 'fal-ai/veo3/fast'),
             videoTimeout: (int) config('services.fal.video_request_timeout', 360),
+            videoNativeAudio: (bool) config('services.fal.video_native_audio', true),
         );
     }
 
@@ -209,15 +211,26 @@ class FalAiClient
      * image-to-video model (better brand consistency: the still becomes
      * the keyframe). Otherwise text-to-video.
      *
+     * The payload is normalised PER MODEL FAMILY before the request:
+     *   - Veo 3 family (default): `duration` is a STRING enum "4s"/"6s"/"8s"
+     *     (we snap any integer/other value to the nearest allowed step),
+     *     aspect is clamped to 16:9 / 9:16 (i2v also allows 'auto') because
+     *     Veo rejects 1:1, and `generate_audio` is injected from config so the
+     *     model speaks/scores the clip itself. Veo has no `negative_prompt` on
+     *     the Fast endpoint — it is dropped here rather than 422-ing.
+     *   - Wan / other families: `duration` stays an integer, 1:1 is allowed,
+     *     and negative_prompt is forwarded (Wan honours it).
+     *
      * @param array{
      *   image_url?: string,
      *   aspect_ratio?: string,        // '9:16' default for vertical
      *   resolution?: string,          // '720p' default
-     *   duration?: int,               // seconds, model-specific cap
+     *   duration?: int|string,        // seconds (int) — mapped to Veo's "Ns" string
+     *   generate_audio?: bool,        // overrides config default for Veo
      *   negative_prompt?: string,
      *   seed?: int,
      * } $options
-     * @return array{url:string, model:string, latency_ms:int, prompt:string, content_type:?string}
+     * @return array{url:string, model:string, latency_ms:int, prompt:string, content_type:?string, has_native_audio:bool}
      */
     public function generateVideo(string $prompt, array $options = []): array
     {
@@ -228,12 +241,40 @@ class FalAiClient
             throw new RuntimeException('FAL video model not configured.');
         }
 
+        $isVeo = self::isVeoModel($model);
+
         $payload = array_merge([
             'prompt' => $prompt,
             'aspect_ratio' => '9:16',
             'resolution' => '720p',
             'duration' => 5,
         ], $options);
+
+        $nativeAudio = $this->videoNativeAudio;
+
+        if ($isVeo) {
+            // Duration → Veo enum string. Accept either an int (5) or a string
+            // ("6s") from the caller and snap to the nearest allowed step.
+            $payload['duration'] = self::veoDurationString($payload['duration']);
+
+            // Aspect: Veo Fast supports 16:9 and 9:16 (i2v also 'auto'). Anything
+            // else (1:1, unknown) → 9:16 so a square draft still ships vertical.
+            $payload['aspect_ratio'] = self::clampVeoAspect((string) $payload['aspect_ratio']);
+
+            // Native audio toggle: per-call override wins, else the configured
+            // default. When on, Veo generates dialogue/SFX/music from the prompt
+            // and the caller skips the FFmpeg voiceover/music composer.
+            $nativeAudio = array_key_exists('generate_audio', $options)
+                ? (bool) $options['generate_audio']
+                : $this->videoNativeAudio;
+            $payload['generate_audio'] = $nativeAudio;
+
+            // Veo Fast has no negative_prompt field — drop it to avoid a 422 /
+            // silent ignore. The realism "AVOID …" clauses live in the positive
+            // prompt (ImageCreativeDirection::videoRealismBlock) so steering is
+            // preserved without the field.
+            unset($payload['negative_prompt']);
+        }
 
         $startedAt = (int) (microtime(true) * 1000);
 
@@ -249,7 +290,7 @@ class FalAiClient
         }
 
         $body = $response->json();
-        // Wan / Veo response shape: { video: { url, content_type } } usually.
+        // Veo / Wan response shape: { video: { url, content_type } } usually.
         $url = $body['video']['url']
             ?? $body['videos'][0]['url']
             ?? $body['output']['video']['url']
@@ -266,7 +307,74 @@ class FalAiClient
             'content_type' => $body['video']['content_type']
                 ?? $body['videos'][0]['content_type']
                 ?? 'video/mp4',
+            // True when the returned clip already carries model-generated audio
+            // (Veo native audio). The caller uses this to decide whether to skip
+            // the voiceover/music composer.
+            'has_native_audio' => $isVeo && $nativeAudio,
         ];
+    }
+
+    /**
+     * True if the model is a Google Veo family endpoint (veo3, veo3/fast,
+     * veo3/fast/image-to-video, future veoN). Substring match so versioned ids
+     * route correctly. Drives the Veo-specific payload normalisation in
+     * generateVideo() (string duration, generate_audio, aspect clamp).
+     */
+    public static function isVeoModel(?string $model): bool
+    {
+        return $model !== null && str_contains(strtolower($model), 'veo');
+    }
+
+    /**
+     * Veo Fast accepts ONLY these duration strings. We snap any input
+     * (int seconds, "5s", 7) to the nearest allowed step so a caller that asks
+     * for 5s gets the closest valid clip ("4s") instead of a 422.
+     */
+    private const VEO_DURATIONS = [4, 6, 8];
+
+    /**
+     * Normalise a caller duration (int seconds or "Ns" string) to Veo's
+     * "4s"|"6s"|"8s" enum, snapping to the nearest allowed step. Ties round up
+     * (5 → 6s) so we never under-deliver the voiceover.
+     *
+     * @param  int|string  $duration
+     */
+    public static function veoDurationString(int|string $duration): string
+    {
+        $seconds = is_string($duration)
+            ? (int) preg_replace('/[^0-9]/', '', $duration)
+            : (int) $duration;
+        if ($seconds <= 0) {
+            $seconds = 6;
+        }
+
+        $best = self::VEO_DURATIONS[0];
+        $bestDelta = PHP_INT_MAX;
+        foreach (self::VEO_DURATIONS as $allowed) {
+            $delta = abs($allowed - $seconds);
+            // < (not <=) means lower steps win exact-distance ties; we flip to
+            // round-up by preferring the higher step on an equal delta.
+            if ($delta < $bestDelta || ($delta === $bestDelta && $allowed > $best)) {
+                $best = $allowed;
+                $bestDelta = $delta;
+            }
+        }
+
+        return $best.'s';
+    }
+
+    /**
+     * Clamp an aspect to what Veo Fast supports. Veo rejects 1:1 and exotic
+     * ratios; everything that isn't a clean landscape maps to vertical 9:16
+     * (the dominant short-form surface). i2v also accepts 'auto' but we resolve
+     * to an explicit ratio for deterministic safe-zones downstream.
+     */
+    public static function clampVeoAspect(string $aspect): string
+    {
+        return match ($aspect) {
+            '16:9' => '16:9',
+            default => '9:16',
+        };
     }
 
     /**
