@@ -18,15 +18,15 @@ class BillingPricingTest extends TestCase
 {
     public function test_monthly_unit_amount_is_price_myr_times_100(): void
     {
-        $planConfig = ['price_myr' => 549, 'name' => 'Solo'];
-        $this->assertSame(54_900, StripePriceCache::unitAmountFor($planConfig, 'month'));
+        $planConfig = ['price_myr' => 688, 'name' => 'Solo'];
+        $this->assertSame(68_800, StripePriceCache::unitAmountFor($planConfig, 'month'));
     }
 
     public function test_annual_unit_amount_uses_annual_multiplier(): void
     {
-        // Default multiplier in config is 10. RM 549 × 10 = RM 5,490 = 549,000 cents.
-        $planConfig = ['price_myr' => 549, 'name' => 'Solo'];
-        $this->assertSame(549_000, StripePriceCache::unitAmountFor($planConfig, 'year'));
+        // Default multiplier in config is 10. RM 688 × 10 = RM 6,880 = 688,000 cents.
+        $planConfig = ['price_myr' => 688, 'name' => 'Solo'];
+        $this->assertSame(688_000, StripePriceCache::unitAmountFor($planConfig, 'year'));
     }
 
     public function test_annual_multiplier_is_10_by_default(): void
@@ -39,10 +39,10 @@ class BillingPricingTest extends TestCase
     public function test_annual_savings_equal_two_months_of_monthly(): void
     {
         // "2 months free" = 12 monthly - 10× annual rate.
-        // Solo: 549 × 12 = 6588; 549 × 10 = 5490; saves 1098.
-        $planConfig = ['price_myr' => 549];
-        $this->assertSame(5_490, StripePriceCache::annualMyr($planConfig));
-        $this->assertSame(1_098, StripePriceCache::annualSavingsMyr($planConfig));
+        // Solo: 688 × 12 = 8256; 688 × 10 = 6880; saves 1376.
+        $planConfig = ['price_myr' => 688];
+        $this->assertSame(6_880, StripePriceCache::annualMyr($planConfig));
+        $this->assertSame(1_376, StripePriceCache::annualSavingsMyr($planConfig));
     }
 
     public function test_annual_savings_for_all_real_tiers(): void
@@ -99,8 +99,8 @@ class BillingPricingTest extends TestCase
     {
         // Specific number-locking test. If you change config/billing.php
         // prices, update THIS test deliberately — that's the point.
-        $this->assertSame(549, (int) config('billing.plans.solo.price_myr'));
-        $this->assertSame(1099, (int) config('billing.plans.studio.price_myr'));
-        $this->assertSame(3499, (int) config('billing.plans.agency.price_myr'));
+        $this->assertSame(688, (int) config('billing.plans.solo.price_myr'));
+        $this->assertSame(1688, (int) config('billing.plans.studio.price_myr'));
+        $this->assertSame(6888, (int) config('billing.plans.agency.price_myr'));
     }
 }

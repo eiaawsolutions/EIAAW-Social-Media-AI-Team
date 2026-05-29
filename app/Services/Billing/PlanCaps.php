@@ -27,10 +27,9 @@ class PlanCaps
     /**
      * @return array{
      *   max_brands:int,
+     *   max_ai_image_posts_per_month:int,
      *   max_published_posts_per_month:int,
      *   max_ai_videos_per_month:int,
-     *   max_ai_videos_per_week:int,
-     *   max_ai_videos_per_day:int,
      *   fal_image_daily_cap_usd:float,
      *   fal_video_daily_cap_usd:float,
      * }
@@ -47,19 +46,17 @@ class PlanCaps
             $caps = config('billing.plans.solo.caps', []);
         }
 
-        // Per-key fallbacks to Solo so a tier missing a newer key (e.g. the
-        // 2026-05-29 weekly/daily video windows) degrades safely instead of
-        // throwing on an undefined index.
+        // Per-key fallbacks to Solo so a tier missing a key degrades safely
+        // instead of throwing on an undefined index.
         $solo = config('billing.plans.solo.caps', []);
         $val = static fn (string $k, $default) => (int) ($caps[$k] ?? $solo[$k] ?? $default);
         $valF = static fn (string $k, $default) => (float) ($caps[$k] ?? $solo[$k] ?? $default);
 
         return [
             'max_brands' => $val('max_brands', 1),
-            'max_published_posts_per_month' => $val('max_published_posts_per_month', 60),
-            'max_ai_videos_per_month' => $val('max_ai_videos_per_month', 8),
-            'max_ai_videos_per_week' => $val('max_ai_videos_per_week', 3),
-            'max_ai_videos_per_day' => $val('max_ai_videos_per_day', 1),
+            'max_ai_image_posts_per_month' => $val('max_ai_image_posts_per_month', 60),
+            'max_published_posts_per_month' => $val('max_published_posts_per_month', 65),
+            'max_ai_videos_per_month' => $val('max_ai_videos_per_month', 5),
             'fal_image_daily_cap_usd' => $valF('fal_image_daily_cap_usd', 1.50),
             'fal_video_daily_cap_usd' => $valF('fal_video_daily_cap_usd', 4.00),
         ];
@@ -89,15 +86,10 @@ class PlanCaps
     }
 
     /**
-     * True when VideoAgent can generate another AI video right now — i.e. the
-     * workspace is under its per-DAY, per-WEEK, AND per-MONTH video limits. Any
-     * one window being full blocks generation. When false, VideoAgent hard-
-     * fails with a clear message naming the window that's full (cost is incurred
-     * at generation, so we gate before the FAL call, not after).
-     *
-     * Three windows because a single 15s clip costs ~$4 and 15s is opt-in on
-     * every tier: the month cap is the real allowance; the week/day caps SPREAD
-     * usage so a burst can't drain the month (and the bill) in a couple of days.
+     * True when VideoAgent can generate another AI video this month. The video
+     * allowance is a single MONTHLY cap — the customer self-paces within the
+     * month (no weekly/daily throttle). Cost is incurred at generation, so we
+     * gate before the FAL call, not after.
      */
     public function canGenerateMoreAiVideos(Workspace $workspace): bool
     {
@@ -105,10 +97,9 @@ class PlanCaps
     }
 
     /**
-     * Which video window (if any) is full. Returns self::RESULT_OK when the
-     * workspace may generate, otherwise a human-facing reason naming the window
-     * and its limit so VideoAgent can tell the customer exactly what to do
-     * (wait until tomorrow / next week, or upgrade).
+     * Whether the monthly video allowance is exhausted. Returns ok=true when the
+     * workspace may generate, otherwise a human-facing reason so VideoAgent can
+     * tell the customer the limit and the remedy (upgrade or wait for reset).
      *
      * @return array{ok:bool, window:?string, used:int, limit:int, message:?string}
      */
@@ -117,35 +108,24 @@ class PlanCaps
         $caps = $this->capsFor($workspace);
         $plan = ucfirst((string) ($workspace->plan ?? 'solo'));
 
-        // Order: day → week → month. Report the SHORTEST window that's full so
-        // the message tells the customer the soonest thing they can do (a daily
-        // limit clears tomorrow; a monthly one needs an upgrade or next period).
-        $windows = [
-            ['key' => 'day',   'used' => $workspace->aiVideosToday(),     'limit' => $caps['max_ai_videos_per_day'],   'clears' => 'tomorrow'],
-            ['key' => 'week',  'used' => $workspace->aiVideosThisWeek(),  'limit' => $caps['max_ai_videos_per_week'],  'clears' => 'next week'],
-            ['key' => 'month', 'used' => $workspace->aiVideosThisMonth(), 'limit' => $caps['max_ai_videos_per_month'], 'clears' => 'next month'],
-        ];
+        $used = $workspace->aiVideosThisMonth();
+        $limit = $caps['max_ai_videos_per_month'];
 
-        foreach ($windows as $w) {
-            if ($w['used'] >= $w['limit']) {
-                $upgrade = $w['key'] === 'month'
-                    ? ' Upgrade at /agency/billing for a higher monthly video allowance.'
-                    : ' Resets '.$w['clears'].', or upgrade at /agency/billing for higher limits.';
-
-                return [
-                    'ok' => false,
-                    'window' => $w['key'],
-                    'used' => $w['used'],
-                    'limit' => $w['limit'],
-                    'message' => sprintf(
-                        '%s plan AI-video %s limit reached (%d/%d).%s',
-                        $plan, $w['key'], $w['used'], $w['limit'], $upgrade,
-                    ),
-                ];
-            }
+        if ($used >= $limit) {
+            return [
+                'ok' => false,
+                'window' => 'month',
+                'used' => $used,
+                'limit' => $limit,
+                'message' => sprintf(
+                    '%s plan monthly AI-video allowance reached (%d/%d). Resets on the 1st, '
+                    .'or upgrade at /agency/billing for a higher video allowance.',
+                    $plan, $used, $limit,
+                ),
+            ];
         }
 
-        return ['ok' => true, 'window' => null, 'used' => 0, 'limit' => 0, 'message' => null];
+        return ['ok' => true, 'window' => null, 'used' => $used, 'limit' => $limit, 'message' => null];
     }
 
     /**

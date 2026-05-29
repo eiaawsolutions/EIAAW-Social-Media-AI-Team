@@ -196,41 +196,13 @@ class Workspace extends Model
     public function aiVideosThisMonth(): int
     {
         $tz = (string) ($this->settings['timezone'] ?? config('app.timezone', 'UTC'));
+        $startOfMonth = now($tz)->startOfMonth()->utc();
 
-        return $this->aiVideosSince(now($tz)->startOfMonth()->utc());
-    }
-
-    /**
-     * AI-video generations for the current ISO week (Mon-start, workspace TZ).
-     * The weekly window SPREADS usage so a customer can't drain the monthly
-     * video allowance in a two-day burst of $4 fifteen-second clips.
-     */
-    public function aiVideosThisWeek(): int
-    {
-        $tz = (string) ($this->settings['timezone'] ?? config('app.timezone', 'UTC'));
-
-        return $this->aiVideosSince(now($tz)->startOfWeek()->utc());
-    }
-
-    /**
-     * AI-video generations so far today (workspace TZ). The daily window is
-     * the finest spread limit and pairs with the per-tier USD breaker.
-     */
-    public function aiVideosToday(): int
-    {
-        $tz = (string) ($this->settings['timezone'] ?? config('app.timezone', 'UTC'));
-
-        return $this->aiVideosSince(now($tz)->startOfDay()->utc());
-    }
-
-    /** Shared counter for the video-window methods above. */
-    private function aiVideosSince(\Illuminate\Support\Carbon $since): int
-    {
         return AiCost::query()
             ->where('workspace_id', $this->id)
             ->where('agent_role', 'video')
             ->where('provider', 'fal')
-            ->where('called_at', '>=', $since)
+            ->where('called_at', '>=', $startOfMonth)
             ->count();
     }
 

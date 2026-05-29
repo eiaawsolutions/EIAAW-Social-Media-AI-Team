@@ -116,8 +116,22 @@ class SignupController extends Controller
             if (! $plan || ! $cfg) continue;
 
             $brands = (int) ($plan['caps']['max_brands'] ?? 0);
-            $posts = (int) ($plan['caps']['max_published_posts_per_month'] ?? 0);
+            // Image-post allowance drives the card copy; fall back to the total
+            // publish ceiling for older configs without the split key.
+            $imagePosts = (int) ($plan['caps']['max_ai_image_posts_per_month']
+                ?? $plan['caps']['max_published_posts_per_month'] ?? 0);
             $videos = (int) ($plan['caps']['max_ai_videos_per_month'] ?? 0);
+            $platforms = (array) ($plan['platforms'] ?? []);
+
+            // Human-readable platform list with correct brand casing.
+            $platformCasing = [
+                'linkedin' => 'LinkedIn', 'tiktok' => 'TikTok', 'youtube' => 'YouTube',
+                'facebook' => 'Facebook', 'instagram' => 'Instagram', 'threads' => 'Threads',
+            ];
+            $platformLabels = array_map(
+                static fn (string $p): string => $platformCasing[$p] ?? ucfirst($p),
+                $platforms,
+            );
 
             $tiers[] = [
                 'key' => $key,
@@ -128,12 +142,12 @@ class SignupController extends Controller
                 'annual_myr' => StripePriceCache::annualMyr($plan),
                 'annual_savings_myr' => StripePriceCache::annualSavingsMyr($plan),
                 'brands' => $brands . ' brand' . ($brands === 1 ? '' : 's'),
-                // "Unlimited" reads better than "1500 posts/mo" for Agency.
-                // The hard cap is still 1500 (see config) — this is just
-                // marketing copy. Anything above ~1000 reads as unlimited
-                // for any realistic agency workload.
-                'posts' => $posts >= 1000 ? 'Unlimited posts' : ($posts . ' posts/mo'),
-                'videos' => $videos . ' AI videos/mo',
+                'posts' => number_format($imagePosts) . ' AI image posts/mo',
+                'videos' => $videos . ' AI 15-sec video posts/mo',
+                'platforms' => $platformLabels,
+                'platforms_label' => $platformLabels === []
+                    ? ''
+                    : (count($platformLabels) . ' platforms: ' . implode(', ', $platformLabels)),
                 'whitelabel' => (bool) $cfg['whitelabel'],
                 'best' => (string) $cfg['best'],
                 'highlight' => (bool) ($cfg['highlight'] ?? false),
