@@ -23,11 +23,27 @@
  *
  * Cap philosophy: marketed limits are GENEROUS (60/300/unlimited posts, all
  * agents, etc) so the product feels abundant. Hard caps sit underneath as
- * safety rails against the runaway outlier user (think 200 videos/day). They
- * exist to protect margin from abuse, not to throttle normal use — typical
- * users never hit them. When they do, posts queue for next period and
- * auto-publish on reset (no lost content); videos hard-fail with an upgrade
- * nudge. See App\Services\Billing\PlanCaps for the enforcement layer.
+ * safety rails against the runaway outlier user. They exist to protect margin
+ * from abuse, not to throttle normal use — typical users never hit them. When
+ * they do, posts queue for next period and auto-publish on reset (no lost
+ * content); videos hard-fail with an upgrade nudge. See
+ * App\Services\Billing\PlanCaps for the enforcement layer.
+ *
+ * VIDEO COST REBASE 2026-05-29: video moved from FAL Wan (~$0.50/clip) to
+ * Google Veo 3 Fast + Veo 3.1 extend — a 6s clip ≈ $0.90, 8s ≈ $1.20, and a
+ * 15s clip (8s base + 7s extend) ≈ $4.00 (≈ RM 18.80 at FX 4.7). 15s is opt-in
+ * on every tier (not the silent default), so a customer CAN run their whole
+ * allowance at 15s. To keep margin healthy under that worst case, video is
+ * now bounded on THREE windows — per-month, per-week, AND per-day — so a burst
+ * can't drain the month in two days. Realistic blended use lands ~68-79% gross
+ * margin; the all-15s worst case is contained by the weekly + daily limits and
+ * the per-tier USD breaker. Monthly caps: Solo 8, Studio 24, Agency 96.
+ *
+ * Per-tier `fal_*_daily_cap_usd` are now ACTUALLY enforced: DesignerAgent and
+ * VideoAgent read them via PlanCaps (previously they read the global
+ * services.fal.* value and these per-tier numbers were dead config). The
+ * global services.fal.* values remain the fallback for workspace-less /
+ * internal calls.
  */
 return [
     'plans' => [
@@ -48,15 +64,20 @@ return [
                 // Hard cap. Posts past this defer to next period (auto-release
                 // 1st of month at workspace TZ). Soft warning email at 80%.
                 'max_published_posts_per_month' => 60,
-                // AI video generations per month. Hard fail past this with
-                // an "upgrade for more videos" notification — no defer, because
-                // unlike posts, the cost is incurred at generation, not publish.
-                'max_ai_videos_per_month' => 20,
-                // Daily FAL caps (USD) — these mirror config('services.fal.*')
-                // defaults but PlanCaps lifts them per-tier so Studio/Agency
-                // get headroom without an operator env-var bump.
+                // AI video generations — bounded on three windows (month/week/
+                // day) so a burst of 15s clips ($4 each) can't drain the budget
+                // in a couple of days. Hard fail past any window with an
+                // "upgrade for more videos" notification (no defer — video cost
+                // is incurred at generation, not publish). The day/week limits
+                // SPREAD usage; the month limit is the real allowance.
+                'max_ai_videos_per_month' => 8,
+                'max_ai_videos_per_week' => 3,
+                'max_ai_videos_per_day' => 1,
+                // Per-tier daily FAL spend breakers (USD). ENFORCED via PlanCaps
+                // by DesignerAgent/VideoAgent (a hard backstop against a
+                // runaway-loop bug, independent of the count caps above).
                 'fal_image_daily_cap_usd' => 1.50,
-                'fal_video_daily_cap_usd' => 5.00,
+                'fal_video_daily_cap_usd' => 4.00,
             ],
         ],
         'studio' => [
@@ -68,9 +89,11 @@ return [
             'caps' => [
                 'max_brands' => 3,
                 'max_published_posts_per_month' => 300,
-                'max_ai_videos_per_month' => 60,
+                'max_ai_videos_per_month' => 24,
+                'max_ai_videos_per_week' => 8,
+                'max_ai_videos_per_day' => 3,
                 'fal_image_daily_cap_usd' => 4.50,
-                'fal_video_daily_cap_usd' => 15.00,
+                'fal_video_daily_cap_usd' => 12.00,
             ],
         ],
         'agency' => [
@@ -85,9 +108,11 @@ return [
                 // No realistic agency workload hits this; sits there to catch
                 // abuse / runaway automation bugs.
                 'max_published_posts_per_month' => 1500,
-                'max_ai_videos_per_month' => 200,
+                'max_ai_videos_per_month' => 96,
+                'max_ai_videos_per_week' => 32,
+                'max_ai_videos_per_day' => 11,
                 'fal_image_daily_cap_usd' => 6.00,
-                'fal_video_daily_cap_usd' => 20.00,
+                'fal_video_daily_cap_usd' => 44.00,
             ],
         ],
         // EIAAW internal workspace — no caps, no billing, no Stripe.
@@ -102,6 +127,8 @@ return [
                 'max_brands' => PHP_INT_MAX,
                 'max_published_posts_per_month' => PHP_INT_MAX,
                 'max_ai_videos_per_month' => PHP_INT_MAX,
+                'max_ai_videos_per_week' => PHP_INT_MAX,
+                'max_ai_videos_per_day' => PHP_INT_MAX,
                 'fal_image_daily_cap_usd' => 50.00,
                 'fal_video_daily_cap_usd' => 100.00,
             ],

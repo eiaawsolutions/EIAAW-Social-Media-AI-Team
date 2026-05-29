@@ -6,6 +6,7 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\BrandAsset;
 use App\Models\Draft;
+use App\Services\Billing\PlanCaps;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Branding\BrandImageStamper;
 use App\Services\Branding\PosterContentWriter;
@@ -184,8 +185,12 @@ class DesignerAgent extends BaseAgent
         // embeddings, even Video) into the image cap, causing the breaker to
         // trip after a normal day of LLM use even though no images had been
         // generated. Filter by role + provider so the cap protects what it
-        // claims to protect.
-        $cap = (float) config('services.fal.daily_cap_usd', self::DEFAULT_DAILY_CAP_USD);
+        // claims to protect. PER-TIER: read fal_image_daily_cap_usd from
+        // PlanCaps (Solo $1.50 / Studio $4.50 / Agency $6), falling back to the
+        // global services.fal.* only for workspace-less / internal calls.
+        $cap = $brand->workspace
+            ? (float) app(PlanCaps::class)->capsFor($brand->workspace)['fal_image_daily_cap_usd']
+            : (float) config('services.fal.daily_cap_usd', self::DEFAULT_DAILY_CAP_USD);
         $spentToday = (float) AiCost::where('workspace_id', $brand->workspace_id)
             ->where('agent_role', $this->role())
             ->where('provider', 'fal')
@@ -193,8 +198,8 @@ class DesignerAgent extends BaseAgent
             ->sum('cost_usd');
         if ($spentToday >= $cap) {
             return AgentResult::fail(sprintf(
-                'Daily image budget reached: $%.2f / $%.2f. Resets at midnight UTC. Increase services.fal.daily_cap_usd to lift.',
-                $spentToday, $cap,
+                'Daily image budget reached: $%.2f / $%.2f on the %s plan. Resets at midnight UTC. Upgrade at /agency/billing for a higher daily ceiling.',
+                $spentToday, $cap, ucfirst((string) ($brand->workspace->plan ?? 'solo')),
             ));
         }
 

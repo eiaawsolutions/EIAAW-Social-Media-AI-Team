@@ -140,19 +140,17 @@ class VideoAgent extends BaseAgent
         }
 
         // Plan cap gate — hard-fail before any FAL call. Cost is incurred at
-        // generation (unlike publishing, which is incurred at submission),
-        // so we cannot defer to next period; the customer must either skip
-        // video for this draft or upgrade. We surface the limit + upgrade
-        // path in the failure message so the operator can act on it.
-        if ($brand->workspace
-            && ! app(PlanCaps::class)->canGenerateMoreAiVideos($brand->workspace)) {
-            $caps = app(PlanCaps::class)->capsFor($brand->workspace);
-            return AgentResult::fail(sprintf(
-                'Monthly AI-video cap reached (%d/%d on the %s plan). Use a still image for this draft, or upgrade at /agency/billing for more video credit.',
-                $brand->workspace->aiVideosThisMonth(),
-                $caps['max_ai_videos_per_month'],
-                ucfirst((string) $brand->workspace->plan),
-            ));
+        // generation (unlike publishing, which is incurred at submission), so
+        // we cannot defer to next period. Video is bounded on three windows
+        // (day/week/month); videoCapStatus() reports the SHORTEST full window
+        // so the message tells the customer the soonest remedy.
+        if ($brand->workspace) {
+            $status = app(PlanCaps::class)->videoCapStatus($brand->workspace);
+            if (! $status['ok']) {
+                return AgentResult::fail(
+                    $status['message'].' Use a still image for this draft in the meantime.',
+                );
+            }
         }
 
         // Already video? Idempotent no-op. Detect by .mp4 extension or
@@ -221,10 +219,15 @@ class VideoAgent extends BaseAgent
             }
         }
 
-        // Cost circuit breaker — separate from image cap. Filter by provider
-        // too so that any future non-FAL video provider (e.g. Runway) doesn't
-        // double-count against the FAL cap.
-        $cap = (float) config('services.fal.video_daily_cap_usd', self::DEFAULT_DAILY_CAP_USD);
+        // Cost circuit breaker — a USD backstop on top of the count caps, so a
+        // runaway-loop bug can't outspend the tier in a day even within the
+        // count limits. PER-TIER: read the workspace's fal_video_daily_cap_usd
+        // from PlanCaps (Solo $4 / Studio $12 / Agency $44), falling back to the
+        // global services.fal.* only for workspace-less / internal calls. Filter
+        // by provider so a future non-FAL video provider doesn't double-count.
+        $cap = $brand->workspace
+            ? (float) app(PlanCaps::class)->capsFor($brand->workspace)['fal_video_daily_cap_usd']
+            : (float) config('services.fal.video_daily_cap_usd', self::DEFAULT_DAILY_CAP_USD);
         $spentToday = (float) AiCost::where('workspace_id', $brand->workspace_id)
             ->where('agent_role', $this->role())
             ->where('provider', 'fal')
@@ -232,8 +235,8 @@ class VideoAgent extends BaseAgent
             ->sum('cost_usd');
         if ($spentToday >= $cap) {
             return AgentResult::fail(sprintf(
-                'Daily video budget reached: $%.2f / $%.2f. Resets at midnight UTC. Increase services.fal.video_daily_cap_usd to lift.',
-                $spentToday, $cap,
+                'Daily video budget reached: $%.2f / $%.2f on the %s plan. Resets at midnight UTC. Upgrade at /agency/billing for a higher daily ceiling.',
+                $spentToday, $cap, ucfirst((string) ($brand->workspace->plan ?? 'solo')),
             ));
         }
 
