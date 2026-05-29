@@ -183,6 +183,104 @@ final class ImageCreativeDirection
     }
 
     /**
+     * True when a draft should render as a MULTI-PANEL INFOGRAPHIC POSTER
+     * (title bar → grid of labelled panels, each with a small illustration +
+     * a few bullets → footer takeaway) rather than the simpler single-headline
+     * poster. This is the dense "explainer card" look.
+     *
+     * Fires for:
+     *   - any 'carousel' format (its slides ARE the panels — one panel per
+     *     slide), OR
+     *   - a 'single_image' poster format (isPosterFormat) that has enough
+     *     panels to warrant a grid (>= 3, decided by the caller from the
+     *     distilled panel count).
+     *
+     * Carousel is the primary trigger: a carousel post is inherently a
+     * multi-section explainer, so a single dense infographic represents it far
+     * better than one photo of the first slide.
+     */
+    public static function isInfographicFormat(?string $format, ?string $pillar, ?string $visualDirection): bool
+    {
+        $f = strtolower(trim((string) $format));
+        if ($f === 'carousel') {
+            return true;
+        }
+
+        // single_image poster formats can also become an infographic when they
+        // carry enough panels — the caller gates on the distilled panel count.
+        return self::isPosterFormat($format, $pillar, $visualDirection);
+    }
+
+    /**
+     * Layout brief for a Nano-Banana-rendered MULTI-PANEL INFOGRAPHIC. Mirrors
+     * the target reference: a strong title bar across the top, an even grid of
+     * labelled panels (each with a heading, a small relevant illustration, and
+     * 2-3 short bullet points), and a single-line takeaway footer. Deliberately
+     * asks the model to render legible text, so it must NOT be combined with
+     * the no-text clauses.
+     *
+     * @param  int  $panelCount  drives the grid hint (2x2 for 4, etc.)
+     */
+    public static function infographicDirective(int $panelCount): string
+    {
+        $grid = match (true) {
+            $panelCount <= 2 => 'two side-by-side panels',
+            $panelCount === 3 => 'three panels in a row or an even arrangement',
+            $panelCount === 4 => 'a clean 2x2 grid of four equal panels',
+            $panelCount <= 6 => 'an even grid of '.$panelCount.' panels (2 columns)',
+            default => 'an even multi-column grid of panels',
+        };
+
+        return implode(' ', [
+            'Design a premium, modern SOCIAL-MEDIA INFOGRAPHIC POSTER (a designed explainer graphic, NOT a photograph, NOT a single illustration).',
+            'Layout, top to bottom: (1) a bold title bar across the very top with the headline; (2) '.$grid.', each panel clearly separated with its own rounded card, a short panel heading, a small simple relevant icon or mini-illustration, and 2-3 short bullet points; (3) a single-line takeaway banner across the bottom.',
+            'Spelling must be EXACT — render every heading, bullet and the footer exactly as provided, in the same order. No invented words, no lorem ipsum, no gibberish/decorative fake text inside the panels or illustrations.',
+            'Strong typographic hierarchy: title largest, panel headings medium, bullets smaller but still crisp and legible on a phone. Generous padding, clear separation between panels, consistent alignment.',
+            'Editorial/business-explainer aesthetic — flat vector style with simple icons, cohesive limited palette, high contrast text. Not clip-art chaos, not a meme, not a photo collage. Leave safe-zone margins so no text is cropped.',
+        ]);
+    }
+
+    /**
+     * The exact infographic copy to typeset: a title, an ordered list of panels
+     * (heading + bullets + optional illustration hint), and a footer takeaway.
+     * Formatted so the model treats it as literal copy + layout, not a scene.
+     *
+     * @param  array<int,array{heading:string,bullets:array<int,string>,illustration?:string}>  $panels
+     */
+    public static function infographicContentBlock(string $title, array $panels, string $footer = ''): string
+    {
+        $out = sprintf('INFOGRAPHIC TEXT TO RENDER EXACTLY. Title bar: "%s".', trim($title));
+
+        foreach (array_values($panels) as $i => $panel) {
+            $heading = trim((string) ($panel['heading'] ?? ''));
+            $bullets = array_values(array_filter(array_map(
+                static fn ($b) => trim((string) $b),
+                is_array($panel['bullets'] ?? null) ? $panel['bullets'] : [],
+            ), static fn ($b) => $b !== ''));
+
+            $bulletStr = $bullets === '' ? '' : implode('; ', $bullets);
+            $illustration = trim((string) ($panel['illustration'] ?? ''));
+            $illoStr = $illustration !== '' ? sprintf(' [small illustration: %s]', $illustration) : '';
+
+            $out .= sprintf(
+                ' Panel %d heading: "%s"; bullets: %s.%s',
+                $i + 1,
+                $heading,
+                $bulletStr !== '' ? $bulletStr : '(none)',
+                $illoStr,
+            );
+        }
+
+        if (trim($footer) !== '') {
+            $out .= sprintf(' Footer takeaway banner: "%s".', trim($footer));
+        }
+
+        $out .= ' Render only these words, spelled exactly, in this order. The illustrations are picture hints only — do NOT print the bracketed illustration text.';
+
+        return $out;
+    }
+
+    /**
      * Positive kinetic + camera-motion clauses for Wan 2.6 short-form video.
      * Covers, per the FAL Wan optimisation rules: motion dynamics, camera
      * movement, pacing, believable physics, real lighting in motion, and

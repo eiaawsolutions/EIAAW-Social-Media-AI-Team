@@ -149,6 +149,167 @@ PROMPT;
         return $artifact;
     }
 
+    /**
+     * Distil a draft into MULTI-PANEL infographic content: a title, an ordered
+     * list of panels (each: short heading + 2-3 micro-bullets + a 1-line
+     * illustration hint), and a one-line footer takeaway. Used by DesignerAgent
+     * for carousel / rich educational drafts to build a dense explainer-card
+     * infographic.
+     *
+     * Prefers the Writer's carousel_slides as the panel source (their title →
+     * heading, body → bullets, visual_direction → illustration hint) so the
+     * infographic matches the exact narrative the Writer planned. Falls back to
+     * an LLM pass over the body when there are no slides.
+     *
+     * @return array{title:string, panels:array<int,array{heading:string,bullets:array<int,string>,illustration:string}>, footer:string, source:string}
+     */
+    public function distilPanels(Draft $draft, Brand $brand): array
+    {
+        // Cache check.
+        $cached = $draft->branding_payload;
+        if (is_array($cached) && ! empty($cached['infographic_panels']) && is_array($cached['infographic_panels'])) {
+            return [
+                'title' => (string) ($cached['infographic_title'] ?? ''),
+                'panels' => $this->normalizePanels($cached['infographic_panels']),
+                'footer' => (string) ($cached['infographic_footer'] ?? ''),
+                'source' => 'cache',
+            ];
+        }
+
+        // Preferred: build panels straight from the Writer's carousel slides —
+        // no LLM call needed, and it matches the planned narrative exactly.
+        $slides = $this->carouselSlides($draft);
+        if (count($slides) >= 2) {
+            $panels = [];
+            foreach ($slides as $slide) {
+                $heading = $this->cleanLine((string) ($slide['title'] ?? ''), 7);
+                $bullets = $this->bulletsFromText((string) ($slide['body'] ?? ''));
+                $illustration = $this->cleanLine((string) ($slide['visual_direction'] ?? ''), 10);
+                if ($heading === '' && empty($bullets)) {
+                    continue;
+                }
+                $panels[] = [
+                    'heading' => $heading !== '' ? $heading : 'Key point',
+                    'bullets' => $bullets,
+                    'illustration' => $illustration,
+                ];
+            }
+            $panels = array_slice($panels, 0, 6);
+            if (count($panels) >= 2) {
+                // Title = the post's headline; footer = the distilled quote if present.
+                $pp = is_array($draft->platform_payload) ? $draft->platform_payload : [];
+                $bp = is_array($draft->branding_payload) ? $draft->branding_payload : [];
+                $title = $this->cleanLine((string) ($pp['headline'] ?? ''), 8);
+                if ($title === '') {
+                    $title = $this->cleanLine($this->firstSentence((string) $draft->body), 8);
+                }
+                $footer = $this->cleanLine((string) ($bp['quote'] ?? ''), 12);
+
+                $artifact = [
+                    'title' => $title !== '' ? $title : 'Key takeaways',
+                    'panels' => $panels,
+                    'footer' => $footer,
+                    'source' => 'slides',
+                ];
+                $this->cachePanels($draft, $artifact);
+
+                return $artifact;
+            }
+        }
+
+        // Fallback: derive panels from the simple title+points distillation,
+        // turning each point into a single-bullet panel. Less rich but always
+        // on-message.
+        $simple = $this->distil($draft, $brand);
+        if (count($simple['points']) < 3) {
+            return ['title' => $simple['title'], 'panels' => [], 'footer' => '', 'source' => $simple['source']];
+        }
+        $panels = array_map(
+            fn (string $p) => ['heading' => $p, 'bullets' => [], 'illustration' => ''],
+            $simple['points'],
+        );
+
+        return [
+            'title' => $simple['title'],
+            'panels' => array_slice($panels, 0, 6),
+            'footer' => '',
+            'source' => $simple['source'],
+        ];
+    }
+
+    /** @return array<int,array<string,mixed>> */
+    private function carouselSlides(Draft $draft): array
+    {
+        $pp = is_array($draft->platform_payload) ? $draft->platform_payload : [];
+        $slides = $pp['carousel_slides'] ?? null;
+
+        return is_array($slides) ? array_values(array_filter($slides, 'is_array')) : [];
+    }
+
+    /** Split a slide body into 1-3 short bullet fragments. */
+    private function bulletsFromText(string $body): array
+    {
+        $body = trim(strip_tags($body));
+        if ($body === '') {
+            return [];
+        }
+        $sentences = preg_split('/(?<=[.!?])\s+/u', $body) ?: [$body];
+        $bullets = [];
+        foreach ($sentences as $s) {
+            $line = $this->cleanLine($s, self::MAX_WORDS_PER_POINT);
+            if ($line !== '') {
+                $bullets[] = $line;
+            }
+            if (count($bullets) >= 3) {
+                break;
+            }
+        }
+
+        return $bullets;
+    }
+
+    private function firstSentence(string $body): string
+    {
+        $body = trim(strip_tags($body));
+
+        return preg_split('/(?<=[.!?])\s+/u', $body, 2)[0] ?? $body;
+    }
+
+    /** @param array<int,mixed> $panels @return array<int,array{heading:string,bullets:array<int,string>,illustration:string}> */
+    private function normalizePanels(array $panels): array
+    {
+        $out = [];
+        foreach ($panels as $p) {
+            if (! is_array($p)) {
+                continue;
+            }
+            $out[] = [
+                'heading' => (string) ($p['heading'] ?? ''),
+                'bullets' => array_values(array_map('strval', is_array($p['bullets'] ?? null) ? $p['bullets'] : [])),
+                'illustration' => (string) ($p['illustration'] ?? ''),
+            ];
+        }
+
+        return $out;
+    }
+
+    private function cachePanels(Draft $draft, array $artifact): void
+    {
+        try {
+            $payload = is_array($draft->branding_payload) ? $draft->branding_payload : [];
+            $payload['infographic_title'] = $artifact['title'];
+            $payload['infographic_panels'] = $artifact['panels'];
+            $payload['infographic_footer'] = $artifact['footer'];
+            $payload['infographic_distilled_at'] = now()->toIso8601String();
+            $draft->forceFill(['branding_payload' => $payload])->save();
+        } catch (\Throwable $e) {
+            Log::warning('PosterContentWriter: infographic cache persist failed (continuing)', [
+                'draft_id' => $draft->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     /** Trim, strip noise, and clamp a single line to maxWords words. */
     private function cleanLine(string $raw, int $maxWords): string
     {

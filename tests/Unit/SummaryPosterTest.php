@@ -74,4 +74,52 @@ class SummaryPosterTest extends TestCase
         $this->assertStringContainsString('2) Two.', $block);
         $this->assertStringNotContainsString('3)', $block);
     }
+
+    public function test_carousel_routes_to_infographic(): void
+    {
+        // A carousel post is a multi-section explainer — it should become a
+        // dense infographic, not a photo of slide one.
+        $this->assertTrue(ImageCreativeDirection::isInfographicFormat('carousel', null, null));
+        $this->assertTrue(ImageCreativeDirection::isInfographicFormat('carousel', 'brand', 'whatever'));
+    }
+
+    public function test_educational_single_image_also_qualifies_as_infographic(): void
+    {
+        // isInfographicFormat subsumes isPosterFormat; the caller gates the
+        // single-image case further on panel count.
+        $this->assertTrue(ImageCreativeDirection::isInfographicFormat('single_image', 'educational', null));
+        $this->assertFalse(ImageCreativeDirection::isInfographicFormat('single_image', 'brand_moment', 'candid photo'));
+        $this->assertFalse(ImageCreativeDirection::isInfographicFormat('reel', 'educational', null));
+    }
+
+    public function test_infographic_directive_describes_panels_and_grid(): void
+    {
+        $d = ImageCreativeDirection::infographicDirective(4);
+        $this->assertStringContainsStringIgnoringCase('infographic', $d);
+        $this->assertStringContainsStringIgnoringCase('title bar', $d);
+        $this->assertStringContainsStringIgnoringCase('2x2', $d);
+        $this->assertStringContainsStringIgnoringCase('takeaway', $d);
+        $this->assertStringContainsStringIgnoringCase('exact', $d);
+    }
+
+    public function test_infographic_content_block_lays_out_panels_in_order(): void
+    {
+        $block = ImageCreativeDirection::infographicContentBlock(
+            'Making the case for ethical AI',
+            [
+                ['heading' => 'Real cost of failure', 'bullets' => ['Systems torn out', 'Lost team trust'], 'illustration' => 'broken machine'],
+                ['heading' => 'The adoption tax', 'bullets' => ['Low utilisation'], 'illustration' => 'chart'],
+            ],
+            'Cost-avoidance argument',
+        );
+
+        $this->assertStringContainsString('Title bar: "Making the case for ethical AI"', $block);
+        $this->assertStringContainsString('Panel 1 heading: "Real cost of failure"', $block);
+        $this->assertStringContainsString('Systems torn out; Lost team trust', $block);
+        $this->assertStringContainsString('Panel 2 heading: "The adoption tax"', $block);
+        $this->assertStringContainsString('Footer takeaway banner: "Cost-avoidance argument"', $block);
+        // Illustration hints must be marked as picture-only (not printed text).
+        $this->assertStringContainsString('[small illustration: broken machine]', $block);
+        $this->assertStringContainsStringIgnoringCase('do NOT print the bracketed', $block);
+    }
 }

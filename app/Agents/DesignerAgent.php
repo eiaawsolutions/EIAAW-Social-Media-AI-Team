@@ -227,13 +227,14 @@ class DesignerAgent extends BaseAgent
         $falUrl = $generated['url'];
         $brandedLocalPath = null;
 
-        // Skip the quote-stamp when this draft was rendered as a summary
-        // poster — the poster already carries a headline + key points as text,
-        // so stamping the quote panel on top would double-up the text. The
-        // poster IS the branded artefact.
+        // Skip the quote-stamp when this draft was rendered as a summary poster
+        // or multi-panel infographic — those already carry headings + points as
+        // text, so stamping the quote panel on top would double-up the text.
+        // The poster/infographic IS the branded artefact.
         $entry = $draft->calendarEntry;
         $isPoster = FalAiClient::modelUsesAspectRatio($generated['model'])
-            && ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction);
+            && (ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)
+                || ImageCreativeDirection::isInfographicFormat($entry?->format, $entry?->pillar, $entry?->visual_direction));
 
         // EIAAW house brand: stamp the FAL still with a Claude-distilled
         // positive quote + logo + "Powered by EIAAW Solutions" tag. Soft-fail:
@@ -374,11 +375,29 @@ class DesignerAgent extends BaseAgent
         $entry = $draft->calendarEntry;
         $activeModel = (string) config('services.fal.image_model', 'fal-ai/nano-banana');
 
+        // Text-capable model required for any baked-in-text poster/infographic.
+        $textCapable = FalAiClient::modelUsesAspectRatio($activeModel);
+
+        // INFOGRAPHIC path (richest): carousel posts — and rich educational
+        // single-image posts — render as a dense multi-panel explainer poster
+        // (title bar → labelled panels with mini-illustrations + bullets →
+        // footer), mirroring how a human would design the carousel as one
+        // shareable infographic. Tried first because it best represents a
+        // multi-section post.
+        if ($textCapable
+            && ImageCreativeDirection::isInfographicFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)) {
+            $infographic = $this->buildInfographicPrompt($brand, $draft);
+            if ($infographic !== null) {
+                return $infographic;
+            }
+            // null = couldn't build >= 2 panels → fall through.
+        }
+
         // SUMMARY-POSTER path: for single-image educational / listicle /
         // quote-card formats on a text-capable model, render a designed poster
         // (headline + 3-5 key points as legible text) instead of a text-free
         // photo. Gated so photo formats and flux-family models are untouched.
-        if (FalAiClient::modelUsesAspectRatio($activeModel)
+        if ($textCapable
             && ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)) {
             $posterPrompt = $this->buildPosterPrompt($brand, $draft);
             if ($posterPrompt !== null) {
@@ -491,33 +510,65 @@ class DesignerAgent extends BaseAgent
             return null;
         }
 
-        // EIAAW house brand keeps its palette/typography spine; clients get
-        // their own palette so the poster stays on-brand.
-        if (EiaawBrandLock::appliesTo($brand)) {
-            $brandStyle = 'Brand style: '.EiaawBrandLock::typographyHint()
-                .' Warm-cream background, deep-teal accents, near-black ink — no neon, no purple, no dark navy.';
-        } else {
-            $brandStyle = '';
-            $style = $brand->currentStyle;
-            if ($style && is_array($style->palette) && ! empty($style->palette)) {
-                $hexes = collect($style->palette)
-                    ->map(fn ($h) => is_string($h) ? $h : ($h['hex'] ?? null))
-                    ->filter()
-                    ->take(4)
-                    ->implode(', ');
-                if ($hexes !== '') {
-                    $brandStyle = "Brand palette for the poster: {$hexes}.";
-                }
-            }
-        }
-
         return sprintf(
             'Summary poster for the brand "%s" on %s. %s %s %s',
             $brand->name,
             ucfirst($draft->platform),
             ImageCreativeDirection::posterDirective(),
-            $brandStyle,
+            $this->posterBrandStyle($brand),
             ImageCreativeDirection::posterContentBlock($content['title'], $content['points']),
         );
+    }
+
+    /**
+     * Build a MULTI-PANEL INFOGRAPHIC prompt: title bar + labelled panels (each
+     * with bullets + a mini-illustration hint) + footer takeaway, rendered as
+     * legible text by the text-capable model. Returns null when fewer than 2
+     * panels can be distilled — the caller then falls through to the simple
+     * poster or photo path.
+     */
+    private function buildInfographicPrompt(Brand $brand, Draft $draft): ?string
+    {
+        $content = app(PosterContentWriter::class)->distilPanels($draft, $brand);
+        $panels = $content['panels'];
+        if (count($panels) < 2) {
+            return null;
+        }
+
+        return sprintf(
+            'Infographic poster for the brand "%s" on %s. %s %s %s',
+            $brand->name,
+            ucfirst($draft->platform),
+            ImageCreativeDirection::infographicDirective(count($panels)),
+            $this->posterBrandStyle($brand),
+            ImageCreativeDirection::infographicContentBlock($content['title'], $panels, $content['footer']),
+        );
+    }
+
+    /**
+     * Brand-style clause for poster/infographic prompts. EIAAW house brand
+     * keeps its palette/typography spine; clients get their own palette so the
+     * designed graphic stays on-brand.
+     */
+    private function posterBrandStyle(Brand $brand): string
+    {
+        if (EiaawBrandLock::appliesTo($brand)) {
+            return 'Brand style: '.EiaawBrandLock::typographyHint()
+                .' Warm-cream background, deep-teal accents, near-black ink — no neon, no purple, no dark navy.';
+        }
+
+        $style = $brand->currentStyle;
+        if ($style && is_array($style->palette) && ! empty($style->palette)) {
+            $hexes = collect($style->palette)
+                ->map(fn ($h) => is_string($h) ? $h : ($h['hex'] ?? null))
+                ->filter()
+                ->take(4)
+                ->implode(', ');
+            if ($hexes !== '') {
+                return "Brand palette for the poster: {$hexes}.";
+            }
+        }
+
+        return '';
     }
 }
