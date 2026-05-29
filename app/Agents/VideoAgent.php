@@ -11,6 +11,7 @@ use App\Services\Branding\BrandVideoComposer;
 use App\Services\Branding\FalTtsClient;
 use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
+use App\Services\Imagery\DraftSceneBrief;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\ImageCreativeDirection;
