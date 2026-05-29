@@ -82,6 +82,26 @@ final class ImageCreativeDirection
     }
 
     /**
+     * Extra no-text reinforcement for text-eager models (Nano Banana / Gemini
+     * / Imagen render legible text very readily). Our pipeline forbids baked-in
+     * text — the quote is stamped programmatically by BrandImageStamper after
+     * generation — so a model that "helpfully" writes the headline into the
+     * scene corrupts the asset. Returns the reinforcement clause for those
+     * models and '' for flux-family models (which don't need it), so the
+     * prompt isn't needlessly inflated.
+     */
+    public static function noTextReinforcementFor(string $model): string
+    {
+        if (! FalAiClient::modelUsesAspectRatio($model)) {
+            return '';
+        }
+
+        return 'CRITICAL — this model can render text but MUST NOT here: produce a pure photographic scene with zero text of any kind. '
+            .'Do not write the caption, headline, quote, brand name, or any words into the image. '
+            .'If the brief mentions a phrase, depict its MEANING as a scene, never the letters. Any text in the output is a defect.';
+    }
+
+    /**
      * Positive kinetic + camera-motion clauses for Wan 2.6 short-form video.
      * Covers, per the FAL Wan optimisation rules: motion dynamics, camera
      * movement, pacing, believable physics, real lighting in motion, and

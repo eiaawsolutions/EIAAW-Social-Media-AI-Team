@@ -22,13 +22,19 @@ return [
     ],
 
     'fal' => [
-        // FAL.AI gateway for image generation (Flux Schnell default, Wan for video)
+        // FAL.AI gateway for image generation (Nano Banana default, Wan for video)
         'api_key' => env('FAL_API_KEY'),
-        // Flux Schnell: $0.003/image, ~2s, 13x cheaper than Pro. Quality is
-        // "good commercial" — fine for daily content, not for hero campaign
-        // shots. Lift to fal-ai/flux-pro/v1.1 (premium, $0.04) or
-        // fal-ai/recraft-v3 (best at no-text + design) per-call when needed.
-        'image_model' => env('FAL_IMAGE_MODEL', 'fal-ai/flux/schnell'),
+        // Nano Banana (Gemini 2.5 Flash Image), ~$0.039/image: best prompt
+        // adherence in its class — it depicts what the scripted scene brief
+        // actually describes, with far fewer hallucinated objects/limbs than
+        // flux-pro. This is why it's the default: flux-pro produced sloppy,
+        // off-brief imagery that didn't track the post copy.
+        // IMPORTANT: Nano Banana takes `aspect_ratio` (1:1/9:16/16:9…), NOT
+        // flux's named `image_size` presets — FalAiClient::generateImage maps
+        // the size param per-model, so flipping this value is safe.
+        // Alternatives per-call: fal-ai/flux-pro/v1.1 (premium photoreal,
+        // $0.04) or fal-ai/flux/schnell (cheap drafts, $0.003).
+        'image_model' => env('FAL_IMAGE_MODEL', 'fal-ai/nano-banana'),
         // Library-first routing: if the brand has uploaded assets and the
         // BrandAssetPicker finds a semantic match, use that asset (zero
         // cost) instead of calling FAL. Operator can force AI generation

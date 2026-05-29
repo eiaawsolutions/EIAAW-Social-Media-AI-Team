@@ -9,20 +9,21 @@ use RuntimeException;
 /**
  * Thin client around FAL.AI's serverless image-generation endpoints.
  *
- * Default model: fal-ai/flux-pro/v1.1 — the best photorealistic + design
- * compositional quality at ~$0.04/image. Configurable via
- * services.fal.image_model so a workspace can flip to flux-schnell for
- * draft volume (~$0.003/image, 4x cheaper, less prompt-faithful).
+ * Default model: fal-ai/nano-banana (Gemini 2.5 Flash Image) — best prompt
+ * adherence in its class at ~$0.039/image; it depicts what the scripted scene
+ * brief describes far more faithfully than flux-pro, with fewer hallucinated
+ * objects/limbs. Configurable via services.fal.image_model (flip to
+ * fal-ai/flux-pro/v1.1 for premium photoreal, or fal-ai/flux/schnell for cheap
+ * drafts). Size param is model-aware: Gemini-family models take `aspect_ratio`,
+ * flux-family take named `image_size` presets — see generateImage().
  *
  * Auth: Authorization: Key {api_key} header. Polling vs sync: we use the
- * /run/{model} endpoint which queues + waits inline. Long generations
- * (Flux Pro typically 8-15s) stay under our 180s request_timeout.
+ * /run/{model} endpoint which queues + waits inline. Generations stay under
+ * our 180s request_timeout.
  *
  * What's intentionally NOT here yet:
  *   - LoRA / brand-tuned model selection (v1.2 — needs ckm-design pipeline)
  *   - C2PA provenance signing (deferred until image moderation lands)
- *   - Aspect-ratio routing per platform — currently the agent picks 1:1
- *     for IG/FB/LI, 9:16 for TikTok/Threads/Reels by passing image_size.
  */
 class FalAiClient
 {
@@ -45,7 +46,7 @@ class FalAiClient
     {
         return new self(
             apiKey: (string) config('services.fal.api_key'),
-            imageModel: (string) config('services.fal.image_model', 'fal-ai/flux-pro/v1.1'),
+            imageModel: (string) config('services.fal.image_model', 'fal-ai/nano-banana'),
             timeout: (int) config('services.fal.request_timeout', 180),
             videoModelImage: (string) config('services.fal.video_model_image', 'fal-ai/wan-25-preview/image-to-video'),
             videoModelText: (string) config('services.fal.video_model_text', 'fal-ai/wan-25-preview/text-to-video'),
@@ -56,10 +57,10 @@ class FalAiClient
     private function client(): PendingRequest
     {
         return Http::withHeaders([
-                'authorization' => 'Key ' . $this->apiKey,
-                'accept' => 'application/json',
-                'content-type' => 'application/json',
-            ])
+            'authorization' => 'Key '.$this->apiKey,
+            'accept' => 'application/json',
+            'content-type' => 'application/json',
+        ])
             ->baseUrl('https://fal.run')
             ->timeout($this->timeout);
     }
@@ -72,6 +73,7 @@ class FalAiClient
      *
      * @param array{
      *   image_size?: string|array{width:int,height:int},
+     *   aspect_ratio?: string,
      *   num_inference_steps?: int,
      *   guidance_scale?: float,
      *   num_images?: int,
@@ -80,11 +82,12 @@ class FalAiClient
      *   negative_prompt?: string,
      * } $options
      *
-     * Note: the default model fal-ai/flux-pro/v1.1 has no negative_prompt
-     * field and silently ignores it (it does not error on unknown keys).
-     * Negative-capable models a workspace may configure (flux/dev, recraft-v3,
-     * SD-family) honour it. See ImageCreativeDirection::negativePrompt().
-     *
+     * Note: neither the default model (fal-ai/nano-banana) nor flux-pro/v1.1
+     * has a negative_prompt field — both silently ignore it (no error on
+     * unknown keys), which is why the realism block folds the negatives into
+     * the positive prompt. Negative-capable models a workspace may configure
+     * (flux/dev, recraft-v3, SD-family) honour it. See
+     * ImageCreativeDirection::negativePrompt().
      * @return array{url:string, model:string, latency_ms:int, prompt:string, content_type:?string}
      */
     public function generateImage(string $prompt, array $options = []): array
@@ -96,9 +99,25 @@ class FalAiClient
             'safety_tolerance' => '2',
         ], $options);
 
+        // Model-aware size param. flux uses named `image_size` presets
+        // (square_hd, portrait_16_9); Nano Banana / Gemini / Imagen use
+        // `aspect_ratio` (1:1, 9:16, 16:9). Callers pass `image_size` for
+        // backwards-compat; when the active model is aspect-ratio-style we
+        // translate the preset and drop image_size so the model doesn't
+        // silently fall back to its 1:1 default.
+        if (self::modelUsesAspectRatio($this->imageModel)) {
+            if (! isset($payload['aspect_ratio'])) {
+                $payload['aspect_ratio'] = self::imageSizeToAspectRatio((string) ($payload['image_size'] ?? 'square_hd'));
+            }
+            unset($payload['image_size'], $payload['safety_tolerance']);
+            // Nano Banana takes safety_tolerance as an int 1-6; our flux '2'
+            // string is harmless to omit (model default 4 is fine for brand
+            // imagery). num_images is accepted as-is.
+        }
+
         $startedAt = (int) (microtime(true) * 1000);
 
-        $response = $this->client()->post('/' . ltrim($this->imageModel, '/'), $payload);
+        $response = $this->client()->post('/'.ltrim($this->imageModel, '/'), $payload);
 
         if (! $response->successful()) {
             throw new RuntimeException(sprintf(
@@ -112,7 +131,7 @@ class FalAiClient
         $body = $response->json();
         $url = $body['images'][0]['url'] ?? null;
         if (! is_string($url) || $url === '') {
-            throw new RuntimeException('FAL.AI response missing images[0].url. Body: ' . substr($response->body(), 0, 400));
+            throw new RuntimeException('FAL.AI response missing images[0].url. Body: '.substr($response->body(), 0, 400));
         }
 
         return [
@@ -139,13 +158,48 @@ class FalAiClient
         };
     }
 
+    /**
+     * True if the model expects `aspect_ratio` (Gemini-family: Nano Banana,
+     * Imagen) rather than flux's named `image_size` presets. Substring match
+     * so versioned ids (nano-banana, nano-banana/edit, imagen4/preview) all
+     * route correctly.
+     */
+    public static function modelUsesAspectRatio(string $model): bool
+    {
+        $m = strtolower($model);
+        foreach (['nano-banana', 'gemini', 'imagen'] as $needle) {
+            if (str_contains($m, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Translate a flux `image_size` preset to the nearest `aspect_ratio`
+     * value Nano Banana / Gemini accept (1:1, 9:16, 16:9, 4:5, …). Keeps the
+     * per-platform sizing intent intact when swapping model families so a
+     * TikTok poster stays vertical instead of defaulting to square.
+     */
+    public static function imageSizeToAspectRatio(string $imageSize): string
+    {
+        return match ($imageSize) {
+            'portrait_16_9', 'portrait_9_16' => '9:16',
+            'portrait_4_3' => '3:4',
+            'landscape_16_9' => '16:9',
+            'landscape_4_3' => '4:3',
+            default => '1:1', // square_hd and anything unknown
+        };
+    }
+
     private function videoClient(): PendingRequest
     {
         return Http::withHeaders([
-                'authorization' => 'Key ' . $this->apiKey,
-                'accept' => 'application/json',
-                'content-type' => 'application/json',
-            ])
+            'authorization' => 'Key '.$this->apiKey,
+            'accept' => 'application/json',
+            'content-type' => 'application/json',
+        ])
             ->baseUrl('https://fal.run')
             ->timeout($this->videoTimeout);
     }
@@ -163,7 +217,6 @@ class FalAiClient
      *   negative_prompt?: string,
      *   seed?: int,
      * } $options
-     *
      * @return array{url:string, model:string, latency_ms:int, prompt:string, content_type:?string}
      */
     public function generateVideo(string $prompt, array $options = []): array
@@ -184,7 +237,7 @@ class FalAiClient
 
         $startedAt = (int) (microtime(true) * 1000);
 
-        $response = $this->videoClient()->post('/' . ltrim($model, '/'), $payload);
+        $response = $this->videoClient()->post('/'.ltrim($model, '/'), $payload);
 
         if (! $response->successful()) {
             throw new RuntimeException(sprintf(
@@ -202,7 +255,7 @@ class FalAiClient
             ?? $body['output']['video']['url']
             ?? null;
         if (! is_string($url) || $url === '') {
-            throw new RuntimeException('FAL.AI video response missing video.url. Body: ' . substr($response->body(), 0, 400));
+            throw new RuntimeException('FAL.AI video response missing video.url. Body: '.substr($response->body(), 0, 400));
         }
 
         return [

@@ -58,6 +58,7 @@ class DesignerAgent extends BaseAgent
      * notices on the FAL dashboard, not the other way around).
      */
     private const FAL_PRICING_USD = [
+        'fal-ai/nano-banana' => 0.039,
         'fal-ai/flux/schnell' => 0.003,
         'fal-ai/flux/dev' => 0.025,
         'fal-ai/flux-pro/v1.1' => 0.04,
@@ -368,6 +369,15 @@ class DesignerAgent extends BaseAgent
         $hookSlide = $this->hookSlideDirection($draft);
         if ($hookSlide !== '') {
             $sceneBrief .= " Carousel cover (hook slide): {$hookSlide}.";
+        }
+
+        // Text-eager models (Nano Banana / Gemini) need a firmer no-text
+        // instruction — they render legible text readily, and our pipeline
+        // stamps the quote programmatically instead. Empty for flux-family.
+        $activeModel = (string) config('services.fal.image_model', 'fal-ai/nano-banana');
+        $noTextReinforcement = ImageCreativeDirection::noTextReinforcementFor($activeModel);
+        if ($noTextReinforcement !== '') {
+            $sceneBrief .= ' ' . $noTextReinforcement;
         }
 
         $platformComposition = match ($draft->platform) {
