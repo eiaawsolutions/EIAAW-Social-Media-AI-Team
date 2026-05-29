@@ -102,6 +102,87 @@ final class ImageCreativeDirection
     }
 
     /**
+     * True when a draft should render as a SUMMARY POSTER (designed graphic
+     * with a headline + key points as legible text) rather than a text-free
+     * editorial photo. Per the per-format decision: poster for single-image
+     * educational / listicle / quote-card / infographic intent; photo for
+     * everything else (lifestyle, brand-moment, reel/video keyframes).
+     *
+     * Gate signals (all read from the calendar entry, no new columns):
+     *   - format must be 'single_image' (carousel has its own slide path;
+     *     reel/video are photo-anchored keyframes).
+     *   - AND either pillar === 'educational', or visual_direction names a
+     *     poster kind (infographic / listicle / tips / steps / quote card /
+     *     summary / checklist / how-to).
+     *
+     * Poster rendering only makes sense on a text-capable model — the caller
+     * also checks FalAiClient::modelUsesAspectRatio() before choosing poster
+     * mode, so flux drafts never attempt baked-in body text.
+     */
+    public static function isPosterFormat(?string $format, ?string $pillar, ?string $visualDirection): bool
+    {
+        if (strtolower(trim((string) $format)) !== 'single_image') {
+            return false;
+        }
+
+        if (strtolower(trim((string) $pillar)) === 'educational') {
+            return true;
+        }
+
+        $vd = strtolower((string) $visualDirection);
+        foreach (['infographic', 'listicle', 'list post', 'tips', 'steps', 'step-by-step', 'quote card', 'quote-card', 'summary', 'checklist', 'how-to', 'how to', 'breakdown'] as $needle) {
+            if (str_contains($vd, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Layout brief for a Nano-Banana-rendered summary poster. Unlike the photo
+     * path this DELIBERATELY asks the model to render legible text (the title +
+     * points), so it must NOT be combined with the no-text clauses. The poster
+     * content (title + points) is distilled by PosterContentWriter and injected
+     * by the caller via {@see self::posterContentBlock()}.
+     */
+    public static function posterDirective(): string
+    {
+        return implode(' ', [
+            'Design a clean, modern social-media SUMMARY POSTER (an editorial infographic-style graphic, not a photograph).',
+            'Render the provided title as a bold, large headline at the top, and the provided key points as a vertically stacked list below it — each point on its own line, clearly legible, high contrast against the background.',
+            'Spelling must be EXACT — render the words exactly as given, no extra words, no invented text, no lorem ipsum, no decorative gibberish characters.',
+            'Use generous spacing, a strong typographic hierarchy (headline largest, points secondary), and a simple flat or softly-textured background that keeps the text readable on a phone screen.',
+            'Premium editorial design — think a well-set magazine explainer card — not clip-art, not a meme, not a busy collage. Leave safe-zone margins so no text is cropped.',
+        ]);
+    }
+
+    /**
+     * The exact title + points the poster must render, formatted so the model
+     * treats them as literal copy to typeset (not as a scene to depict).
+     *
+     * @param  array<int,string>  $points
+     */
+    public static function posterContentBlock(string $title, array $points): string
+    {
+        $clean = array_values(array_filter(array_map(
+            static fn ($p) => trim((string) $p),
+            $points,
+        ), static fn ($p) => $p !== ''));
+
+        $lines = '';
+        foreach ($clean as $i => $point) {
+            $lines .= sprintf(' %d) %s.', $i + 1, $point);
+        }
+
+        return sprintf(
+            'POSTER TEXT TO RENDER EXACTLY — headline: "%s".%s Render only these words, spelled exactly, nothing else.',
+            trim($title),
+            $lines,
+        );
+    }
+
+    /**
      * Positive kinetic + camera-motion clauses for Wan 2.6 short-form video.
      * Covers, per the FAL Wan optimisation rules: motion dynamics, camera
      * movement, pacing, believable physics, real lighting in motion, and

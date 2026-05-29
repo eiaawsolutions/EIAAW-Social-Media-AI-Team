@@ -4,9 +4,11 @@ namespace App\Agents;
 
 use App\Models\AiCost;
 use App\Models\Brand;
+use App\Models\BrandAsset;
 use App\Models\Draft;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Branding\BrandImageStamper;
+use App\Services\Branding\PosterContentWriter;
 use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\DraftSceneBrief;
@@ -15,6 +17,7 @@ use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 /**
@@ -71,14 +74,21 @@ class DesignerAgent extends BaseAgent
         return self::FAL_PRICING_USD[$model] ?? 0.003;
     }
 
-    public function role(): string { return 'designer'; }
+    public function role(): string
+    {
+        return 'designer';
+    }
+
     // v1.5 — the image is now anchored to the SCRIPTED post content via
     // DraftSceneBrief (hook + distilled quote + CTA + target emotion +
     // visual_direction), not a raw truncated body slice. The poster now
     // depicts what the caption actually says, in lockstep with the video
     // built from the same brief. v1.4 retained: ImageCreativeDirection realism
     // contract + structured negative_prompt.
-    public function promptVersion(): string { return 'designer.v1.5'; }
+    public function promptVersion(): string
+    {
+        return 'designer.v1.5';
+    }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -121,7 +131,7 @@ class DesignerAgent extends BaseAgent
         if (! $forceFal && $libraryFirst) {
             $picked = app(BrandAssetPicker::class)->pickFor($brand, $draft, 'image');
             if ($picked) {
-                /** @var \App\Models\BrandAsset $asset */
+                /** @var BrandAsset $asset */
                 $asset = $picked['asset'];
 
                 // Re-host through THIS WORKSPACE'S Blotato account so /v2/posts
@@ -194,7 +204,7 @@ class DesignerAgent extends BaseAgent
         try {
             $fal = FalAiClient::fromConfig();
         } catch (\Throwable $e) {
-            return AgentResult::fail('FAL.AI not configured: ' . $e->getMessage());
+            return AgentResult::fail('FAL.AI not configured: '.$e->getMessage());
         }
 
         try {
@@ -210,17 +220,26 @@ class DesignerAgent extends BaseAgent
                 'draft_id' => $draft->id,
                 'error' => $e->getMessage(),
             ]);
-            return AgentResult::fail('Image generation failed: ' . substr($e->getMessage(), 0, 200));
+
+            return AgentResult::fail('Image generation failed: '.substr($e->getMessage(), 0, 200));
         }
 
         $falUrl = $generated['url'];
         $brandedLocalPath = null;
 
+        // Skip the quote-stamp when this draft was rendered as a summary
+        // poster — the poster already carries a headline + key points as text,
+        // so stamping the quote panel on top would double-up the text. The
+        // poster IS the branded artefact.
+        $entry = $draft->calendarEntry;
+        $isPoster = FalAiClient::modelUsesAspectRatio($generated['model'])
+            && ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction);
+
         // EIAAW house brand: stamp the FAL still with a Claude-distilled
         // positive quote + logo + "Powered by EIAAW Solutions" tag. Soft-fail:
         // if anything in the brand layer breaks, we publish the raw FAL image
         // — better than no media on a media-required platform.
-        if (EiaawBrandLock::appliesTo($brand) && (bool) config('services.branding.enabled', true)) {
+        if (! $isPoster && EiaawBrandLock::appliesTo($brand) && (bool) config('services.branding.enabled', true)) {
             try {
                 $artifact = app(QuoteWriter::class)->distil($draft, $brand);
                 $brandedLocalPath = BrandImageStamper::fromConfig()->stamp(
@@ -268,9 +287,9 @@ class DesignerAgent extends BaseAgent
         $urlForBlotato = $falUrl;
         if ($brandedLocalPath !== null && is_file($brandedLocalPath)) {
             try {
-                $publicRelPath = 'branding/' . $draft->id . '-' . substr(md5(uniqid('', true)), 0, 12) . '.jpg';
+                $publicRelPath = 'branding/'.$draft->id.'-'.substr(md5(uniqid('', true)), 0, 12).'.jpg';
                 Storage::disk('public')->put($publicRelPath, file_get_contents($brandedLocalPath));
-                $urlForBlotato = rtrim((string) config('app.url'), '/') . '/storage/' . $publicRelPath;
+                $urlForBlotato = rtrim((string) config('app.url'), '/').'/storage/'.$publicRelPath;
                 @unlink($brandedLocalPath);
             } catch (\Throwable $e) {
                 Log::warning('DesignerAgent: failed to publish branded image; falling back to FAL URL', [
@@ -294,7 +313,8 @@ class DesignerAgent extends BaseAgent
                     'fal_url' => $falUrl,
                     'error' => $e->getMessage(),
                 ]);
-                return AgentResult::fail('Image generated but Blotato upload failed: ' . substr($e->getMessage(), 0, 200));
+
+                return AgentResult::fail('Image generated but Blotato upload failed: '.substr($e->getMessage(), 0, 200));
             }
         }
 
@@ -345,11 +365,28 @@ class DesignerAgent extends BaseAgent
         if (! is_array($first)) {
             return '';
         }
+
         return trim((string) ($first['visual_direction'] ?? $first['title'] ?? ''));
     }
 
     private function buildPrompt(Brand $brand, Draft $draft): string
     {
+        $entry = $draft->calendarEntry;
+        $activeModel = (string) config('services.fal.image_model', 'fal-ai/nano-banana');
+
+        // SUMMARY-POSTER path: for single-image educational / listicle /
+        // quote-card formats on a text-capable model, render a designed poster
+        // (headline + 3-5 key points as legible text) instead of a text-free
+        // photo. Gated so photo formats and flux-family models are untouched.
+        if (FalAiClient::modelUsesAspectRatio($activeModel)
+            && ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)) {
+            $posterPrompt = $this->buildPosterPrompt($brand, $draft);
+            if ($posterPrompt !== null) {
+                return $posterPrompt;
+            }
+            // null = couldn't distil enough points → fall through to photo.
+        }
+
         // Anchor the image to the SCRIPTED post content (hook, distilled quote,
         // CTA, target emotion, visual_direction) — not a raw slice of the body.
         // This is what keeps the poster about the same thing the caption says,
@@ -358,7 +395,7 @@ class DesignerAgent extends BaseAgent
         if ($sceneBrief === '') {
             // No scripted signal at all (empty draft) — degrade to a topic line.
             $sceneBrief = 'Depict the topic of this post (do NOT render text in the image): '
-                . (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 24, ' …') . '.';
+                .(string) Str::words(strip_tags((string) $draft->body), 24, ' …').'.';
         }
 
         // Carousel-aware: when the Writer produced a slide arc, anchor the hero
@@ -372,12 +409,12 @@ class DesignerAgent extends BaseAgent
         }
 
         // Text-eager models (Nano Banana / Gemini) need a firmer no-text
-        // instruction — they render legible text readily, and our pipeline
-        // stamps the quote programmatically instead. Empty for flux-family.
-        $activeModel = (string) config('services.fal.image_model', 'fal-ai/nano-banana');
+        // instruction on the PHOTO path — they render legible text readily, and
+        // our pipeline stamps the quote programmatically instead. Empty for
+        // flux-family. ($activeModel computed at the top of buildPrompt.)
         $noTextReinforcement = ImageCreativeDirection::noTextReinforcementFor($activeModel);
         if ($noTextReinforcement !== '') {
-            $sceneBrief .= ' ' . $noTextReinforcement;
+            $sceneBrief .= ' '.$noTextReinforcement;
         }
 
         $platformComposition = match ($draft->platform) {
@@ -437,6 +474,50 @@ class DesignerAgent extends BaseAgent
             $paletteHint,
             $sceneBrief,
             ImageCreativeDirection::realismBlock(),
+        );
+    }
+
+    /**
+     * Build a SUMMARY-POSTER prompt: a designed graphic whose headline + key
+     * points are rendered as legible text by the (text-capable) model. Returns
+     * null when the draft can't be distilled into enough points — the caller
+     * then falls back to the normal photo prompt rather than shipping an empty
+     * poster.
+     */
+    private function buildPosterPrompt(Brand $brand, Draft $draft): ?string
+    {
+        $content = app(PosterContentWriter::class)->distil($draft, $brand);
+        if (count($content['points']) < 3) {
+            return null;
+        }
+
+        // EIAAW house brand keeps its palette/typography spine; clients get
+        // their own palette so the poster stays on-brand.
+        if (EiaawBrandLock::appliesTo($brand)) {
+            $brandStyle = 'Brand style: '.EiaawBrandLock::typographyHint()
+                .' Warm-cream background, deep-teal accents, near-black ink — no neon, no purple, no dark navy.';
+        } else {
+            $brandStyle = '';
+            $style = $brand->currentStyle;
+            if ($style && is_array($style->palette) && ! empty($style->palette)) {
+                $hexes = collect($style->palette)
+                    ->map(fn ($h) => is_string($h) ? $h : ($h['hex'] ?? null))
+                    ->filter()
+                    ->take(4)
+                    ->implode(', ');
+                if ($hexes !== '') {
+                    $brandStyle = "Brand palette for the poster: {$hexes}.";
+                }
+            }
+        }
+
+        return sprintf(
+            'Summary poster for the brand "%s" on %s. %s %s %s',
+            $brand->name,
+            ucfirst($draft->platform),
+            ImageCreativeDirection::posterDirective(),
+            $brandStyle,
+            ImageCreativeDirection::posterContentBlock($content['title'], $content['points']),
         );
     }
 }
