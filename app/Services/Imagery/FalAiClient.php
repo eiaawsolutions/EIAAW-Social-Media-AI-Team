@@ -35,6 +35,7 @@ class FalAiClient
         private readonly ?string $videoModelText = null,
         private readonly int $videoTimeout = 360,
         private readonly bool $videoNativeAudio = true,
+        private readonly ?string $videoModelExtend = null,
     ) {
         if ($apiKey === '') {
             throw new RuntimeException(
@@ -53,6 +54,7 @@ class FalAiClient
             videoModelText: (string) config('services.fal.video_model_text', 'fal-ai/veo3/fast'),
             videoTimeout: (int) config('services.fal.video_request_timeout', 360),
             videoNativeAudio: (bool) config('services.fal.video_native_audio', true),
+            videoModelExtend: (string) config('services.fal.video_model_extend', 'fal-ai/veo3.1/extend-video'),
         );
     }
 
@@ -314,11 +316,111 @@ class FalAiClient
         ];
     }
 
+    /** Each Veo 3.1 extend-video call appends exactly this many seconds. The
+     *  endpoint's `duration` is a fixed "7s" constant — not configurable. */
+    public const VEO_EXTEND_STEP_SECONDS = 7;
+
+    /**
+     * Extend an existing video by one fixed 7-second Veo 3.1 step, continuing
+     * the scene from `prompt`. Used to build clips longer than Veo Fast's 8s
+     * single-call cap (8s base + N×7s extends). The source `video_url` must be
+     * 720p/1080p and reachable by FAL (the base clip's fal.media URL works).
+     *
+     * Audio stays continuous: when generate_audio is on, Veo continues the
+     * narration/ambience across the seam rather than restarting it.
+     *
+     * @param array{
+     *   aspect_ratio?: string,        // 'auto'|'16:9'|'9:16'
+     *   generate_audio?: bool,
+     *   negative_prompt?: string,     // Veo 3.1 extend DOES accept this
+     *   seed?: int,
+     * } $options
+     * @return array{url:string, model:string, latency_ms:int, prompt:string, content_type:?string, has_native_audio:bool, added_seconds:int}
+     */
+    public function extendVideo(string $videoUrl, string $prompt, array $options = []): array
+    {
+        $model = $this->videoModelExtend;
+        if (empty($model)) {
+            throw new RuntimeException('FAL extend-video model not configured (services.fal.video_model_extend).');
+        }
+
+        $nativeAudio = array_key_exists('generate_audio', $options)
+            ? (bool) $options['generate_audio']
+            : $this->videoNativeAudio;
+
+        // 'auto' lets Veo keep the source clip's orientation across the seam.
+        $aspect = (string) ($options['aspect_ratio'] ?? 'auto');
+        if (! in_array($aspect, ['auto', '16:9', '9:16'], true)) {
+            $aspect = self::clampVeoAspect($aspect);
+        }
+
+        $payload = [
+            'prompt' => $prompt,
+            'video_url' => $videoUrl,
+            'aspect_ratio' => $aspect,
+            'resolution' => '720p',
+            'generate_audio' => $nativeAudio,
+        ];
+        if (! empty($options['negative_prompt'])) {
+            $payload['negative_prompt'] = $options['negative_prompt'];
+        }
+        if (isset($options['seed'])) {
+            $payload['seed'] = (int) $options['seed'];
+        }
+
+        $startedAt = (int) (microtime(true) * 1000);
+
+        $response = $this->videoClient()->post('/'.ltrim($model, '/'), $payload);
+
+        if (! $response->successful()) {
+            throw new RuntimeException(sprintf(
+                'FAL.AI %s failed: HTTP %d — %s',
+                $model,
+                $response->status(),
+                substr($response->body(), 0, 400),
+            ));
+        }
+
+        $body = $response->json();
+        $url = $body['video']['url']
+            ?? $body['videos'][0]['url']
+            ?? $body['output']['video']['url']
+            ?? null;
+        if (! is_string($url) || $url === '') {
+            throw new RuntimeException('FAL.AI extend-video response missing video.url. Body: '.substr($response->body(), 0, 400));
+        }
+
+        return [
+            'url' => $url,
+            'model' => $model,
+            'latency_ms' => (int) ((microtime(true) * 1000) - $startedAt),
+            'prompt' => $prompt,
+            'content_type' => $body['video']['content_type'] ?? 'video/mp4',
+            'has_native_audio' => $nativeAudio,
+            'added_seconds' => self::VEO_EXTEND_STEP_SECONDS,
+        ];
+    }
+
+    /**
+     * How many +7s extend steps are needed to reach a target duration from an
+     * 8s (or other) Veo base clip. ceil((target - base) / 7), floored at 0.
+     * e.g. target 15s from 8s base → 1 step (15s); 22s → 2 steps (22s).
+     */
+    public static function extendStepsForTarget(int $targetSeconds, int $baseSeconds): int
+    {
+        if ($targetSeconds <= $baseSeconds) {
+            return 0;
+        }
+
+        return (int) ceil(($targetSeconds - $baseSeconds) / self::VEO_EXTEND_STEP_SECONDS);
+    }
+
     /**
      * True if the model is a Google Veo family endpoint (veo3, veo3/fast,
-     * veo3/fast/image-to-video, future veoN). Substring match so versioned ids
-     * route correctly. Drives the Veo-specific payload normalisation in
-     * generateVideo() (string duration, generate_audio, aspect clamp).
+     * veo3/fast/image-to-video, veo3.1/extend-video, future veoN). Substring
+     * match so versioned ids route correctly. Drives the Veo-specific payload
+     * normalisation in generateVideo() (string duration, generate_audio,
+     * aspect clamp).
      */
     public static function isVeoModel(?string $model): bool
     {

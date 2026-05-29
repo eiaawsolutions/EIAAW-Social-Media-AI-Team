@@ -67,25 +67,33 @@ return [
         // Roll back to Wan by setting these to fal-ai/wan-25-preview/* .
         'video_model_image' => env('FAL_VIDEO_MODEL_IMAGE', 'fal-ai/veo3/fast/image-to-video'),
         'video_model_text' => env('FAL_VIDEO_MODEL_TEXT', 'fal-ai/veo3/fast'),
+        // Veo 3.1 extend-video: appends a fixed +7s continuation per call so we
+        // can build clips longer than Veo Fast's 8s cap (8s base + N×7s). Used
+        // only on the native-audio path. Pricing: $0.20/sec off, $0.40/sec on.
+        'video_model_extend' => env('FAL_VIDEO_MODEL_EXTEND', 'fal-ai/veo3.1/extend-video'),
         // Veo native audio: when true the model generates its own dialogue/SFX/
         // music from the prompt and we SKIP the FFmpeg voiceover+music composer.
         // Set false to mute Veo and keep the legacy Kokoro voiceover+music+subs
         // brand composer (only meaningful while a Wan-style model is active).
         'video_native_audio' => (bool) env('FAL_VIDEO_NATIVE_AUDIO', true),
-        // Default clip length in seconds. Veo snaps to {4,6,8}; 6s is the sweet
-        // spot for a hook + line + resolve at ~150 wpm without overspending.
-        'video_duration_seconds' => (int) env('FAL_VIDEO_DURATION_SECONDS', 6),
+        // Default TARGET clip length in seconds. Base call snaps to {4,6,8};
+        // anything >8 is built via +7s extend steps (15 = 8 base + 1 extend).
+        // VideoAgent caps the target at MAX_TARGET_SECONDS (22) regardless.
+        'video_duration_seconds' => (int) env('FAL_VIDEO_DURATION_SECONDS', 15),
         'request_timeout' => (int) env('FAL_REQUEST_TIMEOUT', 180),
         'video_request_timeout' => (int) env('FAL_VIDEO_REQUEST_TIMEOUT', 360),
         // Per-workspace daily caps. Video is 10x image so kept separate
         // and operator can lift either independently via Infisical.
         // 2026-05-05 raise: image $0.50 → $1.50, video $2.40 → $5.00.
+        // 2026-05-29 raise: video $5.00 → $15.00 — a 15s audio-on clip (8s
+        // base + 7s extend) costs ~$4, so $5 tripped on the first clip. $15 ≈
+        // 3-4 fifteen-second clips/workspace/day.
         // The old caps tripped within hours of normal multi-brand use, leaving
         // drafts stuck at compliance_failed because Designer kept refusing.
         // The breaker query was also fixed to scope by agent_role+provider so
         // Anthropic/Voice/embedding spend no longer eats the FAL budget.
         'daily_cap_usd' => (float) env('FAL_DAILY_CAP_USD', 1.50),
-        'video_daily_cap_usd' => (float) env('FAL_VIDEO_DAILY_CAP_USD', 5.00),
+        'video_daily_cap_usd' => (float) env('FAL_VIDEO_DAILY_CAP_USD', 15.00),
         // FAL TTS endpoint used for voiceovers. Kokoro-82M is the cheapest
         // FAL voice (~$0.001/1k chars, ~$0.01/clip), with PlayHT and
         // ElevenLabs-via-FAL as quality-upgrade flips. Word-level
