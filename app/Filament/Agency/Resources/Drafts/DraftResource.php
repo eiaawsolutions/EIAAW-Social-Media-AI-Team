@@ -2,18 +2,47 @@
 
 namespace App\Filament\Agency\Resources\Drafts;
 
+use App\Agents\ComplianceAgent;
+use App\Agents\DesignerAgent;
+use App\Agents\VideoAgent;
 use App\Filament\Agency\Resources\Drafts\Pages\ManageDrafts;
+use App\Jobs\RedraftFailedDraft;
+use App\Models\Brand;
+use App\Models\BrandAsset;
 use App\Models\Draft;
 use App\Models\PlatformConnection;
 use App\Models\ScheduledPost;
+use App\Services\Blotato\BlotatoClient;
+use App\Services\Blotato\PlatformMediaRules;
+use App\Services\Imagery\BrandAssetTagger;
+use App\Services\Imagery\FalAiClient;
+use App\Services\Imagery\ImageAutoCompressor;
+use App\Services\Imagery\ImageCreativeDirection;
+use App\Services\Imagery\MediaComplianceChecker;
+use App\Services\Imagery\MediaComplianceException;
 use BackedEnum;
+use Filament\Actions\Action;
+use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\DateTimePicker;
+use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\Placeholder;
+use Filament\Forms\Components\Radio;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\Toggle;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables;
 use Filament\Tables\Enums\FiltersLayout;
+use Filament\Tables\Filters\Indicator;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 /**
  * Drafts — every post the Writer has produced, with full provenance and
@@ -27,10 +56,15 @@ use Illuminate\Database\Eloquent\Builder;
 class DraftResource extends Resource
 {
     protected static ?string $model = Draft::class;
+
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedPencilSquare;
+
     protected static ?string $navigationLabel = 'Drafts';
+
     protected static ?string $modelLabel = 'Draft';
+
     protected static ?string $pluralModelLabel = 'Drafts';
+
     protected static ?int $navigationSort = 6;
 
     public static function form(Schema $schema): Schema
@@ -152,11 +186,11 @@ class DraftResource extends Resource
                 Tables\Filters\Filter::make('created_range')
                     ->label('Created')
                     ->schema([
-                        \Filament\Forms\Components\DatePicker::make('from')
+                        DatePicker::make('from')
                             ->label('From')
                             ->native(false)
                             ->closeOnDateSelection(),
-                        \Filament\Forms\Components\DatePicker::make('until')
+                        DatePicker::make('until')
                             ->label('To')
                             ->native(false)
                             ->closeOnDateSelection(),
@@ -176,31 +210,32 @@ class DraftResource extends Resource
                     ->indicateUsing(function (array $data): array {
                         $indicators = [];
                         if ($data['from'] ?? null) {
-                            $indicators[] = \Filament\Tables\Filters\Indicator::make('From: ' . \Illuminate\Support\Carbon::parse($data['from'])->format('M j, Y'))
+                            $indicators[] = Indicator::make('From: '.Carbon::parse($data['from'])->format('M j, Y'))
                                 ->removeField('from');
                         }
                         if ($data['until'] ?? null) {
-                            $indicators[] = \Filament\Tables\Filters\Indicator::make('To: ' . \Illuminate\Support\Carbon::parse($data['until'])->format('M j, Y'))
+                            $indicators[] = Indicator::make('To: '.Carbon::parse($data['until'])->format('M j, Y'))
                                 ->removeField('until');
                         }
+
                         return $indicators;
                     }),
             ])
             ->filtersFormColumns(4)
             ->filtersLayout(FiltersLayout::AboveContent)
             ->recordActions([
-                \Filament\Actions\Action::make('view')
+                Action::make('view')
                     ->label('View')
                     ->icon('heroicon-o-eye')
                     ->color('gray')
-                    ->modalHeading(fn (Draft $r) => "Draft #{$r->id} — " . ucfirst($r->platform))
+                    ->modalHeading(fn (Draft $r) => "Draft #{$r->id} — ".ucfirst($r->platform))
                     ->modalSubmitAction(false)
                     ->modalCancelActionLabel('Close')
                     ->modalContent(fn (Draft $r) => view('filament.agency.partials.draft-view', [
                         'draft' => $r,
                     ])),
 
-                \Filament\Actions\Action::make('approve')
+                Action::make('approve')
                     ->label('Approve')
                     ->icon('heroicon-o-check-circle')
                     ->color('success')
@@ -212,20 +247,20 @@ class DraftResource extends Resource
                             'approved_by_user_id' => auth()->id(),
                             'approved_at' => now(),
                         ]);
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title('Approved')
                             ->body("Draft #{$r->id} approved. Use 'Schedule' to queue it.")
                             ->success()
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('reject')
+                Action::make('reject')
                     ->label('Reject')
                     ->icon('heroicon-o-x-circle')
                     ->color('danger')
                     ->visible(fn (Draft $r) => in_array($r->status, ['awaiting_approval', 'approved']))
                     ->schema([
-                        \Filament\Forms\Components\Textarea::make('rejection_reason')
+                        Textarea::make('rejection_reason')
                             ->label('Why?')
                             ->required()
                             ->rows(3),
@@ -237,22 +272,22 @@ class DraftResource extends Resource
                             'rejected_at' => now(),
                             'rejection_reason' => $data['rejection_reason'],
                         ]);
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title('Rejected')
                             ->body("Draft #{$r->id} rejected.")
                             ->warning()
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('schedule')
+                Action::make('schedule')
                     ->label('Schedule')
                     ->icon('heroicon-o-clock')
                     ->color('primary')
                     ->visible(fn (Draft $r) => in_array($r->status, ['approved', 'awaiting_approval']))
                     ->schema([
-                        \Filament\Forms\Components\DateTimePicker::make('scheduled_for')
-                            ->label(fn (Draft $r) => 'Publish at (' . ($r->brand?->timezone ?: 'UTC') . ')')
-                            ->helperText(fn (Draft $r) => 'Pick a time in your brand timezone (' . ($r->brand?->timezone ?: 'UTC') . '). The system stores it as UTC internally.')
+                        DateTimePicker::make('scheduled_for')
+                            ->label(fn (Draft $r) => 'Publish at ('.($r->brand?->timezone ?: 'UTC').')')
+                            ->helperText(fn (Draft $r) => 'Pick a time in your brand timezone ('.($r->brand?->timezone ?: 'UTC').'). The system stores it as UTC internally.')
                             ->seconds(false)
                             // Filament v5 timezone(): the picker reads/writes datetimes
                             // in this timezone, while the action handler still receives
@@ -268,11 +303,12 @@ class DraftResource extends Resource
                             ->where('status', 'active')
                             ->first();
                         if (! $connection) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('No active platform connection')
                                 ->body("Reconnect {$r->platform} on /agency/platform-connections, then retry.")
                                 ->danger()
                                 ->send();
+
                             return;
                         }
 
@@ -280,11 +316,12 @@ class DraftResource extends Resource
                             ->whereIn('status', ['queued', 'submitting', 'submitted', 'published'])
                             ->first();
                         if ($existing) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('Already queued')
                                 ->body('This draft already has a scheduled post — view it on /agency/schedule.')
                                 ->warning()
                                 ->send();
+
                             return;
                         }
 
@@ -293,7 +330,7 @@ class DraftResource extends Resource
                         // we wrap in Carbon (which is UTC) and let Eloquent's
                         // datetime cast persist it as UTC. Display formatting
                         // converts to brand timezone for the operator.
-                        $scheduledForUtc = \Illuminate\Support\Carbon::parse($data['scheduled_for']);
+                        $scheduledForUtc = Carbon::parse($data['scheduled_for']);
                         $brandTz = $r->brand?->timezone ?: 'UTC';
 
                         ScheduledPost::create([
@@ -306,7 +343,7 @@ class DraftResource extends Resource
                         ]);
                         $r->update(['status' => 'scheduled']);
 
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title('Scheduled')
                             ->body(sprintf(
                                 'Draft #%d queued for %s %s (= %s UTC).',
@@ -319,7 +356,7 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('replaceMedia')
+                Action::make('replaceMedia')
                     ->label(fn (Draft $r) => empty($r->asset_url) ? 'Add image / video' : 'Replace image / video')
                     ->icon('heroicon-o-photo')
                     ->color('primary')
@@ -329,7 +366,7 @@ class DraftResource extends Resource
                         : "Replace media on Draft #{$r->id}")
                     ->modalSubmitActionLabel('Apply media')
                     ->schema([
-                        \Filament\Forms\Components\Radio::make('source')
+                        Radio::make('source')
                             ->label('Where should the media come from?')
                             ->options([
                                 'library' => 'Choose from asset library',
@@ -344,7 +381,7 @@ class DraftResource extends Resource
                             ->live(),
 
                         // ---- Library path ----
-                        \Filament\Forms\Components\Select::make('brand_asset_id')
+                        Select::make('brand_asset_id')
                             ->label('Asset from library')
                             ->options(fn (Draft $r) => self::libraryAssetOptions($r))
                             ->searchable()
@@ -357,16 +394,16 @@ class DraftResource extends Resource
                             ->visible(fn (callable $get) => $get('source') === 'library')
                             ->required(fn (callable $get) => $get('source') === 'library'),
 
-                        \Filament\Forms\Components\Placeholder::make('library_empty')
+                        Placeholder::make('library_empty')
                             ->label('')
                             ->content('No assets in this brand\'s library yet. Switch to "Upload from this computer", or add files on the Asset library page first.')
                             ->visible(fn (callable $get, Draft $r) => $get('source') === 'library' && empty(self::libraryAssetOptions($r))),
 
                         // ---- Upload path ----
-                        \Filament\Forms\Components\FileUpload::make('upload_file')
+                        FileUpload::make('upload_file')
                             ->label('File to upload')
                             ->disk(fn () => self::preferredUploadDisk())
-                            ->directory(fn (Draft $r) => 'brand-assets/' . $r->brand_id)
+                            ->directory(fn (Draft $r) => 'brand-assets/'.$r->brand_id)
                             ->visibility('public')
                             ->preserveFilenames()
                             ->acceptedFileTypes([
@@ -375,11 +412,11 @@ class DraftResource extends Resource
                             ])
                             ->maxSize(50 * 1024) // 50 MB
                             ->helperText('We check the file against this platform\'s publishing limits on apply. '
-                                . 'Images that are too large are auto-compressed to fit; videos that fail are returned with the exact fixes needed.')
+                                .'Images that are too large are auto-compressed to fit; videos that fail are returned with the exact fixes needed.')
                             ->visible(fn (callable $get) => $get('source') === 'upload')
                             ->required(fn (callable $get) => $get('source') === 'upload'),
 
-                        \Filament\Forms\Components\Toggle::make('save_to_library')
+                        Toggle::make('save_to_library')
                             ->label('Also save this file to the asset library')
                             ->helperText('Keep it for reuse — the Designer/Video agents and future drafts can pick it. Tagged via Claude vision on save.')
                             ->default(true)
@@ -389,25 +426,27 @@ class DraftResource extends Resource
                         @set_time_limit(300);
                         try {
                             $note = self::applyManualMedia($r, $data);
-                        } catch (\App\Services\Imagery\MediaComplianceException $e) {
+                        } catch (MediaComplianceException $e) {
                             self::sendMediaComplianceFailure($e);
+
                             return;
                         } catch (\Throwable $e) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('Could not apply media')
                                 ->body(substr($e->getMessage(), 0, 240))
                                 ->danger()
                                 ->send();
+
                             return;
                         }
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title('Media applied')
                             ->body($note)
                             ->success()
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('pickImage')
+                Action::make('pickImage')
                     ->label(fn (Draft $r) => empty($r->asset_url) ? 'Auto-pick / generate image' : 'Auto-regenerate image')
                     ->icon('heroicon-o-sparkles')
                     ->color('gray')
@@ -420,23 +459,25 @@ class DraftResource extends Resource
                             $r->update(['asset_url' => null]);
                         }
                         try {
-                            $result = app(\App\Agents\DesignerAgent::class)->run($r->brand, [
+                            $result = app(DesignerAgent::class)->run($r->brand, [
                                 'draft_id' => $r->id,
                             ]);
                         } catch (\Throwable $e) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('Designer crashed')
                                 ->body(substr($e->getMessage(), 0, 240))
                                 ->danger()
                                 ->send();
+
                             return;
                         }
                         if (! $result->ok) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('Could not get image')
                                 ->body($result->errorMessage ?: 'unknown')
                                 ->danger()
                                 ->send();
+
                             return;
                         }
                         // For video formats, the still is the keyframe; we
@@ -449,8 +490,8 @@ class DraftResource extends Resource
                         $videoNote = self::rerunVideoIfNeeded($r);
 
                         $source = $result->data['source'] ?? 'fal';
-                        \Filament\Notifications\Notification::make()
-                            ->title('Image ready · ' . $source)
+                        Notification::make()
+                            ->title('Image ready · '.$source)
                             ->body(sprintf(
                                 '$%.4f · %dms%s',
                                 $result->data['cost_usd'] ?? 0,
@@ -461,7 +502,7 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('forceAiImage')
+                Action::make('forceAiImage')
                     ->label('Force AI image')
                     ->icon('heroicon-o-sparkles')
                     ->color('warning')
@@ -474,31 +515,33 @@ class DraftResource extends Resource
                             $r->update(['asset_url' => null]);
                         }
                         try {
-                            $result = app(\App\Agents\DesignerAgent::class)->run($r->brand, [
+                            $result = app(DesignerAgent::class)->run($r->brand, [
                                 'draft_id' => $r->id,
                                 'force_fal' => true,
                             ]);
                         } catch (\Throwable $e) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('FAL crashed')
                                 ->body(substr($e->getMessage(), 0, 240))
                                 ->danger()
                                 ->send();
+
                             return;
                         }
                         if (! $result->ok) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('FAL refused')
                                 ->body($result->errorMessage ?: 'unknown')
                                 ->danger()
                                 ->send();
+
                             return;
                         }
                         // See pickImage action above — same rationale: keep
                         // asset_url=mp4 for video formats by re-running Video.
                         $videoNote = self::rerunVideoIfNeeded($r);
 
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title('AI image ready')
                             ->body(sprintf(
                                 '$%.4f · %dms · model %s%s',
@@ -511,11 +554,11 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('generateVideo')
+                Action::make('generateVideo')
                     ->label('Generate video')
                     ->icon('heroicon-o-film')
                     ->color('gray')
-                    ->visible(fn (Draft $r) => \App\Services\Imagery\FalAiClient::platformAcceptsVideo($r->platform)
+                    ->visible(fn (Draft $r) => FalAiClient::platformAcceptsVideo($r->platform)
                         && ! in_array($r->status, ['published', 'rejected']))
                     ->requiresConfirmation()
                     ->modalDescription(fn (Draft $r) => empty($r->asset_url)
@@ -524,26 +567,28 @@ class DraftResource extends Resource
                     ->action(function (Draft $r): void {
                         @set_time_limit(420);
                         try {
-                            $result = app(\App\Agents\VideoAgent::class)->run($r->brand, [
+                            $result = app(VideoAgent::class)->run($r->brand, [
                                 'draft_id' => $r->id,
                             ]);
                         } catch (\Throwable $e) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('VideoAgent crashed')
                                 ->body(substr($e->getMessage(), 0, 240))
                                 ->danger()
                                 ->send();
+
                             return;
                         }
                         if (! $result->ok) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('Could not generate video')
                                 ->body($result->errorMessage ?: 'unknown')
                                 ->danger()
                                 ->send();
+
                             return;
                         }
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title('Video ready')
                             ->body(sprintf(
                                 '$%.2f · %dms · %ss · %s',
@@ -556,7 +601,7 @@ class DraftResource extends Resource
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('rerunCompliance')
+                Action::make('rerunCompliance')
                     ->label('Re-run Compliance')
                     ->icon('heroicon-o-shield-check')
                     ->color('gray')
@@ -565,31 +610,32 @@ class DraftResource extends Resource
                     ->action(function (Draft $r): void {
                         @set_time_limit(180);
                         try {
-                            $cr = app(\App\Agents\ComplianceAgent::class)->run($r->brand, [
+                            $cr = app(ComplianceAgent::class)->run($r->brand, [
                                 'draft_id' => $r->id,
                             ]);
                         } catch (\Throwable $e) {
-                            \Filament\Notifications\Notification::make()
+                            Notification::make()
                                 ->title('Compliance crashed')
                                 ->body(substr($e->getMessage(), 0, 240))
                                 ->danger()
                                 ->send();
+
                             return;
                         }
                         $passed = ! empty($cr->data['all_passed']);
-                        \Filament\Notifications\Notification::make()
+                        Notification::make()
                             ->title($passed ? 'Compliance passed' : 'Still failing')
-                            ->body('Status: ' . ($cr->data['new_status'] ?? '?'))
+                            ->body('Status: '.($cr->data['new_status'] ?? '?'))
                             ->color($passed ? 'success' : 'warning')
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('redraftNow')
+                Action::make('redraftNow')
                     ->label('Redraft now')
                     ->icon('heroicon-o-arrow-path')
                     ->color('warning')
                     ->visible(fn (Draft $r) => $r->status === 'compliance_failed'
-                        && ($r->revision_count ?? 0) < \App\Jobs\RedraftFailedDraft::MAX_REVISIONS
+                        && ($r->revision_count ?? 0) < RedraftFailedDraft::MAX_REVISIONS
                         && (bool) $r->calendar_entry_id)
                     ->requiresConfirmation()
                     ->modalHeading('Redraft this failed post')
@@ -597,34 +643,34 @@ class DraftResource extends Resource
                         'Asks the Writer to fix the %d failure(s) on this draft, then re-runs Compliance. Attempt %d of %d. Each attempt costs ~$0.02–0.05.',
                         $r->complianceChecks()->where('result', 'fail')->count(),
                         ($r->revision_count ?? 0) + 1,
-                        \App\Jobs\RedraftFailedDraft::MAX_REVISIONS,
+                        RedraftFailedDraft::MAX_REVISIONS,
                     ))
                     ->action(function (Draft $r): void {
-                        \App\Jobs\RedraftFailedDraft::dispatch($r->id);
-                        \Filament\Notifications\Notification::make()
+                        RedraftFailedDraft::dispatch($r->id);
+                        Notification::make()
                             ->title('Redraft queued')
                             ->body('The Writer is fixing the violations and Compliance will re-run. Refresh in ~30s.')
                             ->success()
                             ->send();
                     }),
 
-                \Filament\Actions\Action::make('resetAttempts')
+                Action::make('resetAttempts')
                     ->label('Reset attempts & retry')
                     ->icon('heroicon-o-arrow-uturn-left')
                     ->color('gray')
                     ->visible(fn (Draft $r) => $r->status === 'compliance_failed'
-                        && ($r->revision_count ?? 0) >= \App\Jobs\RedraftFailedDraft::MAX_REVISIONS
+                        && ($r->revision_count ?? 0) >= RedraftFailedDraft::MAX_REVISIONS
                         && (bool) $r->calendar_entry_id)
                     ->requiresConfirmation()
                     ->modalHeading('Reset retry counter and redraft')
-                    ->modalDescription('Use after a Writer/Compliance prompt fix or after enriching the brand corpus. Zeroes the per-draft attempt counter and queues a fresh redraft. Will run up to '.\App\Jobs\RedraftFailedDraft::MAX_REVISIONS.' more attempts.')
+                    ->modalDescription('Use after a Writer/Compliance prompt fix or after enriching the brand corpus. Zeroes the per-draft attempt counter and queues a fresh redraft. Will run up to '.RedraftFailedDraft::MAX_REVISIONS.' more attempts.')
                     ->action(function (Draft $r): void {
                         $r->forceFill([
                             'revision_count' => 0,
                             'last_redraft_at' => null,
                         ])->save();
-                        \App\Jobs\RedraftFailedDraft::dispatch($r->id);
-                        \Filament\Notifications\Notification::make()
+                        RedraftFailedDraft::dispatch($r->id);
+                        Notification::make()
                             ->title('Counter reset, redraft queued')
                             ->body('Refresh in ~30s.')
                             ->success()
@@ -660,22 +706,52 @@ class DraftResource extends Resource
     }
 
     /**
-     * Modal copy for the regen-image actions. When the calendar entry is a
-     * video format (reel/video/story) AND the platform accepts video, we
-     * tell the operator that VideoAgent will also re-run — otherwise
-     * regenerating the still alone leaves asset_url=jpeg on a video draft,
-     * which YouTube/TikTok scrub as static-image-as-video.
+     * Modal copy for the regen-image actions. Model-aware: reads the configured
+     * image model so the cost/label stays accurate as the model changes, and
+     * tells the operator when THIS draft will render as a summary poster
+     * (designed headline + key points as text) vs a text-free photo. When the
+     * calendar entry is a video format on a video-capable platform, also warns
+     * VideoAgent will re-run (else asset_url=jpeg on a video draft, which
+     * YouTube/TikTok scrub as static-image-as-video).
      */
     private static function regenModalDescription(Draft $draft, string $mode): string
     {
+        $model = (string) config('services.fal.image_model', 'fal-ai/nano-banana');
+        $label = self::imageModelLabel($model);
+
         $base = $mode === 'force-fal'
-            ? 'Bypasses the brand asset library and goes straight to FAL.AI. Use when you want bespoke art for this draft. Cost ~$0.003 (flux-schnell) or up to $0.04 (flux-pro / recraft) depending on configured model.'
-            : 'Picks the best matching image from your brand asset library. Falls back to FAL flux-schnell ($0.003) only if no library asset matches.';
+            ? "Bypasses the brand asset library and goes straight to FAL.AI. Use when you want bespoke art for this draft. Generates with {$label}."
+            : "Picks the best matching image from your brand asset library. Falls back to FAL ({$label}) only if no library asset matches.";
+
+        // Tell the operator the actual output kind for THIS draft.
+        $entry = $draft->calendarEntry;
+        $willBePoster = FalAiClient::modelUsesAspectRatio($model)
+            && ImageCreativeDirection::isPosterFormat(
+                $entry?->format, $entry?->pillar, $entry?->visual_direction,
+            );
+        $base .= $willBePoster
+            ? ' This draft is an educational/listicle/quote-card format, so it renders as a designed SUMMARY POSTER — headline + key points as legible text.'
+            : ' This draft renders as a text-free editorial photo (the quote is stamped on afterward where applicable).';
 
         if (self::draftNeedsVideo($draft)) {
             $base .= ' Because this draft is a video format on a video-capable platform, VideoAgent will also re-run after the image is ready (~$0.50, ~30s) so the publish target stays an mp4.';
         }
+
         return $base;
+    }
+
+    /** Human-readable model name + approximate per-image cost for modal copy. */
+    private static function imageModelLabel(string $model): string
+    {
+        return match ($model) {
+            'fal-ai/nano-banana' => 'Nano Banana (Gemini 2.5 Flash Image, ~$0.039)',
+            'fal-ai/flux-pro/v1.1' => 'Flux Pro (~$0.04)',
+            'fal-ai/flux/schnell' => 'Flux Schnell (~$0.003)',
+            'fal-ai/flux/dev' => 'Flux Dev (~$0.025)',
+            'fal-ai/recraft-v3' => 'Recraft v3 (~$0.04)',
+            'fal-ai/imagen4/preview' => 'Imagen 4 (~$0.025)',
+            default => $model,
+        };
     }
 
     /**
@@ -708,23 +784,25 @@ class DraftResource extends Resource
         }
 
         try {
-            $videoResult = app(\App\Agents\VideoAgent::class)->run($draft->brand, [
+            $videoResult = app(VideoAgent::class)->run($draft->brand, [
                 'draft_id' => $draft->id,
             ]);
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('DraftResource: VideoAgent re-run after image regen failed', [
+            Log::warning('DraftResource: VideoAgent re-run after image regen failed', [
                 'draft_id' => $draft->id,
                 'error' => $e->getMessage(),
             ]);
+
             return ' · video re-run crashed (click "Generate video" to retry)';
         }
 
         if (! $videoResult->ok) {
-            return ' · video re-run failed: ' . substr((string) $videoResult->errorMessage, 0, 80);
+            return ' · video re-run failed: '.substr((string) $videoResult->errorMessage, 0, 80);
         }
 
         $videoCost = $videoResult->data['cost_usd'] ?? 0;
-        return ' · video ready · +$' . number_format((float) $videoCost, 4);
+
+        return ' · video ready · +$'.number_format((float) $videoCost, 4);
     }
 
     /**
@@ -736,10 +814,15 @@ class DraftResource extends Resource
     private static function draftNeedsVideo(Draft $draft): bool
     {
         $entry = $draft->calendarEntry;
-        if (! $entry) return false;
+        if (! $entry) {
+            return false;
+        }
         $format = strtolower((string) ($entry->format ?? ''));
-        if (! in_array($format, ['reel', 'video', 'story'], true)) return false;
-        return \App\Services\Imagery\FalAiClient::platformAcceptsVideo($draft->platform);
+        if (! in_array($format, ['reel', 'video', 'story'], true)) {
+            return false;
+        }
+
+        return FalAiClient::platformAcceptsVideo($draft->platform);
     }
 
     /**
@@ -755,7 +838,7 @@ class DraftResource extends Resource
      */
     private static function libraryAssetOptions(Draft $draft): array
     {
-        $query = \App\Models\BrandAsset::query()
+        $query = BrandAsset::query()
             ->where('brand_id', $draft->brand_id)
             ->whereNull('archived_at')
             ->orderByDesc('id');
@@ -764,14 +847,15 @@ class DraftResource extends Resource
             $query->where('media_type', 'video');
         }
 
-        return $query->limit(200)->get()->mapWithKeys(function (\App\Models\BrandAsset $a): array {
-            $name = $a->original_filename ?: ($a->description ? \Illuminate\Support\Str::limit($a->description, 40) : "Asset #{$a->id}");
+        return $query->limit(200)->get()->mapWithKeys(function (BrandAsset $a): array {
+            $name = $a->original_filename ?: ($a->description ? Str::limit($a->description, 40) : "Asset #{$a->id}");
             $label = sprintf(
                 '%s · %s%s',
                 strtoupper($a->media_type),
                 $name,
                 $a->brand_approved ? '' : ' (not approved)',
             );
+
             return [$a->id => $label];
         })->all();
     }
@@ -810,8 +894,8 @@ class DraftResource extends Resource
 
         if ($source === 'library') {
             $assetId = (int) ($data['brand_asset_id'] ?? 0);
-            /** @var \App\Models\BrandAsset|null $asset */
-            $asset = \App\Models\BrandAsset::where('id', $assetId)
+            /** @var BrandAsset|null $asset */
+            $asset = BrandAsset::where('id', $assetId)
                 ->where('brand_id', $draft->brand_id)
                 ->whereNull('archived_at')
                 ->first();
@@ -872,7 +956,7 @@ class DraftResource extends Resource
             throw new \RuntimeException('No file was uploaded.');
         }
 
-        $storage = \Illuminate\Support\Facades\Storage::disk($disk);
+        $storage = Storage::disk($disk);
         $sourceUrl = $storage->url($relativePath);
         $mime = $storage->mimeType($relativePath) ?: '';
         $isVideo = str_starts_with($mime, 'video/');
@@ -899,7 +983,7 @@ class DraftResource extends Resource
 
         $savedNote = '';
         if (! empty($data['save_to_library'])) {
-            $asset = \App\Models\BrandAsset::create([
+            $asset = BrandAsset::create([
                 'brand_id' => $draft->brand_id,
                 'uploaded_by_user_id' => auth()->id(),
                 'media_type' => $mediaType,
@@ -915,9 +999,9 @@ class DraftResource extends Resource
                 'last_used_at' => now(),
             ]);
             try {
-                app(\App\Services\Imagery\BrandAssetTagger::class)->tag($asset);
+                app(BrandAssetTagger::class)->tag($asset);
             } catch (\Throwable $e) {
-                \Illuminate\Support\Facades\Log::warning('replaceMedia: tagger failed', [
+                Log::warning('replaceMedia: tagger failed', [
                     'asset_id' => $asset->id,
                     'error' => $e->getMessage(),
                 ]);
@@ -952,7 +1036,7 @@ class DraftResource extends Resource
         string $mediaType,
         callable $onImageCompressed,
     ): string {
-        $checker = app(\App\Services\Imagery\MediaComplianceChecker::class);
+        $checker = app(MediaComplianceChecker::class);
         $result = $checker->check($localPath, $platform, $mediaType);
 
         if ($result['passed']) {
@@ -977,15 +1061,15 @@ class DraftResource extends Resource
 
         if ($mediaType === 'image' && $allFixable) {
             try {
-                $compressed = app(\App\Services\Imagery\ImageAutoCompressor::class)
+                $compressed = app(ImageAutoCompressor::class)
                     ->compressForPlatform($localPath, $platform);
             } catch (\Throwable $e) {
                 // Compression itself failed — surface as a compliance failure
                 // with the original reasons plus why we couldn't auto-fix.
-                throw new \App\Services\Imagery\MediaComplianceException(
+                throw new MediaComplianceException(
                     violations: array_merge($blocking, [[
                         'kind' => 'compression_failed',
-                        'reason' => 'We tried to compress the image but couldn\'t: ' . substr($e->getMessage(), 0, 160),
+                        'reason' => 'We tried to compress the image but couldn\'t: '.substr($e->getMessage(), 0, 160),
                         'suggestion' => 'Re-export the image smaller (e.g. 1080px wide JPEG) and upload again.',
                         'fixable_by_compression' => false,
                         'detail' => [],
@@ -1003,7 +1087,7 @@ class DraftResource extends Resource
             ));
             if (! empty($recheckBlocking)) {
                 @unlink($compressed['path']);
-                throw new \App\Services\Imagery\MediaComplianceException(
+                throw new MediaComplianceException(
                     violations: $recheckBlocking,
                     platform: $platform,
                     mediaType: $mediaType,
@@ -1021,13 +1105,13 @@ class DraftResource extends Resource
                 ' · auto-compressed to %d×%d, %s (q%d)',
                 $compressed['width'],
                 $compressed['height'],
-                \App\Services\Blotato\PlatformMediaRules::humanBytes($compressed['bytes']),
+                PlatformMediaRules::humanBytes($compressed['bytes']),
                 $compressed['quality'],
             );
         }
 
         // Not auto-fixable (video, or image with non-compressible issues).
-        throw new \App\Services\Imagery\MediaComplianceException(
+        throw new MediaComplianceException(
             violations: $blocking,
             platform: $platform,
             mediaType: $mediaType,
@@ -1043,7 +1127,7 @@ class DraftResource extends Resource
      */
     private static function localCopyOf(string $disk, string $relativePath, string $publicUrl): array
     {
-        $storage = \Illuminate\Support\Facades\Storage::disk($disk);
+        $storage = Storage::disk($disk);
 
         // Local/public disks expose a filesystem path.
         try {
@@ -1059,7 +1143,7 @@ class DraftResource extends Resource
         $tmp = tempnam(sys_get_temp_dir(), 'media_chk_');
         $ext = pathinfo($relativePath, PATHINFO_EXTENSION);
         if ($ext !== '') {
-            $tmpWithExt = $tmp . '.' . $ext;
+            $tmpWithExt = $tmp.'.'.$ext;
             @rename($tmp, $tmpWithExt);
             $tmp = $tmpWithExt;
         }
@@ -1077,7 +1161,9 @@ class DraftResource extends Resource
         }
         file_put_contents($tmp, $bytes);
 
-        return [$tmp, function () use ($tmp): void { @unlink($tmp); }];
+        return [$tmp, function () use ($tmp): void {
+            @unlink($tmp);
+        }];
     }
 
     /**
@@ -1088,12 +1174,13 @@ class DraftResource extends Resource
      */
     private static function overwriteStoredFile(string $disk, string $relativePath, string $localPath): string
     {
-        $storage = \Illuminate\Support\Facades\Storage::disk($disk);
+        $storage = Storage::disk($disk);
         $bytes = file_get_contents($localPath);
         if ($bytes === false) {
             throw new \RuntimeException('Could not read compressed image to store.');
         }
         $storage->put($relativePath, $bytes, 'public');
+
         return $storage->url($relativePath);
     }
 
@@ -1101,11 +1188,12 @@ class DraftResource extends Resource
      * Render the media-compliance failure as a persistent danger notification
      * (the "fail popup") listing every reason and the suggested fix.
      */
-    private static function sendMediaComplianceFailure(\App\Services\Imagery\MediaComplianceException $e): void
+    private static function sendMediaComplianceFailure(MediaComplianceException $e): void
     {
         $lines = collect($e->violations)->map(function (array $v): string {
             $reason = trim((string) ($v['reason'] ?? ''));
             $suggestion = trim((string) ($v['suggestion'] ?? ''));
+
             return $suggestion !== ''
                 ? "• {$reason}\n   → {$suggestion}"
                 : "• {$reason}";
@@ -1115,9 +1203,9 @@ class DraftResource extends Resource
             ? 'This video can\'t be auto-fixed — please re-export it:'
             : 'Here\'s what needs fixing:';
 
-        \Filament\Notifications\Notification::make()
-            ->title(ucfirst($e->mediaType) . ' failed ' . ucfirst($e->platform) . ' compliance')
-            ->body($verb . "\n\n" . $lines)
+        Notification::make()
+            ->title(ucfirst($e->mediaType).' failed '.ucfirst($e->platform).' compliance')
+            ->body($verb."\n\n".$lines)
             ->danger()
             ->persistent()
             ->send();
@@ -1128,12 +1216,13 @@ class DraftResource extends Resource
      * publishable. Per the per-workspace-isolation invariant we always use
      * forWorkspace(), never fromConfig().
      */
-    private static function rehostOnBlotato(\App\Models\Brand $brand, string $url): string
+    private static function rehostOnBlotato(Brand $brand, string $url): string
     {
         if (! $brand->workspace) {
             throw new \RuntimeException('Brand has no workspace — cannot resolve Blotato account.');
         }
-        return \App\Services\Blotato\BlotatoClient::forWorkspace($brand->workspace)
+
+        return BlotatoClient::forWorkspace($brand->workspace)
             ->uploadMediaFromUrl($url);
     }
 
@@ -1178,7 +1267,7 @@ class DraftResource extends Resource
 
         return match ($draft->status) {
             'compliance_pending' => 'WAIT for Compliance to finish (auto, ~30s)',
-            'compliance_failed' => 'FAIL — auto-redraft runs every 5 min (cap '.\App\Jobs\RedraftFailedDraft::MAX_REVISIONS.'). Click Redraft now to retry immediately.',
+            'compliance_failed' => 'FAIL — auto-redraft runs every 5 min (cap '.RedraftFailedDraft::MAX_REVISIONS.'). Click Redraft now to retry immediately.',
             'awaiting_approval' => 'YOU: click Approve, then Schedule',
             'approved' => $hasSchedule
                 ? 'AUTO: cron will publish on schedule'
