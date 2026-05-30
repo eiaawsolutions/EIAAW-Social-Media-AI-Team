@@ -329,6 +329,17 @@ footer {
 }
 .footer-col a:hover { color: var(--primary-dark); }
 .footer-col a:hover::after { width: 100%; }
+.social-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 24px; }
+.social-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 9px;
+  color: var(--ink-2);
+  transition: color 0.25s var(--ease), background-color 0.25s var(--ease), transform 0.25s var(--ease);
+}
+.social-link svg { display: block; }
+.social-link::after { display: none; }
+.social-link:hover { color: var(--primary-dark); background-color: rgba(15,26,29,0.05); transform: translateY(-1px); }
+.social-link:focus-visible { outline: 2px solid var(--primary-dark); outline-offset: 2px; }
 .footer-bottom {
   padding-top: 32px;
   display: flex; justify-content: space-between; align-items: center;
