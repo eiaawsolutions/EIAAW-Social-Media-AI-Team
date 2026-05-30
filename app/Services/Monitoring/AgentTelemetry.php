@@ -445,6 +445,15 @@ class AgentTelemetry
         }
 
         $patterns = [
+            // Provider billing exhaustion MUST be matched before the generic
+            // '403'/'401' rules below — FAL/Anthropic return 403 on a locked
+            // (out-of-balance) account, and "re-check OAuth scope" is the wrong
+            // remedy. The fix is a top-up, not a key rotation.
+            'balance exhausted' => 'FAL.AI prepaid balance is exhausted — the account is locked. Top up at fal.ai/dashboard/billing. Image/video generation auto-resumes within ~2 min of the top-up (the lockout breaker re-probes); drafts fall back to the brand library in the meantime.',
+            'exhausted balance' => 'FAL.AI prepaid balance is exhausted — the account is locked. Top up at fal.ai/dashboard/billing. Image/video generation auto-resumes within ~2 min of the top-up; drafts fall back to the brand library in the meantime.',
+            'account locked' => 'FAL.AI account is locked (balance exhausted). Top up at fal.ai/dashboard/billing — generation auto-resumes once the breaker re-probes a funded account.',
+            'top up your balance' => 'FAL.AI prepaid balance is exhausted. Top up at fal.ai/dashboard/billing to restore image/video generation.',
+            'insufficient' => 'A provider reported insufficient funds/credits. Top up that provider\'s balance (FAL: fal.ai/dashboard/billing) — this is a billing remedy, not a key rotation.',
             'horizon' => 'Horizon/Redis is the queue runner. Check Railway worker logs; restart the worker service if needed.',
             'redis' => 'Redis appears unreachable. Verify REDIS_URL on Railway and that the Redis service is running.',
             'rate limit' => 'Provider rate-limited us. Wait 5–15 min before re-running, or lower agent concurrency.',

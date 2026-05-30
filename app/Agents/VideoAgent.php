@@ -13,6 +13,7 @@ use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\DraftSceneBrief;
 use App\Services\Imagery\EiaawBrandLock;
+use App\Services\Imagery\FalAccountLockedException;
 use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
@@ -273,6 +274,24 @@ class VideoAgent extends BaseAgent
                 // Forwarded anyway so a Wan rollback still gets its negative.
                 'negative_prompt' => ImageCreativeDirection::videoNegativePrompt(),
             ]));
+        } catch (FalAccountLockedException $e) {
+            // FAL is account-locked (balance exhausted) — no clip can be made
+            // until a top-up. Try a brand-library VIDEO asset so a reel/short
+            // draft still ships motion; otherwise fail with the real remedy so
+            // the operator monitor shows "top up", not "video generation failed".
+            Log::warning('VideoAgent: FAL account locked; attempting library video fallback', [
+                'draft_id' => $draft->id,
+            ]);
+
+            $fallback = $this->tryLibraryVideoFallback($brand, $draft);
+            if ($fallback !== null) {
+                return $fallback;
+            }
+
+            return AgentResult::fail(
+                'FAL.AI account locked (balance exhausted) and no brand-library video to fall back to. '
+                .'Top up at fal.ai/dashboard/billing — generation auto-resumes within ~2 min, or upload a brand video.'
+            );
         } catch (\Throwable $e) {
             Log::error('VideoAgent: FAL generation failed', [
                 'draft_id' => $draft->id,
@@ -458,6 +477,62 @@ class VideoAgent extends BaseAgent
             'native_audio' => $hasNativeAudio,
             'cost_usd' => $costUsd,
             'latency_ms' => $generated['latency_ms'],
+        ]);
+    }
+
+    /**
+     * Degrade to a brand-library VIDEO asset when FAL can't generate (account
+     * locked / transient). Re-hosts through the workspace's Blotato account so
+     * /v2/posts accepts it. Returns an ok AgentResult on success, or null when
+     * there's no usable library video or the re-host failed — caller then fails
+     * with the actionable top-up message.
+     */
+    private function tryLibraryVideoFallback(Brand $brand, Draft $draft): ?AgentResult
+    {
+        $picked = app(BrandAssetPicker::class)->pickFor($brand, $draft, 'video');
+        if (! $picked) {
+            return null;
+        }
+
+        /** @var \App\Models\BrandAsset $asset */
+        $asset = $picked['asset'];
+
+        try {
+            $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
+                ->uploadMediaFromUrl($asset->public_url);
+        } catch (\Throwable $e) {
+            Log::warning('VideoAgent: library-fallback Blotato upload failed', [
+                'asset_id' => $asset->id,
+                'workspace_id' => $brand->workspace_id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $newHistory = is_array($draft->asset_urls) ? $draft->asset_urls : [];
+        if ($draft->asset_url && ! in_array($draft->asset_url, $newHistory, true)) {
+            $newHistory[] = $draft->asset_url;
+        }
+        $newHistory[] = $blotatoUrl;
+        $newHistory[] = $asset->public_url;
+        $draft->update([
+            'asset_url' => $blotatoUrl,
+            'asset_urls' => array_values(array_unique($newHistory)),
+        ]);
+        $asset->recordUse();
+
+        return AgentResult::ok([
+            'draft_id' => $draft->id,
+            'asset_url' => $blotatoUrl,
+            'library_asset_id' => $asset->id,
+            'platform' => $draft->platform,
+            'cost_usd' => 0.0,
+            'distance' => round((float) $picked['distance'], 4),
+            'source' => 'library-fallback',
+        ], [
+            'source' => 'library-fallback',
+            'cost_usd' => 0.0,
         ]);
     }
 

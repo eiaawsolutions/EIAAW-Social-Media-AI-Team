@@ -3,7 +3,9 @@
 namespace App\Services\Imagery;
 
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
@@ -58,6 +60,97 @@ class FalAiClient
         );
     }
 
+    // ─── Account-lockout breaker ────────────────────────────────────────────
+    // When FAL's prepaid balance is exhausted the account is LOCKED and every
+    // call 403s identically until an operator tops up. Without a breaker, every
+    // Designer/Video run across every workspace makes a full ~11s HTTP round-trip
+    // to a locked account before failing — wasting worker time and flooding logs.
+    // The breaker is a single shared cache flag: once a lockout is observed we
+    // skip the doomed HTTP call for a short cool-off, then probe again. It is
+    // process- and queue-wide because the cache store (database in prod) is
+    // shared across all workers.
+
+    private const LOCKOUT_CACHE_KEY = 'fal:account_locked';
+
+    /** Cool-off before we probe FAL again after observing a lockout. Short
+     *  enough that a top-up restores service within a couple of minutes, long
+     *  enough that we don't hammer a still-locked account every few seconds. */
+    private const LOCKOUT_COOLOFF_SECONDS = 120;
+
+    /**
+     * True if a FAL account lockout was observed within the cool-off window.
+     * Callers should treat this exactly like a fresh lockout (degrade to the
+     * library, surface the top-up action) without making the HTTP call.
+     */
+    public static function lockoutActive(): bool
+    {
+        return (bool) Cache::get(self::LOCKOUT_CACHE_KEY, false);
+    }
+
+    /** Open the breaker for the cool-off window. Idempotent. */
+    public static function tripLockout(): void
+    {
+        Cache::put(self::LOCKOUT_CACHE_KEY, true, self::LOCKOUT_COOLOFF_SECONDS);
+    }
+
+    /** Close the breaker — called after any successful FAL response, so the
+     *  first good call post-top-up immediately restores normal routing. */
+    public static function clearLockout(): void
+    {
+        Cache::forget(self::LOCKOUT_CACHE_KEY);
+    }
+
+    /**
+     * True when a FAL response is an ACCOUNT lockout (balance exhausted), not a
+     * per-request failure. FAL returns HTTP 403 with a body like:
+     *   {"detail":"User is locked. Reason: Exhausted balance. Top up your
+     *    balance at fal.ai/dashboard/billing."}
+     * We match on the status + the distinctive phrases rather than 403 alone,
+     * because a genuine permission/key 403 is a different remedy (rotate key)
+     * and must NOT trip the balance breaker.
+     */
+    public static function isAccountLockoutBody(int $status, string $body): bool
+    {
+        if ($status !== 403) {
+            return false;
+        }
+        $b = strtolower($body);
+
+        return str_contains($b, 'exhausted balance')
+            || str_contains($b, 'user is locked')
+            || str_contains($b, 'top up your balance');
+    }
+
+    /**
+     * Inspect a failed response: if it's an account lockout, trip the breaker
+     * and throw the typed FalAccountLockedException; otherwise throw the generic
+     * RuntimeException with the model + status + truncated body. Single place so
+     * image, video and extend paths classify failures identically.
+     */
+    private function throwForFailure(string $model, int $status, string $body): never
+    {
+        if (self::isAccountLockoutBody($status, $body)) {
+            self::tripLockout();
+            Log::error('FAL.AI account locked (balance exhausted) — breaker tripped', [
+                'model' => $model,
+                'cooloff_seconds' => self::LOCKOUT_COOLOFF_SECONDS,
+            ]);
+
+            throw new FalAccountLockedException(
+                'FAL.AI account locked: prepaid balance exhausted. '
+                .'Top up at fal.ai/dashboard/billing to restore image/video generation. '
+                .'(provider response: HTTP '.$status.')'
+            );
+        }
+
+        throw new RuntimeException(sprintf(
+            'FAL.AI %s failed: HTTP %d — %s',
+            $model,
+            $status,
+            substr($body, 0, 400),
+        ));
+    }
+
     private function client(): PendingRequest
     {
         return Http::withHeaders([
@@ -96,6 +189,16 @@ class FalAiClient
      */
     public function generateImage(string $prompt, array $options = []): array
     {
+        // Breaker: if the account was just observed locked, don't make the
+        // doomed HTTP call — fail fast with the typed exception so the caller
+        // degrades immediately instead of waiting on a 403.
+        if (self::lockoutActive()) {
+            throw new FalAccountLockedException(
+                'FAL.AI account locked: prepaid balance exhausted (cached). '
+                .'Top up at fal.ai/dashboard/billing to restore image generation.'
+            );
+        }
+
         $payload = array_merge([
             'prompt' => $prompt,
             'image_size' => 'square_hd',
@@ -124,13 +227,12 @@ class FalAiClient
         $response = $this->client()->post('/'.ltrim($this->imageModel, '/'), $payload);
 
         if (! $response->successful()) {
-            throw new RuntimeException(sprintf(
-                'FAL.AI %s failed: HTTP %d — %s',
-                $this->imageModel,
-                $response->status(),
-                substr($response->body(), 0, 400),
-            ));
+            $this->throwForFailure($this->imageModel, $response->status(), $response->body());
         }
+
+        // A good response means the account is usable — close the breaker so the
+        // first successful call after a top-up restores normal routing at once.
+        self::clearLockout();
 
         $body = $response->json();
         $url = $body['images'][0]['url'] ?? null;
@@ -243,6 +345,13 @@ class FalAiClient
             throw new RuntimeException('FAL video model not configured.');
         }
 
+        if (self::lockoutActive()) {
+            throw new FalAccountLockedException(
+                'FAL.AI account locked: prepaid balance exhausted (cached). '
+                .'Top up at fal.ai/dashboard/billing to restore video generation.'
+            );
+        }
+
         $isVeo = self::isVeoModel($model);
 
         $payload = array_merge([
@@ -283,13 +392,10 @@ class FalAiClient
         $response = $this->videoClient()->post('/'.ltrim($model, '/'), $payload);
 
         if (! $response->successful()) {
-            throw new RuntimeException(sprintf(
-                'FAL.AI %s failed: HTTP %d — %s',
-                $model,
-                $response->status(),
-                substr($response->body(), 0, 400),
-            ));
+            $this->throwForFailure($model, $response->status(), $response->body());
         }
+
+        self::clearLockout();
 
         $body = $response->json();
         // Veo / Wan response shape: { video: { url, content_type } } usually.
@@ -344,6 +450,13 @@ class FalAiClient
             throw new RuntimeException('FAL extend-video model not configured (services.fal.video_model_extend).');
         }
 
+        if (self::lockoutActive()) {
+            throw new FalAccountLockedException(
+                'FAL.AI account locked: prepaid balance exhausted (cached). '
+                .'Top up at fal.ai/dashboard/billing to restore video generation.'
+            );
+        }
+
         $nativeAudio = array_key_exists('generate_audio', $options)
             ? (bool) $options['generate_audio']
             : $this->videoNativeAudio;
@@ -373,13 +486,10 @@ class FalAiClient
         $response = $this->videoClient()->post('/'.ltrim($model, '/'), $payload);
 
         if (! $response->successful()) {
-            throw new RuntimeException(sprintf(
-                'FAL.AI %s failed: HTTP %d — %s',
-                $model,
-                $response->status(),
-                substr($response->body(), 0, 400),
-            ));
+            $this->throwForFailure($model, $response->status(), $response->body());
         }
+
+        self::clearLockout();
 
         $body = $response->json();
         $url = $body['video']['url']

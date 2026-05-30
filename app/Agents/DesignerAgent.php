@@ -14,6 +14,7 @@ use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\DraftSceneBrief;
 use App\Services\Imagery\EiaawBrandLock;
+use App\Services\Imagery\FalAccountLockedException;
 use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
@@ -130,54 +131,11 @@ class DesignerAgent extends BaseAgent
         $libraryFirst = (bool) config('services.fal.library_first', true);
 
         if (! $forceFal && $libraryFirst) {
-            $picked = app(BrandAssetPicker::class)->pickFor($brand, $draft, 'image');
-            if ($picked) {
-                /** @var BrandAsset $asset */
-                $asset = $picked['asset'];
-
-                // Re-host through THIS WORKSPACE'S Blotato account so /v2/posts
-                // accepts it. The media URL returned by Blotato is scoped to
-                // the uploading account — if HQ uploads it, a customer's
-                // createPost() call gets 403 because the account doesn't own
-                // that media. Always upload via the brand's workspace's key.
-                try {
-                    $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
-                        ->uploadMediaFromUrl($asset->public_url);
-                } catch (\Throwable $e) {
-                    Log::warning('DesignerAgent: library asset Blotato upload failed; falling back to FAL', [
-                        'asset_id' => $asset->id,
-                        'workspace_id' => $brand->workspace_id,
-                        'error' => $e->getMessage(),
-                    ]);
-                    $blotatoUrl = null;
-                }
-
-                if ($blotatoUrl) {
-                    $draft->update([
-                        'asset_url' => $blotatoUrl,
-                        'asset_urls' => array_values(array_unique(array_merge(
-                            is_array($draft->asset_urls) ? $draft->asset_urls : [],
-                            [$blotatoUrl, $asset->public_url],
-                        ))),
-                    ]);
-                    $asset->recordUse();
-
-                    return AgentResult::ok([
-                        'draft_id' => $draft->id,
-                        'asset_url' => $blotatoUrl,
-                        'library_asset_id' => $asset->id,
-                        'library_asset_label' => $asset->original_filename,
-                        'platform' => $draft->platform,
-                        'cost_usd' => 0.0,
-                        'distance' => round((float) $picked['distance'], 4),
-                        'source' => 'library',
-                    ], [
-                        'source' => 'library',
-                        'cost_usd' => 0.0,
-                    ]);
-                }
-                // Fall through to FAL if Blotato re-host failed.
+            $libraryResult = $this->tryLibraryAsset($brand, $draft, 'library');
+            if ($libraryResult !== null) {
+                return $libraryResult;
             }
+            // Fall through to FAL if no usable library asset / Blotato re-host failed.
         }
 
         // Cost circuit breaker — scope to FAL image spend ONLY. Pre-fix this
@@ -220,11 +178,38 @@ class DesignerAgent extends BaseAgent
                 // negatives into the positive prompt for that model.
                 'negative_prompt' => ImageCreativeDirection::negativePrompt(),
             ]);
+        } catch (FalAccountLockedException $e) {
+            // FAL is account-locked (balance exhausted). Generating is impossible
+            // until a top-up — but a media-required post still shouldn't ship with
+            // no image. Degrade to a brand-library asset even when library-first
+            // was skipped (internal-prefers-AI / force_fal). If the library has no
+            // usable match either, fail with the actionable top-up message so the
+            // operator monitor shows the real remedy.
+            Log::warning('DesignerAgent: FAL account locked; attempting library fallback', [
+                'draft_id' => $draft->id,
+            ]);
+
+            $fallback = $this->tryLibraryAsset($brand, $draft, 'library-fallback');
+            if ($fallback !== null) {
+                return $fallback;
+            }
+
+            return AgentResult::fail(
+                'FAL.AI account locked (balance exhausted) and no brand-library image to fall back to. '
+                .'Top up at fal.ai/dashboard/billing — generation auto-resumes within ~2 min, or upload a brand asset.'
+            );
         } catch (\Throwable $e) {
             Log::error('DesignerAgent: FAL generation failed', [
                 'draft_id' => $draft->id,
                 'error' => $e->getMessage(),
             ]);
+
+            // Transient/per-request FAL failure: still try the library so a
+            // single flaky generation doesn't leave the post image-less.
+            $fallback = $this->tryLibraryAsset($brand, $draft, 'library-fallback');
+            if ($fallback !== null) {
+                return $fallback;
+            }
 
             return AgentResult::fail('Image generation failed: '.substr($e->getMessage(), 0, 200));
         }
@@ -347,6 +332,71 @@ class DesignerAgent extends BaseAgent
             'model' => $generated['model'],
             'cost_usd' => $costUsd,
             'latency_ms' => $generated['latency_ms'],
+        ]);
+    }
+
+    /**
+     * Pick the best brand-library image for this draft and re-host it through
+     * the workspace's Blotato account. Returns an ok AgentResult on success,
+     * or null when there's no usable match / the Blotato re-host failed (caller
+     * then proceeds to FAL, or fails with an actionable message).
+     *
+     * Used in two places:
+     *   - $source='library'          → the normal library-first branch.
+     *   - $source='library-fallback' → degradation after a FAL failure
+     *     (account locked or transient), so a media-required post still ships
+     *     an on-brand image instead of nothing.
+     */
+    private function tryLibraryAsset(Brand $brand, Draft $draft, string $source): ?AgentResult
+    {
+        $picked = app(BrandAssetPicker::class)->pickFor($brand, $draft, 'image');
+        if (! $picked) {
+            return null;
+        }
+
+        /** @var BrandAsset $asset */
+        $asset = $picked['asset'];
+
+        // Re-host through THIS WORKSPACE'S Blotato account so /v2/posts accepts
+        // it. The media URL returned by Blotato is scoped to the uploading
+        // account — if HQ uploads it, a customer's createPost() call gets 403
+        // because the account doesn't own that media. Always upload via the
+        // brand's workspace's key.
+        try {
+            $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
+                ->uploadMediaFromUrl($asset->public_url);
+        } catch (\Throwable $e) {
+            Log::warning('DesignerAgent: library asset Blotato upload failed', [
+                'asset_id' => $asset->id,
+                'workspace_id' => $brand->workspace_id,
+                'source' => $source,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $draft->update([
+            'asset_url' => $blotatoUrl,
+            'asset_urls' => array_values(array_unique(array_merge(
+                is_array($draft->asset_urls) ? $draft->asset_urls : [],
+                [$blotatoUrl, $asset->public_url],
+            ))),
+        ]);
+        $asset->recordUse();
+
+        return AgentResult::ok([
+            'draft_id' => $draft->id,
+            'asset_url' => $blotatoUrl,
+            'library_asset_id' => $asset->id,
+            'library_asset_label' => $asset->original_filename,
+            'platform' => $draft->platform,
+            'cost_usd' => 0.0,
+            'distance' => round((float) $picked['distance'], 4),
+            'source' => $source,
+        ], [
+            'source' => $source,
+            'cost_usd' => 0.0,
         ]);
     }
 
