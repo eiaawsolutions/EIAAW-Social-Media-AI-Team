@@ -122,7 +122,11 @@ return [
         'enabled' => (bool) env('RAILWAY_COST_ENABLED', false),
 
         // secret://... handle resolved by InfisicalResolver (EIAAW contract).
-        // NEVER a raw token here.
+        // NEVER a raw token here. The Railway token is a SHARED secret living
+        // in the eiaaw-all-projects Infisical project, so the handle names that
+        // project explicitly:
+        //   RAILWAY_API_TOKEN=secret://eiaaw-all-projects/prod/RAILWAY_API_TOKEN
+        // (the resolver's cross-project map turns that slug into its workspace).
         'token' => env('RAILWAY_API_TOKEN'),
 
         // This project's UUID (eiaaw-smt). Scopes the usage query to THIS

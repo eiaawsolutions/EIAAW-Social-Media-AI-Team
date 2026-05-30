@@ -18,6 +18,28 @@ return [
         'environment' => env('INFISICAL_ENVIRONMENT', 'prod'),
         'cache_ttl' => (int) env('INFISICAL_CACHE_TTL', 300),
         'request_timeout' => (int) env('INFISICAL_REQUEST_TIMEOUT', 5),
+
+        /*
+        |----------------------------------------------------------------------
+        | Cross-project map (slug → Infisical workspaceId)
+        |----------------------------------------------------------------------
+        | A `secret://<project>/<env>/<path>/<NAME>` handle whose <project>
+        | segment matches a key here resolves against THAT project's workspace.
+        | Any handle whose segment is empty, a UUID, this project's own slug, or
+        | an unknown slug resolves against `project_id` above (the default) — so
+        | every pre-existing handle keeps working unchanged.
+        |
+        | The machine identity must be granted READ access (in the Infisical UI)
+        | to every project listed here. Listing a project the identity cannot
+        | read just makes its handles fail to resolve (fail-open: the app boots,
+        | the dependent feature falls back / logs an error).
+        |
+        | eiaaw-all-projects holds secrets shared across all EIAAW products
+        | (e.g. the Railway billing token used by the HQ cost monitor).
+        */
+        'projects' => [
+            'eiaaw-all-projects' => env('INFISICAL_PROJECT_ID_ALL', '2bca9bc9-330d-4664-b371-6b8ee2758438'),
+        ],
     ],
 
     /*

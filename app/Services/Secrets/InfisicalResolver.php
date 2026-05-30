@@ -10,6 +10,7 @@ use RuntimeException;
 class InfisicalResolver
 {
     private ?string $accessToken = null;
+
     private int $accessTokenExpiresAt = 0;
 
     /**
@@ -48,12 +49,14 @@ class InfisicalResolver
         $parsed = self::parseHandle($handle);
         if ($parsed === null) {
             Log::warning('InfisicalResolver: malformed handle', ['handle' => $handle]);
+
             return $handle;
         }
 
         try {
-            $value = $this->fetch($parsed['environment'], $parsed['path'], $parsed['name']);
+            $value = $this->fetch($parsed['environment'], $parsed['path'], $parsed['name'], $parsed['project']);
             $this->resolvedCache[$handle] = $value;
+
             return $value;
         } catch (\Throwable $e) {
             Log::error('InfisicalResolver: fetch failed', [
@@ -72,6 +75,7 @@ class InfisicalResolver
         if (! preg_match('#^secret://([^/]+)/([^/]+)(/.*)?/([A-Z0-9_]+)$#', $handle, $m)) {
             return null;
         }
+
         return [
             'project' => $m[1],
             'environment' => $m[2],
@@ -110,11 +114,11 @@ class InfisicalResolver
         $this->accessTokenExpiresAt = time() + $expiresIn;
     }
 
-    private function fetch(string $environment, string $path, string $name): string
+    private function fetch(string $environment, string $path, string $name, string $projectSlug = ''): string
     {
         $this->ensureToken();
 
-        $projectId = $this->config['project_id'] ?? null;
+        $projectId = $this->resolveProjectId($projectSlug);
         if (empty($projectId)) {
             throw new RuntimeException('INFISICAL_PROJECT_ID is not configured.');
         }
@@ -136,12 +140,59 @@ class InfisicalResolver
         if (! is_string($value)) {
             throw new RuntimeException("Infisical returned no value for {$name} in {$environment}.");
         }
+
         return $value;
+    }
+
+    /**
+     * Map a handle's project segment to an Infisical workspaceId.
+     *
+     * The handle format is secret://<project>/<env>/<path>/<NAME>. Historically
+     * the <project> segment was decorative — every secret resolved against the
+     * single bootstrap project (INFISICAL_PROJECT_ID). This method makes the
+     * segment load-bearing so SMT can also read SHARED secrets from another
+     * Infisical project (e.g. eiaaw-all-projects), while keeping every existing
+     * handle working unchanged.
+     *
+     * Resolution order (first match wins):
+     *   1. The segment already IS a UUID → use it verbatim.
+     *   2. The segment matches a slug in secrets.infisical.projects map → its UUID.
+     *   3. Otherwise (empty segment, the bootstrap project's own slug, or an
+     *      unknown slug) → the bootstrap project_id. This is the safe default:
+     *      no existing handle changes behaviour, and a typo'd project segment
+     *      fails closed against the bootstrap project rather than guessing.
+     *
+     * The machine identity must have read access in Infisical to ANY project it
+     * is pointed at here — granting that is an operator action in the Infisical
+     * UI, not something this code can do.
+     */
+    private function resolveProjectId(string $projectSlug): ?string
+    {
+        $bootstrap = $this->config['project_id'] ?? null;
+
+        if ($projectSlug === '') {
+            return $bootstrap;
+        }
+
+        // Already a UUID (Infisical workspace IDs are UUIDv4).
+        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $projectSlug)) {
+            return $projectSlug;
+        }
+
+        $map = (array) ($this->config['projects'] ?? []);
+        if (isset($map[$projectSlug]) && is_string($map[$projectSlug]) && $map[$projectSlug] !== '') {
+            return $map[$projectSlug];
+        }
+
+        return $bootstrap;
     }
 
     private function client(): Client
     {
-        if ($this->http !== null) return $this->http;
+        if ($this->http !== null) {
+            return $this->http;
+        }
+
         return new Client([
             'base_uri' => rtrim((string) ($this->config['site_url'] ?? 'https://app.infisical.com'), '/'),
             'http_errors' => true,
@@ -152,6 +203,7 @@ class InfisicalResolver
     public function healthCheck(): bool
     {
         $this->ensureToken();
+
         return $this->accessToken !== null;
     }
 }
