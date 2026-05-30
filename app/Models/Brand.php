@@ -22,6 +22,9 @@ class Brand extends Model
         'locale',
         'timezone',
         'logo_url',
+        'metricool_blog_id',
+        'metricool_connect_link_sent_at',
+        'metricool_connected_at',
         'config',
         'competitors',
         'competitor_intel_config',
@@ -35,7 +38,41 @@ class Brand extends Model
             'competitors' => 'array',
             'competitor_intel_config' => 'array',
             'archived_at' => 'datetime',
+            'metricool_connect_link_sent_at' => 'datetime',
+            'metricool_connected_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Derived Metricool onboarding state — the Metricool analogue of
+     * Workspace::blotatoSetupState(). Drives the MetricoolSetup wizard.
+     *
+     *   'not_mapped'  → no metricool_blog_id; operator must create + map a
+     *                   Metricool brand for this SMT brand.
+     *   'link_sent'   → mapped + the connect-link was shared; waiting for the
+     *                   customer to connect their socials inside Metricool.
+     *   'mapped'      → mapped but no link sent yet (operator generates one).
+     *   'connected'   → /admin/profile reported ≥1 connected network.
+     */
+    public function metricoolSetupState(): string
+    {
+        if ($this->hasMetricoolConnected()) {
+            return 'connected';
+        }
+        if (empty($this->metricool_blog_id)) {
+            return 'not_mapped';
+        }
+        if ($this->metricool_connect_link_sent_at !== null) {
+            return 'link_sent';
+        }
+        return 'mapped';
+    }
+
+    /** True once ≥1 social network has been detected connected in Metricool. */
+    public function hasMetricoolConnected(): bool
+    {
+        return ! empty($this->metricool_blog_id)
+            && $this->metricool_connected_at !== null;
     }
 
     public function workspace(): BelongsTo

@@ -44,14 +44,16 @@ class EnforceTrialOrSubscription
     ];
 
     /**
-     * Additional routes accessible while the Blotato gate is closed.
-     * Superset of ALLOWED_ROUTE_PATTERNS — the customer needs to reach the
-     * platform-setup page to advance, and they may still want to view
-     * billing or change their password.
+     * Additional routes accessible while the platform-connection gate is
+     * closed. Superset of ALLOWED_ROUTE_PATTERNS — the customer needs to reach
+     * a setup page (Metricool connect wizard OR the legacy Blotato one) to
+     * advance, and may still want billing / password change. Both setup pages
+     * are listed so the gate works under either PUBLISH_PROVIDER.
      */
-    private const BLOTATO_ALLOWED_ROUTE_PATTERNS = [
+    private const SETUP_ALLOWED_ROUTE_PATTERNS = [
         'filament.agency.auth.*',
         'filament.agency.pages.billing',
+        'filament.agency.pages.metricool-setup',
         'filament.agency.pages.platform-setup',
         'filament.agency.resources.profile.*',
         'filament.agency.profile',
@@ -108,12 +110,24 @@ class EnforceTrialOrSubscription
             // when state actually changed).
             $this->reconcileTrialStatus($workspace);
 
-            // Second gate: Blotato connection. Only enforced AFTER active-access
-            // is confirmed — we never bounce a paying-but-Blotato-unwired
-            // customer to the trial-expired page; we send them to the
-            // platform-setup wizard so they can move forward.
-            if (! $workspace->hasBlotatoConnected() && ! $this->isAllowedRouteFor($request, self::BLOTATO_ALLOWED_ROUTE_PATTERNS)) {
-                return redirect('/agency/platform-setup');
+            // Second gate: platform connection. Provider-aware (PUBLISH_PROVIDER):
+            //   metricool → workspace must have ≥1 Metricool-connected brand;
+            //               redirect to the Metricool connect wizard.
+            //   blotato   → legacy per-workspace Blotato connection (rollback).
+            // Only enforced AFTER active-access is confirmed — we never bounce a
+            // paying-but-unwired customer to trial-expired; we send them to the
+            // setup wizard so they can move forward.
+            $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+            if ($provider === 'metricool') {
+                if (! $workspace->hasAnyMetricoolConnectedBrand()
+                    && ! $this->isAllowedRouteFor($request, self::SETUP_ALLOWED_ROUTE_PATTERNS)) {
+                    return redirect('/agency/metricool-setup');
+                }
+            } else {
+                if (! $workspace->hasBlotatoConnected()
+                    && ! $this->isAllowedRouteFor($request, self::SETUP_ALLOWED_ROUTE_PATTERNS)) {
+                    return redirect('/agency/platform-setup');
+                }
             }
 
             return $next($request);

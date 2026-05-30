@@ -111,10 +111,12 @@ return [
     |
     | Verified against the live schema 2026-05-30: estimatedUsage(projectId,
     | measurements) and usage(projectId, measurements, startDate, endDate)
-    | each return rows of {measurement, (estimated)value} in resource units
-    | (vCPU-minutes, GB-months, GB egress) — NOT dollars — so we price them
-    | here. Unit prices are Railway's published rates (docs.railway.com
-    | pricing); edit if Railway repricing changes them.
+    | each return rows of {measurement, (estimated)value} in resource units —
+    | time-based ones in RESOURCE-MINUTES (vCPU-minutes; GB-minutes for memory,
+    | disk AND backup), egress in GB — NOT dollars. So every time-based price
+    | below is PER-MINUTE. (A 2026-05-30 bug priced disk/backup per GB-MONTH
+    | against a GB-MINUTE value and overstated the Railway line ~30x.) Unit
+    | prices are Railway's published rates (docs.railway.com pricing).
     */
     'railway' => [
         // Master switch. Off until a token is wired — until then the
@@ -139,14 +141,36 @@ return [
         // moves intra-hour; no need to hit the API on every 30s page poll).
         'cache_ttl' => (int) env('RAILWAY_COST_CACHE_TTL', 3600),
 
-        // Published Railway unit prices (USD). Used to convert the usage-query
-        // resource quantities into dollars. Source: docs.railway.com pricing.
+        // TEMP: when true, logs the raw Railway measurement quantities + priced
+        // USD (info level) so the unit-price conversion can be reconciled
+        // against the dashboard. Turn off once prices are confirmed.
+        'debug' => (bool) env('RAILWAY_COST_DEBUG', false),
+
+        // Published Railway unit prices (USD), expressed PER-MINUTE to match the
+        // unit the GraphQL usage API actually returns.
+        //
+        // CRITICAL UNIT NOTE (fixed 2026-05-30 after a 30x+ overstatement bug):
+        // Railway's usage/estimatedUsage `value` for the time-based measurements
+        // (CPU_USAGE, MEMORY_USAGE_GB, DISK_USAGE_GB, BACKUP_USAGE_GB) is in
+        // RESOURCE-MINUTES (vCPU-minutes, GB-minutes) — Railway bills "per GB /
+        // minutely, invoiced monthly" (docs.railway.com/reference/volumes). So
+        // EVERY time-based price here must be per-minute. The human-friendly
+        // "$0.15/GB-month" disk figure is NOT the per-API-value price — pricing a
+        // GB-MINUTE quantity at a GB-MONTH rate inflated disk+backup by ~43,200x
+        // and the whole line by ~30x ($11k vs the real ~$5).
+        //
+        // Per-minute derivations from Railway's published rates:
+        //   CPU:    $0.000463 / vCPU-minute (already per-minute)
+        //   Memory: $0.000231 / GB-minute   (= $0.01386/GB-hour)
+        //   Disk:   $0.000231 / GB-hour ÷ 60 ≈ $0.00000385 / GB-minute
+        //   Backup: same basis as disk
+        //   Egress: $0.05 / GB (volume-based, NOT time — value is GB, price/GB)
         'unit_prices_usd' => [
             'cpu_vcpu_minute' => (float) env('RAILWAY_PRICE_CPU_MIN', 0.000463),
             'memory_gb_minute' => (float) env('RAILWAY_PRICE_MEM_MIN', 0.000231),
-            'disk_gb_month' => (float) env('RAILWAY_PRICE_DISK_MONTH', 0.15),
+            'disk_gb_minute' => (float) env('RAILWAY_PRICE_DISK_MIN', 0.00000385),
             'network_tx_gb' => (float) env('RAILWAY_PRICE_EGRESS_GB', 0.05),
-            'backup_gb_month' => (float) env('RAILWAY_PRICE_BACKUP_MONTH', 0.15),
+            'backup_gb_minute' => (float) env('RAILWAY_PRICE_BACKUP_MIN', 0.00000385),
         ],
     ],
 

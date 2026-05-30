@@ -4,29 +4,36 @@ namespace App\Services\Metrics;
 
 use App\Models\ScheduledPost;
 use App\Services\Meta\MetaGraphClient;
+use App\Services\Metricool\MetricoolClient;
 
 /**
  * Picks the metrics provider for a given published post, then collects.
  *
  * This is the SEAM that keeps CollectPostMetrics ignorant of which backend
- * supplied the numbers. Today there are two real providers plus the CSV
- * fallback (operator-driven, not routed here):
+ * supplied the numbers. Provider precedence (first that applies wins):
  *
  *   1. Meta Graph (first-party) — HQ's OWN Instagram/Facebook posts, when a
  *      Business Manager System User token is configured. Real metrics now,
  *      no Meta App Review (Standard Access covers owned accounts).
- *   2. Blotato analytics (dormant) — everything else. Records "no data yet"
- *      until Blotato's analytics backend ships, then flows automatically.
+ *   2. Metricool — any post whose brand is mapped to a Metricool blogId
+ *      (brands.metricool_blog_id) and Metricool is configured. This is the
+ *      WORKING per-post analytics path the Blotato→Metricool switch added;
+ *      verified live 2026-05-30 (memory metricool-field-map). One shared
+ *      token, brand scoped by blogId.
+ *   3. Blotato analytics (dormant) — fallback for anything else. Records
+ *      "no data yet" until Blotato's analytics backend ships.
  *
- * FUTURE (customer accounts): when per-customer Meta OAuth lands, this router
- * grows a branch — "customer IG/FB post + that workspace has a stored,
- * unexpired Meta token → MetaGraphClient built from the per-connection token."
- * Nothing else in the pipeline changes. The branch goes HERE, not in the job.
+ * Plus the CSV upload fallback (operator-driven at /agency/performance, not
+ * routed here) for posts no provider can report on.
  *
- * Selection is deliberately conservative: a post only routes to Meta when ALL
- * hold — platform is IG/FB, the owning workspace is internal (HQ), and an HQ
- * System User token is actually present. Any miss → Blotato (which itself
- * degrades to a no-data snapshot). No post is ever left with no provider.
+ * FUTURE (customer Meta OAuth): when per-customer Meta tokens land, the Meta
+ * branch grows to build MetaGraphClient from the per-connection token. The
+ * branch goes HERE, not in the job.
+ *
+ * Selection is conservative and never leaves a post provider-less: Meta only
+ * for HQ-owned IG/FB with a token; Metricool only when the brand has a blogId
+ * AND the integration is configured; otherwise Blotato (which degrades to a
+ * no-data snapshot).
  */
 class MetricsProviderRouter
 {
@@ -34,7 +41,7 @@ class MetricsProviderRouter
 
     /**
      * Resolve the provider and collect. Returns the collector's discriminated
-     * result verbatim (see BlotatoMetricsCollector / MetaMetricsCollector).
+     * result verbatim (see Meta / Metricool / Blotato collectors).
      *
      * @return array<string,mixed>
      */
@@ -45,7 +52,32 @@ class MetricsProviderRouter
             return $meta->collect($post);
         }
 
+        $metricool = $this->metricoolCollectorFor($post);
+        if ($metricool !== null) {
+            return $metricool->collect($post);
+        }
+
         return $this->blotato->collect($post);
+    }
+
+    /**
+     * Returns a MetricoolMetricsCollector when this post's brand is mapped to a
+     * Metricool blogId and Metricool is configured, else null (caller falls
+     * back to Blotato). The collector itself re-checks blogId per post, so this
+     * gate is the cheap "is Metricool even in play?" short-circuit.
+     */
+    private function metricoolCollectorFor(ScheduledPost $post): ?MetricoolMetricsCollector
+    {
+        if (! $post->brand?->metricool_blog_id) {
+            return null;
+        }
+
+        $client = MetricoolClient::fromConfig();
+        if ($client === null) {
+            return null; // integration not configured → fall back
+        }
+
+        return new MetricoolMetricsCollector($client);
     }
 
     /**

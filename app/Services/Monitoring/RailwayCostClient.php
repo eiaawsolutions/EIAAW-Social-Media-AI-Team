@@ -223,25 +223,43 @@ class RailwayCostClient
 
         $prices = (array) config('costs.railway.unit_prices_usd', []);
 
+        // UNIT BASIS (verified live 2026-05-30): Railway returns the time-based
+        // measurements in RESOURCE-MINUTES, so CPU/memory/disk/backup all price
+        // per-minute. Egress (NETWORK_TX_GB) is a GB volume, priced per-GB.
+        // Pricing disk/backup per GB-MONTH here was the ~30x overstatement bug.
         $priceFor = static fn (string $m): float => match ($m) {
             'CPU_USAGE' => (float) ($prices['cpu_vcpu_minute'] ?? 0),
             'MEMORY_USAGE_GB' => (float) ($prices['memory_gb_minute'] ?? 0),
-            'DISK_USAGE_GB' => (float) ($prices['disk_gb_month'] ?? 0),
+            'DISK_USAGE_GB' => (float) ($prices['disk_gb_minute'] ?? 0),
             'NETWORK_TX_GB' => (float) ($prices['network_tx_gb'] ?? 0),
-            'BACKUP_USAGE_GB' => (float) ($prices['backup_gb_month'] ?? 0),
+            'BACKUP_USAGE_GB' => (float) ($prices['backup_gb_minute'] ?? 0),
             default => 0.0,
         };
 
         $total = 0.0;
         $sawRow = false;
+        $debug = [];
 
         foreach ($rows as $row) {
             if (! isset($row['measurement'])) {
                 continue;
             }
             $qty = (float) ($row[$valueKey] ?? 0);
-            $total += $qty * $priceFor((string) $row['measurement']);
+            $contribution = $qty * $priceFor((string) $row['measurement']);
+            $total += $contribution;
             $sawRow = true;
+            $debug[(string) $row['measurement']] = ['qty' => $qty, 'usd' => round($contribution, 4)];
+        }
+
+        // TEMP DIAGNOSTIC (gated): logs raw Railway quantities + priced USD so
+        // the unit-price conversion can be reconciled against the dashboard.
+        // Remove once the unit prices are confirmed correct.
+        if (config('costs.railway.debug')) {
+            Log::info('RailwayCostClient: priced rows', [
+                'value_key' => $valueKey,
+                'rows' => $debug,
+                'total_usd' => round($total, 4),
+            ]);
         }
 
         return $sawRow ? $total : null;
