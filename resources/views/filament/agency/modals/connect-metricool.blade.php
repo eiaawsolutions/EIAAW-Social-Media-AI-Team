@@ -6,9 +6,9 @@
 
     @if ($noMappedBrand)
         <div class="rounded-xl border border-amber-300/50 bg-amber-50 dark:bg-amber-900/20 p-4 text-amber-900 dark:text-amber-200">
-            <p class="font-semibold">Your brand needs to be linked to Metricool first.</p>
+            <p class="font-semibold">Your brand needs its secure space set up first.</p>
             <p class="mt-1 text-xs">
-                We connect each brand to its own Metricool brand, then send you a secure link to connect your
+                We set up a dedicated secure space for each brand, then send you a secure link to connect your
                 social accounts. Request setup from the Platform setup page and our team will get you a link,
                 usually within one business day.
             </p>
@@ -16,8 +16,8 @@
     @else
         <ol class="space-y-3 list-decimal list-inside text-gray-700 dark:text-gray-300">
             <li>Open the secure <strong>connect-link</strong> we sent you (also available in <strong>Platform setup</strong>).</li>
-            <li>Inside Metricool, connect any platform you want — Instagram, Facebook, LinkedIn, TikTok, YouTube, Pinterest, Threads, or X.</li>
-            <li>Come back here and click <strong>Refresh from Metricool</strong>. Your connected accounts appear in the table.</li>
+            <li>Connect any platform you want — Instagram, Facebook, LinkedIn, TikTok, YouTube, Pinterest, Threads, or X.</li>
+            <li>Come back here and click <strong>Refresh connections</strong>. Your connected accounts appear in the table.</li>
         </ol>
 
         <div class="rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 p-4 text-xs text-gray-500 dark:text-gray-400">

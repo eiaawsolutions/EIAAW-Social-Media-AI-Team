@@ -95,7 +95,7 @@ class ClientOnboardingJourney extends Page
                 'tone' => 'hq',
                 'eyebrow' => 'First · connect your social accounts',
                 'title' => 'Connect your accounts with one secure link',
-                'body' => 'SMT publishes and reads metrics through Metricool. We set up a secure space for your brand, then send you a private link to connect your own Instagram, Facebook, LinkedIn, TikTok, YouTube, Threads, X or Pinterest — no Metricool account, no extra login.',
+                'body' => 'SMT publishes your content and reads your metrics for you. We set up a secure space for your brand, then send you a private link to connect your own Instagram, Facebook, LinkedIn, TikTok, YouTube, Threads, X or Pinterest — no extra account, no extra login.',
                 'action_title' => 'What happens',
                 'actions' => [
                     'You sign up and land on the Platform Setup page.',
@@ -103,7 +103,7 @@ class ClientOnboardingJourney extends Page
                     'You get a private connection link (it expires in 71 hours for security).',
                     'You open it, connect the accounts you publish to — each is a quick authorise — then click "I\'ve connected — check now".',
                 ],
-                'proof' => 'Green check the moment we detect your connected accounts — read live from Metricool, not a guess. Until then, the rest of the product stays politely locked, so you can never get stuck halfway.',
+                'proof' => 'Green check the moment we detect your connected accounts — read live, not a guess. Until then, the rest of the product stays politely locked, so you can never get stuck halfway.',
                 'screen' => '/agency/metricool-setup',
             ],
 
@@ -259,7 +259,7 @@ class ClientOnboardingJourney extends Page
                 'tone' => 'auto',
                 'eyebrow' => 'Automatic · the truth loop closes',
                 'title' => 'Your first real metric, recorded',
-                'body' => 'Once a post publishes, SMT reads the real platform result straight from Metricool — impressions, reach, likes, comments, shares. Every number on your Performance page is sourced. We never fabricate engagement; where a platform genuinely doesn\'t expose a metric, we leave it blank rather than guess.',
+                'body' => 'Once a post publishes, SMT reads the real platform result straight from your connected accounts — impressions, reach, likes, comments, shares. Every number on your Performance page is sourced. We never fabricate engagement; where a platform genuinely doesn\'t expose a metric, we leave it blank rather than guess.',
                 'action_title' => 'What you get',
                 'actions' => [
                     'Real per-post results, read automatically from your connected accounts.',

@@ -75,7 +75,7 @@ class SetupReadiness
             ->exists();
 
         [$cta, $evidence] = match (true) {
-            $done => ['View platform setup', 'Social accounts connected and detected live in Metricool'],
+            $done => ['View platform setup', 'Social accounts connected and detected live'],
             $anyRequested => ['Connect your accounts', 'Your space is ready — open the secure link to connect your accounts, then check'],
             default => ['Connect your accounts', null],
         };
@@ -84,7 +84,7 @@ class SetupReadiness
             id: 'publishing_account',
             order: 0,
             label: 'Social accounts connected',
-            description: 'EIAAW publishes and reads metrics through Metricool. We set up a secure space for each brand, then send you a private link to connect your own social accounts — no extra login. Once you connect, we detect it live.',
+            description: 'EIAAW publishes your content and reads your metrics for you. We set up a secure space for each brand, then send you a private link to connect your own social accounts — no extra login. Once you connect, we detect it live.',
             done: $done,
             skippable: false,
             ctaLabel: $cta,

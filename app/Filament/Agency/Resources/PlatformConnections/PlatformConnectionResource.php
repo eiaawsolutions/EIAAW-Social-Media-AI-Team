@@ -80,12 +80,12 @@ class PlatformConnectionResource extends Resource
                     ->prefix('@')
                     ->placeholder('—'),
                 Tables\Columns\TextColumn::make('brand.metricool_blog_id')
-                    ->label('Metricool brand')
+                    ->label('Routing space')
                     ->fontFamily('mono')
                     ->color('gray')
                     ->size('sm')
                     ->limit(16)
-                    ->tooltip('The Metricool brand (blogId) this connection is targeted through. Set once per brand by EIAAW during setup.')
+                    ->tooltip('The secure space this connection is routed through. Set once per brand by EIAAW during setup.')
                     ->placeholder('—'),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
@@ -109,7 +109,7 @@ class PlatformConnectionResource extends Resource
                     ->falseColor('gray')
                     ->tooltip(fn (PlatformConnection $r) => is_array($r->target_overrides) && ! empty($r->target_overrides)
                         ? json_encode($r->target_overrides, JSON_UNESCAPED_SLASHES)
-                        : 'Personal account (no overrides — Metricool routes to the connected profile)'),
+                        : 'Personal account (no overrides — we route to the connected profile)'),
             ])
             ->recordActions([
                 \Filament\Actions\Action::make('targetOverrides')
@@ -117,7 +117,7 @@ class PlatformConnectionResource extends Resource
                     ->icon('heroicon-o-cog-6-tooth')
                     ->color('gray')
                     ->modalHeading(fn (PlatformConnection $r) => 'Target overrides — ' . ucfirst($r->platform) . ' @' . ($r->display_handle ?: '?'))
-                    ->modalDescription('Personal accounts: leave fields blank — Metricool routes to the connected profile. Business pages: paste the platform-side numeric ID. These values get sent verbatim on every publish to this connection.')
+                    ->modalDescription('Personal accounts: leave fields blank — we route to the connected profile. Business pages: paste the platform-side numeric ID. These values get sent verbatim on every publish to this connection.')
                     ->schema(fn (PlatformConnection $r) => self::overrideFieldsFor($r))
                     ->fillForm(fn (PlatformConnection $r) => self::fillFormFromOverrides($r))
                     ->action(function (PlatformConnection $r, array $data): void {
@@ -135,7 +135,7 @@ class PlatformConnectionResource extends Resource
                     }),
             ])
             ->emptyStateHeading('No platforms connected yet')
-            ->emptyStateDescription('Connect your social accounts via the secure link in "Platform setup", then click "Refresh from Metricool" above. Metricool has done the OAuth + app review with each platform; we read the resulting connections.')
+            ->emptyStateDescription('Connect your social accounts via the secure link in "Platform setup", then click "Refresh connections" above. Once a platform is authorised, your connection appears here automatically.')
             ->emptyStateIcon(Heroicon::OutlinedLink);
     }
 

@@ -42,12 +42,12 @@ class ManagePlatformConnections extends ManageRecords
     public function getSubheading(): ?string
     {
         if ($this->workspaceHasNoMappedBrand()) {
-            return 'Your brand needs to be linked to Metricool before social accounts can be connected. '
-                . 'Head to Platform setup to request it — our team maps it, then sends you a secure connect-link.';
+            return 'Your brand needs its secure space set up before social accounts can be connected. '
+                . 'Head to Platform setup to request it — our team sets it up, then sends you a secure connect-link.';
         }
 
-        return 'These are the social accounts detected as connected in Metricool for your brand. '
-            . 'To add a platform, use the connect-link in Platform setup; then click "Refresh from Metricool" here.';
+        return 'These are the social accounts detected as connected for your brand. '
+            . 'To add a platform, use the connect-link in Platform setup; then click "Refresh connections" here.';
     }
 
     /**
@@ -88,14 +88,14 @@ class ManagePlatformConnections extends ManageRecords
                 ->icon('heroicon-o-plus')
                 ->color('primary')
                 ->modalHeading('Connect a social platform')
-                ->modalDescription('Social accounts connect through a secure Metricool connect-link, then appear here once detected.')
+                ->modalDescription('Social accounts connect through a secure connect-link, then appear here once detected.')
                 ->modalContent(fn () => view('filament.agency.modals.connect-metricool'))
                 ->modalWidth('lg')
                 ->modalSubmitAction(false)
                 ->modalCancelActionLabel('Close'),
 
             Action::make('refresh')
-                ->label('Refresh from Metricool')
+                ->label('Refresh connections')
                 ->icon('heroicon-o-arrow-path')
                 ->color('gray')
                 ->outlined()
@@ -125,8 +125,8 @@ class ManagePlatformConnections extends ManageRecords
 
         if (empty($brand->metricool_blog_id)) {
             Notification::make()
-                ->title('Brand not linked to Metricool yet')
-                ->body('This brand isn\'t mapped to a Metricool brand. Go to Platform setup to request setup — once mapped, you\'ll get a connect-link.')
+                ->title('Brand not set up yet')
+                ->body('This brand\'s secure space isn\'t set up yet. Go to Platform setup to request it — once it\'s ready, you\'ll get a connect-link.')
                 ->warning()
                 ->persistent()
                 ->send();
@@ -157,7 +157,7 @@ class ManagePlatformConnections extends ManageRecords
         if (empty($result['networks'])) {
             Notification::make()
                 ->title('No connected accounts found')
-                ->body('Metricool reports no connected networks for "' . $brand->name . '" yet. '
+                ->body('No connected networks for "' . $brand->name . '" yet. '
                     . 'If you just connected via the link, give it a minute and refresh again.')
                 ->warning()
                 ->send();
@@ -165,7 +165,7 @@ class ManagePlatformConnections extends ManageRecords
         }
 
         Notification::make()
-            ->title('Refreshed from Metricool')
+            ->title('Connections refreshed')
             ->body(sprintf(
                 'Brand "%s": %d connected, %d marked revoked.',
                 $brand->name,

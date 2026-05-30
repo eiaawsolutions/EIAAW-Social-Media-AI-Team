@@ -532,7 +532,7 @@
                                 </div>
                             @elseif (! $isPublishing && ! $isUnverified)
                                 <div class="lf-metrics-pending"
-                                     title="Metrics are collected automatically once the platform reports engagement (via Metricool / Meta), or you can upload a CSV on the Performance page.">
+                                     title="Metrics are collected automatically once the platform reports engagement, or you can upload a CSV on the Performance page.">
                                     metrics pending
                                 </div>
                             @endif
