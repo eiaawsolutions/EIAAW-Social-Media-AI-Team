@@ -39,23 +39,63 @@ class SetupReadiness
 
         return new WorkspaceReadiness(
             $workspace,
-            $this->stage0_blotatoAccount($workspace),
+            $this->stage0_publishingAccount($workspace),
             ...$brandReadinesses,
         );
     }
 
     /**
-     * Workspace-level stage 0: a dedicated Blotato account is provisioned
-     * AND verified for this workspace. Blocks platform connections — without
-     * a Blotato key, syncing handles or publishing is impossible.
-     *
-     * State comes from Workspace::blotatoSetupState():
-     *   connected    → done; user can proceed
-     *   credentialed → blocked, user must verify in /agency/platform-setup
-     *   requested    → blocked, HQ has not provisioned yet
-     *   not_requested → blocked, user must click "Request setup"
+     * Workspace-level stage 0: the publishing/metrics provider is connected.
+     * Provider-aware (PUBLISH_PROVIDER), mirroring EnforceTrialOrSubscription
+     * and the onboarding deck:
+     *   metricool → ≥1 brand has connected its socials via the secure link
+     *               (Workspace::hasAnyMetricoolConnectedBrand()); CTA →
+     *               /agency/metricool-setup.
+     *   blotato   → legacy per-workspace Blotato account verified (rollback);
+     *               CTA → /agency/platform-setup.
      */
-    private function stage0_blotatoAccount(Workspace $workspace): ReadinessStage
+    private function stage0_publishingAccount(Workspace $workspace): ReadinessStage
+    {
+        $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+
+        return $provider === 'metricool'
+            ? $this->stage0_metricool($workspace)
+            : $this->stage0_blotato($workspace);
+    }
+
+    /** Metricool connect-link stage 0 — ≥1 brand connected via the secure link. */
+    private function stage0_metricool(Workspace $workspace): ReadinessStage
+    {
+        $done = $workspace->hasAnyMetricoolConnectedBrand();
+
+        // Derive a coarse state from the workspace's brands for messaging.
+        $anyRequested = $workspace->brands()
+            ->whereNull('archived_at')
+            ->whereNotNull('metricool_blog_id')
+            ->exists();
+
+        [$cta, $evidence] = match (true) {
+            $done => ['View platform setup', 'Social accounts connected and detected live in Metricool'],
+            $anyRequested => ['Connect your accounts', 'Your space is ready — open the secure link to connect your accounts, then check'],
+            default => ['Connect your accounts', null],
+        };
+
+        return new ReadinessStage(
+            id: 'publishing_account',
+            order: 0,
+            label: 'Social accounts connected',
+            description: 'EIAAW publishes and reads metrics through Metricool. We set up a secure space for each brand, then send you a private link to connect your own social accounts — no extra login. Once you connect, we detect it live.',
+            done: $done,
+            skippable: false,
+            ctaLabel: $cta,
+            ctaUrl: url('/agency/metricool-setup'),
+            blockedBy: null,
+            evidence: $evidence,
+        );
+    }
+
+    /** Legacy Blotato stage 0 — rollback path (PUBLISH_PROVIDER=blotato). */
+    private function stage0_blotato(Workspace $workspace): ReadinessStage
     {
         $state = $workspace->blotatoSetupState();
         $done = $state === 'connected';
@@ -80,7 +120,7 @@ class SetupReadiness
         };
 
         return new ReadinessStage(
-            id: 'blotato_account',
+            id: 'publishing_account',
             order: 0,
             label: 'Publishing account ready',
             description: 'EIAAW publishes through a dedicated Blotato account per workspace. Our team provisions this for you within 1 business day of signup — you log in, connect your social handles, then verify here.',

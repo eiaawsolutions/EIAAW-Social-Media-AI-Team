@@ -10,7 +10,7 @@ use Filament\Pages\Page;
  * A self-contained, presentation-mode slide deck that walks a new client
  * through the exact SMT onboarding journey — the same 9-stage readiness
  * ladder that drives App\Services\Readiness\SetupReadiness, plus the
- * Blotato handoff (stage 0) that precedes it. Two uses:
+ * Metricool connect-link handoff (stage 0) that precedes it. Two uses:
  *
  *   1. Screen-share / present these slides live on an onboarding call.
  *      Arrow keys (or on-screen controls) advance slides; press "P" or the
@@ -32,7 +32,7 @@ class ClientOnboardingJourney extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-presentation-chart-line';
     protected static ?string $navigationLabel = 'Onboarding journey';
     protected static \UnitEnum|string|null $navigationGroup = 'Operations';
-    protected static ?int $navigationSort = 2; // just below Blotato onboarding
+    protected static ?int $navigationSort = 2; // just below platform onboarding
     protected static ?string $title = 'Client onboarding journey';
     protected static ?string $slug = 'onboarding-journey';
     protected string $view = 'filament.pages.client-onboarding-journey';
@@ -75,7 +75,7 @@ class ClientOnboardingJourney extends Page
                 'title' => 'Ten checkpoints. One next-action at a time.',
                 'lead' => 'Your Setup Wizard always shows exactly one thing to do next. You never guess. When all ten are green, your AI social team is live and running on autopilot at the autonomy level you choose.',
                 'steps' => [
-                    ['n' => '0', 'label' => 'Publishing account ready', 'who' => 'We provision'],
+                    ['n' => '0', 'label' => 'Social accounts connected', 'who' => 'You · secure link'],
                     ['n' => '1', 'label' => 'Brand profile created', 'who' => 'You · 1 min'],
                     ['n' => '2', 'label' => 'Brand voice synthesised', 'who' => 'Agent'],
                     ['n' => '3', 'label' => 'Brand corpus seeded', 'who' => 'You · optional'],
@@ -88,23 +88,23 @@ class ClientOnboardingJourney extends Page
                 ],
             ],
 
-            // ── 02 · Stage 0 — Blotato handoff ────────────────────────
+            // ── 02 · Stage 0 — Metricool connect-link handoff ─────────
             [
                 'kind' => 'stage',
                 'badge' => '0',
                 'tone' => 'hq',
-                'eyebrow' => 'Before you touch anything · we do this for you',
-                'title' => 'Your publishing account, ready',
-                'body' => 'SMT publishes through a secure, dedicated publishing account that is yours alone — never shared with another client. Our team provisions it within one business day of signup.',
+                'eyebrow' => 'First · connect your social accounts',
+                'title' => 'Connect your accounts with one secure link',
+                'body' => 'SMT publishes and reads metrics through Metricool. We set up a secure space for your brand, then send you a private link to connect your own Instagram, Facebook, LinkedIn, TikTok, YouTube, Threads, X or Pinterest — no Metricool account, no extra login.',
                 'action_title' => 'What happens',
                 'actions' => [
                     'You sign up and land on the Platform Setup page.',
-                    'You click "Request setup". That tells our team you\'re ready.',
-                    'Within 1 business day you get an email with your publishing login.',
-                    'You log in, connect your own Instagram / TikTok / LinkedIn / X / Facebook / Threads, then return and click "Verify connection".',
+                    'You click "Request setup". That tells our team to create your brand\'s space.',
+                    'You get a private connection link (it expires in 71 hours for security).',
+                    'You open it, connect the accounts you publish to — each is a quick authorise — then click "I\'ve connected — check now".',
                 ],
-                'proof' => 'Green check the moment your account answers our ping. Until then, the rest of the product stays politely locked — so you can never get stuck halfway.',
-                'screen' => '/agency/platform-setup',
+                'proof' => 'Green check the moment we detect your connected accounts — read live from Metricool, not a guess. Until then, the rest of the product stays politely locked, so you can never get stuck halfway.',
+                'screen' => '/agency/metricool-setup',
             ],
 
             // ── 03 · Stage 1 — Brand profile ──────────────────────────
@@ -167,13 +167,13 @@ class ClientOnboardingJourney extends Page
                 'badge' => '4',
                 'tone' => 'you',
                 'eyebrow' => 'Your turn · about 2 minutes',
-                'title' => 'Connect at least one platform',
-                'body' => 'Choose where you want SMT to publish: Instagram, LinkedIn, TikTok, X, Threads, or Facebook. Sync pulls in your connected handles so the Scheduler can post on your behalf.',
+                'title' => 'Confirm where SMT publishes',
+                'body' => 'The accounts you connected via the secure link now appear here automatically — Instagram, LinkedIn, TikTok, X, Threads, Facebook, YouTube or Pinterest. Confirm the handle(s) this brand should publish to so the Scheduler can post on your behalf.',
                 'action_title' => 'What you do',
                 'actions' => [
-                    'Open Platforms and click Sync.',
-                    'Pick the handle(s) you want this brand to use.',
-                    'Connect as many as you like — start with one.',
+                    'Open Platforms — your connected accounts are already listed.',
+                    'Confirm the handle(s) you want this brand to use.',
+                    'Connected more later? Re-check on Platform Setup and they appear here.',
                 ],
                 'proof' => 'Each connected platform shows its handle, e.g. "Instagram (@yourbrand)". Green check on the first one.',
                 'screen' => '/agency/platforms',
@@ -259,11 +259,11 @@ class ClientOnboardingJourney extends Page
                 'tone' => 'auto',
                 'eyebrow' => 'Automatic · the truth loop closes',
                 'title' => 'Your first real metric, recorded',
-                'body' => 'Once a post publishes, SMT captures the real platform result — or you upload a metrics CSV. Every number on your Performance page is sourced. We never fabricate engagement.',
+                'body' => 'Once a post publishes, SMT reads the real platform result straight from Metricool — impressions, reach, likes, comments, shares. Every number on your Performance page is sourced. We never fabricate engagement; where a platform genuinely doesn\'t expose a metric, we leave it blank rather than guess.',
                 'action_title' => 'What you get',
                 'actions' => [
-                    'Real published-post results, captured automatically.',
-                    'Or a manual / CSV upload for channels we can\'t read directly.',
+                    'Real per-post results, read automatically from your connected accounts.',
+                    'A manual / CSV upload too, for anything not yet captured.',
                     'A Performance page with 7 / 30 / 90-day windows — all evidence-linked.',
                 ],
                 'proof' => 'Either a captured platform post id or a sourced upload. Tenth green check. Your AI social team is fully live.',
@@ -324,10 +324,10 @@ ON SCREEN: The Setup Wizard with the ten-checkpoint ladder; one item highlighted
 VO: "There's no guesswork. The Setup Wizard always shows exactly one next step — ten checkpoints, and your team is live."
 LOWER THIRD: "One next-action at a time"
 
-SCENE 3 — PUBLISHING ACCOUNT (0:16–0:26)
-ON SCREEN: Platform Setup page. Cursor clicks "Request setup" → status changes to "We're provisioning" → cut to a "Verify connection" green check.
-VO: "First, we set up a secure publishing account that's yours alone. Click request — we provision it within a business day, you connect your socials, and verify. Green check."
-LOWER THIRD: "Step 0 · We provision it for you"
+SCENE 3 — CONNECT YOUR ACCOUNTS (0:16–0:26)
+ON SCREEN: Platform Setup page (per-brand card). Cursor clicks "Request setup" → a secure connection link → quick authorise of Instagram + LinkedIn → back on the card, click "I've connected — check now" → green "Connected" badge with the network chips.
+VO: "First, connect your social accounts with one secure link — no extra login. Authorise the platforms you post to, click check, and we detect them live. Connected."
+LOWER THIRD: "Step 0 · Connect with one secure link"
 
 SCENE 4 — BRAND PROFILE + VOICE (0:26–0:40)
 ON SCREEN: Type a brand name + website, paste two evidence links. Click "Run Onboarding agent". Show the brand-style result with version + evidence quotes.
@@ -345,8 +345,8 @@ VO: "The Strategist plans your month. The Writer drafts in your voice — and ev
 LOWER THIRD: "Steps 6–7 · Planned and checked"
 
 SCENE 7 — APPROVE + SCHEDULE + METRICS (1:12–1:24)
-ON SCREEN: Click "Approve & schedule" → "Scheduled for ..." badge. Cut to Performance page with a real captured result.
-VO: "Approve with one click, and it's queued. After it publishes, SMT records the real result — sourced numbers only, never invented."
+ON SCREEN: Click "Approve & schedule" → "Scheduled for ..." badge. Cut to Performance page with a real captured result (impressions / reach / likes).
+VO: "Approve with one click, and it's queued. After it publishes, SMT reads the real result straight from your connected accounts — sourced numbers only, never invented."
 LOWER THIRD: "Steps 8–9 · Live, and honest"
 
 SCENE 8 — CLOSE (1:24–1:30)
