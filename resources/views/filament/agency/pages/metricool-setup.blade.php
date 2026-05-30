@@ -68,7 +68,7 @@
                         </div>
                     @endif
                     <div class="ps-actions">
-                        <a href="{{ url('/agency/platforms') }}" class="ps-cta ps-cta-ghost">Manage connections</a>
+                        <a href="{{ route('filament.agency.resources.platform-connections.index', ['brand' => $brand['id']]) }}" class="ps-cta ps-cta-ghost">Manage connections</a>
                         <button type="button" wire:click="checkConnection({{ $brand['id'] }})" wire:loading.attr="disabled" class="ps-cta ps-cta-ghost">
                             <span wire:loading.remove wire:target="checkConnection({{ $brand['id'] }})">Re-check</span>
                             <span wire:loading wire:target="checkConnection({{ $brand['id'] }})">Checking…</span>

@@ -98,9 +98,16 @@ class MetricoolSetup extends Page
                 'name' => $b->name,
                 'state' => $b->metricoolSetupState(),
                 'blogId' => $b->metricool_blog_id,
+                // Dedupe by platform: a brand can hold more than one active
+                // connection per network (e.g. a personal profile + a business
+                // page on the same platform). The wizard shows one chip per
+                // network — individual accounts are managed on the Platforms
+                // page — so collapse duplicates here.
                 'networks' => $b->platformConnections()
                     ->where('status', 'active')
                     ->pluck('platform')
+                    ->unique()
+                    ->values()
                     ->all(),
             ])
             ->all();
