@@ -21,6 +21,24 @@ return Application::configure(basePath: dirname(__DIR__))
         // `php artisan schedule:clear-cache`. With 5-min TTL the scheduler
         // self-heals on the next minute after the lock expires.
 
+        // Content autopilot: the FRONT half of the autonomous loop. Hourly,
+        // for every eligible brand (active access + NOT publishing-paused),
+        // top the calendar back up (Strategist only when coverage is thin)
+        // and dispatch idempotent DraftCalendarEntry jobs for undrafted
+        // (entry, platform) pairs — bounded by the plan's remaining monthly
+        // post allowance. Approval is decided downstream by each draft's lane
+        // (green auto-approves; amber waits for a human), so this honours the
+        // operator's approver selection without deciding it here. Runs every
+        // day, non-stop, until the operator clicks "Stop publishing" on the
+        // workspace (which sets publishing_paused and short-circuits this).
+        // Hourly cadence (not every-minute) caps LLM/FAL spend — calendars are
+        // monthly and drafting is incremental, so an hour of latency on "the
+        // calendar ran thin" is invisible to the customer.
+        $schedule->command('content:autopilot')
+            ->hourly()
+            ->withoutOverlapping(55)
+            ->runInBackground();
+
         // Auto-schedule path: every minute, find approved drafts (green-lane
         // auto-approved or human-approved) that have no live ScheduledPost
         // yet, and queue them. Closes the loop between the autonomy lane

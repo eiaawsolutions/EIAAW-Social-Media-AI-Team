@@ -43,7 +43,10 @@ class SubmitScheduledPost implements ShouldQueue
 
     public function handle(): void
     {
-        @set_time_limit(120);
+        // set_time_limit(0): the catchable queue $timeout (120s) governs. Never
+        // re-arm PHP's hard max_execution_time inside a queued job — it raises
+        // an uncatchable fatal that kills the worker process.
+        @set_time_limit(0);
 
         $post = ScheduledPost::with(['draft', 'platformConnection', 'brand'])->find($this->scheduledPostId);
         if (! $post) {

@@ -268,6 +268,45 @@ class PlanCapsTest extends TestCase
         $this->assertGreaterThan($svc->capsFor($studio)['fal_video_daily_cap_usd'], $svc->capsFor($agency)['fal_video_daily_cap_usd']);
     }
 
+    public function test_remaining_post_allowance_is_cap_minus_published(): void
+    {
+        $ws = $this->getMockBuilder(Workspace::class)
+            ->onlyMethods(['publishedPostsThisMonth'])
+            ->getMock();
+        $ws->plan = 'solo';
+        $cap = (int) config('billing.plans.solo.caps.max_published_posts_per_month');
+        $ws->method('publishedPostsThisMonth')->willReturn(10);
+
+        $this->assertSame($cap - 10, (new PlanCaps())->remainingPostAllowance($ws));
+    }
+
+    public function test_remaining_post_allowance_never_negative_when_over_cap(): void
+    {
+        // The autopilot uses this to bound drafting; it must never go negative
+        // (which would underflow the budget math into a huge positive after a
+        // later subtraction). A workspace over its cap has zero allowance.
+        $ws = $this->getMockBuilder(Workspace::class)
+            ->onlyMethods(['publishedPostsThisMonth'])
+            ->getMock();
+        $ws->plan = 'solo';
+        $cap = (int) config('billing.plans.solo.caps.max_published_posts_per_month');
+        $ws->method('publishedPostsThisMonth')->willReturn($cap + 25);
+
+        $this->assertSame(0, (new PlanCaps())->remainingPostAllowance($ws));
+    }
+
+    public function test_remaining_post_allowance_zero_at_exact_cap(): void
+    {
+        $ws = $this->getMockBuilder(Workspace::class)
+            ->onlyMethods(['publishedPostsThisMonth'])
+            ->getMock();
+        $ws->plan = 'solo';
+        $cap = (int) config('billing.plans.solo.caps.max_published_posts_per_month');
+        $ws->method('publishedPostsThisMonth')->willReturn($cap);
+
+        $this->assertSame(0, (new PlanCaps())->remainingPostAllowance($ws));
+    }
+
     public function test_can_add_brand_true_when_under_cap(): void
     {
         $ws = $this->getMockBuilder(Workspace::class)

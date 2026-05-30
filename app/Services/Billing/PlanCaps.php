@@ -140,4 +140,23 @@ class PlanCaps
         if ($cap <= 0) return false;
         return $workspace->publishedPostsThisMonth() >= (int) floor($cap * 0.8);
     }
+
+    /**
+     * Remaining published-post allowance for the current calendar month
+     * (never negative). The content autopilot uses this to bound how many
+     * new drafts it generates per workspace — there's no point drafting 200
+     * posts for a workspace capped at 65/month, and over-generating just
+     * burns FAL image/video budget on drafts that will sit unpublished or
+     * defer to next period. Counts already-published posts this month against
+     * the plan cap; in-flight queued posts are deliberately NOT subtracted
+     * here (the autopilot subtracts those itself so the two concerns stay
+     * separable and testable).
+     */
+    public function remainingPostAllowance(Workspace $workspace): int
+    {
+        $caps = $this->capsFor($workspace);
+        $cap = (int) $caps['max_published_posts_per_month'];
+        if ($cap <= 0) return 0;
+        return max(0, $cap - $workspace->publishedPostsThisMonth());
+    }
 }

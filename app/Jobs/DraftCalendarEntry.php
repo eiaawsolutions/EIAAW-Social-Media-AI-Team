@@ -34,7 +34,15 @@ class DraftCalendarEntry implements ShouldQueue
     use SerializesModels;
 
     public int $tries = 1;
-    public int $timeout = 300;
+
+    /**
+     * Queue-level wall-clock budget (catchable SIGALRM, fails the job
+     * gracefully). Researcher + Writer + Designer + (optional) Video +
+     * Compliance is the heaviest chain we run; 290s stays just under the
+     * worker's --timeout=300 process cap. Do NOT re-arm PHP's own
+     * max_execution_time inside the job — that fatals the worker process.
+     */
+    public int $timeout = 290;
 
     public function __construct(
         public int $calendarEntryId,
@@ -43,7 +51,10 @@ class DraftCalendarEntry implements ShouldQueue
 
     public function handle(): void
     {
-        @set_time_limit(300);
+        // set_time_limit(0): let the catchable queue $timeout govern. The old
+        // @set_time_limit(300) re-armed PHP's uncatchable hard limit and could
+        // fatal the worker (see RedraftFailedDraft for the full rationale).
+        @set_time_limit(0);
 
         $entry = CalendarEntry::find($this->calendarEntryId);
         if (! $entry) return;

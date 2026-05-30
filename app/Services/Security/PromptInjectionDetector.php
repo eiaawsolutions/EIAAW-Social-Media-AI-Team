@@ -323,9 +323,13 @@ class PromptInjectionDetector
                     ],
                 ],
                 'confidence' => [
+                    // NO 'minimum'/'maximum' here: Anthropic's structured-output
+                    // validator rejects min/max on 'integer' types with a 400
+                    // ("For 'integer' type, properties maximum, minimum are not
+                    // supported"), which silently dropped the grader to the
+                    // heuristic-only fallback in production. The 0-100 range is
+                    // enforced in code below via clamp() instead.
                     'type' => 'integer',
-                    'minimum' => 0,
-                    'maximum' => 100,
                 ],
                 'evidence_quote' => [
                     'type' => 'string',
@@ -354,7 +358,10 @@ class PromptInjectionDetector
         }
 
         $verdict = $parsed['verdict'];
-        $confidence = (int) ($parsed['confidence'] ?? 0);
+        // Clamp to [0, 100] in code — the schema no longer constrains the range
+        // (Anthropic rejects integer min/max), so a model returning 120 or -5
+        // must not skew severityFromGrader's >=70 thresholds.
+        $confidence = max(0, min(100, (int) ($parsed['confidence'] ?? 0)));
         // L1's category is precise (named after the regex rule). Only let
         // L2's category win when it returned something other than 'unknown'
         // AND L1 didn't already have a specific category.

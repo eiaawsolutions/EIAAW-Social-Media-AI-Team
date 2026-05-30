@@ -36,7 +36,16 @@ class RedraftFailedDraft implements ShouldQueue
     use SerializesModels;
 
     public int $tries = 1;
-    public int $timeout = 180;
+
+    /**
+     * Queue-level wall-clock budget. The worker enforces this via a catchable
+     * SIGALRM (pcntl) and fails the job gracefully — unlike PHP's own
+     * max_execution_time, which raises an UNCATCHABLE fatal that kills the
+     * whole worker process and forces a Railway restart. A redraft does
+     * Writer + Compliance + (possibly) the injection grader, so 270s gives
+     * real headroom while staying under the worker's --timeout=300 process cap.
+     */
+    public int $timeout = 270;
 
     /** Hard cap on Writer rewrites per draft. After this, human attention required. */
     public const MAX_REVISIONS = 3;
@@ -47,7 +56,13 @@ class RedraftFailedDraft implements ShouldQueue
 
     public function handle(): void
     {
-        @set_time_limit(180);
+        // set_time_limit(0) — NOT 180. Inside a queued job, re-arming PHP's
+        // hard execution limit (as the old @set_time_limit(180) did) overrides
+        // the worker's `-d max_execution_time=0` and fatals the worker process
+        // when a multi-LLM redraft runs long (this was the production
+        // "Maximum execution time of 180 seconds exceeded" worker crash).
+        // Let the catchable queue $timeout above govern instead.
+        @set_time_limit(0);
 
         $draft = Draft::find($this->draftId);
         if (! $draft) return;

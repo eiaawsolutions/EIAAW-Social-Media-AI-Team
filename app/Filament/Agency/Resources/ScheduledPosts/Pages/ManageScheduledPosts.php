@@ -30,13 +30,13 @@ class ManageScheduledPosts extends ManageRecords
 
         return [
             Action::make('pausePublishing')
-                ->label('Pause publishing')
+                ->label('Stop the AI')
                 ->icon('heroicon-o-pause-circle')
                 ->color('danger')
                 ->visible(fn () => ! $paused)
                 ->requiresConfirmation()
-                ->modalHeading('Pause all publishing for this workspace?')
-                ->modalDescription('Every queued post will stay queued. The publish worker will skip this workspace until you click Resume. Use this for brand crisis or pre-launch staging.')
+                ->modalHeading('Stop the AI for this workspace?')
+                ->modalDescription('This is the master kill switch. The AI stops BOTH ways: it will generate no new content (the daily autopilot skips this workspace) AND every queued post stays queued instead of publishing. Nothing resumes until you click Resume. Use this for a brand crisis, pre-launch staging, or any time you want to take back the wheel.')
                 ->schema([
                     \Filament\Forms\Components\TextInput::make('reason')
                         ->label('Reason (audit trail)')
@@ -54,20 +54,20 @@ class ManageScheduledPosts extends ManageRecords
                         'publishing_paused_reason' => $data['reason'] ?? 'Operator pause',
                     ]);
                     Notification::make()
-                        ->title('Publishing paused')
-                        ->body('Queued posts will not publish until you click Resume.')
+                        ->title('AI stopped')
+                        ->body('No new content will be generated and queued posts will not publish until you click Resume.')
                         ->warning()
                         ->send();
                 }),
 
             Action::make('resumePublishing')
-                ->label('Resume publishing')
+                ->label('Resume the AI')
                 ->icon('heroicon-o-play-circle')
                 ->color('success')
                 ->visible(fn () => $paused)
                 ->requiresConfirmation()
-                ->modalHeading('Resume publishing?')
-                ->modalDescription('Queued posts whose scheduled_for has passed will publish on the next minute tick.')
+                ->modalHeading('Resume the AI?')
+                ->modalDescription('The autopilot starts generating fresh content again on its next hourly run, and queued posts whose scheduled time has passed publish on the next minute tick.')
                 ->action(function () use ($workspace): void {
                     if (! $workspace) return;
                     $workspace->update([
@@ -76,8 +76,8 @@ class ManageScheduledPosts extends ManageRecords
                         'publishing_paused_reason' => null,
                     ]);
                     Notification::make()
-                        ->title('Publishing resumed')
-                        ->body('Queue will tick on the next minute.')
+                        ->title('AI resumed')
+                        ->body('Content generation resumes within the hour; the publish queue ticks on the next minute.')
                         ->success()
                         ->send();
                 }),
