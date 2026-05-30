@@ -155,10 +155,8 @@
         @endif
 
         <div class="perf-cost-row">
-            <span>AI cost · <strong>${{ number_format($s['cost_usd'], 2) }}</strong></span>
-            <span>cost / post · <strong>${{ number_format($s['cost_per_post'], 4) }}</strong></span>
             <span>since · <strong>{{ $s['since'] }}</strong></span>
-            <span style="margin-left: auto;">every number sourced from post_metrics + ai_costs · no fabricated data</span>
+            <span style="margin-left: auto;">every number sourced from post_metrics · no fabricated data</span>
         </div>
     </div>
 </x-filament-panels::page>
