@@ -5,11 +5,12 @@ namespace App\Filament\Agency\Resources\Brands;
 use App\Filament\Agency\Resources\Brands\Pages\ManageBrands;
 use App\Models\Brand;
 use BackedEnum;
+use Filament\Actions\Action;
+use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
-use Filament\Actions\DeleteAction;
-use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Forms;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
@@ -17,6 +18,7 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 
 class BrandResource extends Resource
 {
@@ -103,11 +105,52 @@ class BrandResource extends Resource
             ])
             ->recordActions([
                 EditAction::make(),
-                DeleteAction::make(),
+                // Archive, not delete. A brand owns drafts, scheduled posts,
+                // metrics and competitor ads, and is referenced by the
+                // append-only audit_log. A hard DELETE would cascade-destroy
+                // all client content AND trip the audit_log append-only
+                // trigger (SET NULL on audit_log.brand_id is an UPDATE the
+                // trigger forbids), aborting the whole transaction. Archiving
+                // sets archived_at — the brand drops out of getEloquentQuery()
+                // (whereNull('archived_at')) and frees its plan slot via
+                // activeBrandsCount(), while every record is preserved and the
+                // action is fully reversible.
+                Action::make('archive')
+                    ->label('Archive')
+                    ->icon(Heroicon::OutlinedArchiveBox)
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->modalHeading(fn (Brand $record) => "Archive {$record->name}")
+                    ->modalDescription('This brand and all its content stay safe and can be restored later. It is removed from your active list and frees up a brand slot.')
+                    ->modalSubmitActionLabel('Archive')
+                    ->successNotificationTitle('Brand archived')
+                    ->action(fn (Brand $record) => $record->update(['archived_at' => now()])),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    DeleteBulkAction::make(),
+                    BulkAction::make('archive')
+                        ->label('Archive selected')
+                        ->icon(Heroicon::OutlinedArchiveBox)
+                        ->color('danger')
+                        ->requiresConfirmation()
+                        ->modalHeading('Archive selected brands')
+                        ->modalDescription('The selected brands and all their content stay safe and can be restored later. They are removed from your active list and free up brand slots.')
+                        ->modalSubmitActionLabel('Archive')
+                        ->action(function (Collection $records): void {
+                            $now = now();
+                            $count = 0;
+                            foreach ($records as $record) {
+                                if ($record->archived_at === null) {
+                                    $record->update(['archived_at' => $now]);
+                                    $count++;
+                                }
+                            }
+                            Notification::make()
+                                ->title($count === 1 ? '1 brand archived' : "{$count} brands archived")
+                                ->success()
+                                ->send();
+                        })
+                        ->deselectRecordsAfterCompletion(),
                 ]),
             ]);
     }
