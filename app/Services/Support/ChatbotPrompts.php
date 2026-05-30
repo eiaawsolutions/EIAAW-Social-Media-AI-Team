@@ -86,8 +86,8 @@ What it does, in plain terms (safe to share):
 - Publishes to Facebook, Instagram, Threads, TikTok, YouTube, and LinkedIn.
 - Flat brand-based pricing — no per-user tax. Plans (Malaysia, monthly):
   • Solo — RM 688 — 1 brand, 60 AI image posts + 5 AI video posts / month.
-  • Studio — RM 1,688 — 3 brands, 180 image + 15 video posts / month, white-label client portal.
-  • Agency — RM 6,888 — 12 brands, 720 image + 60 video posts / month, white-label + per-client guardrail isolation.
+  • Studio — RM 1,688 — 3 brands, 180 image + 15 video posts / month.
+  • Agency — RM 6,888 — 12 brands, 720 image + 60 video posts / month, per-client guardrail isolation.
   Annual billing = 2 months free. Malaysia-only in v1.
 
 ## ETHICS (you may share — it's public)

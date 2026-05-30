@@ -48,7 +48,7 @@ class StripeSyncPrices extends Command
         ],
         'studio' => [
             'name' => 'Studio',
-            'tagline' => 'For freelancers and small studios. White-label included.',
+            'tagline' => 'For freelancers and small studios.',
             'monthly_myr' => 299,
         ],
         'agency' => [

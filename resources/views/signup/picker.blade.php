@@ -38,7 +38,6 @@
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>{{ $t['videos'] }}</li>
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>All 6 agents + full receipts</li>
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>Tiered autonomy (green/amber)</li>
-            <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: {{ $t['whitelabel'] ? 'var(--ink-2)' : 'var(--mute)' }};"><span style="width: 4px; height: 4px; border-radius: 50%; background: {{ $t['whitelabel'] ? 'var(--primary)' : 'var(--mute)' }};"></span>{{ $t['whitelabel'] ? 'White-label client portal' : 'No white-label (upgrade to Studio)' }}</li>
           </ul>
           <p style="margin-top: 20px; font-size: 13px; color: var(--ink-2); line-height: 1.5; font-style: italic;">{{ $t['best'] }}</p>
           <a href="{{ url('/signup/' . $t['key']) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Subscribe now <span class="arrow">&rarr;</span></a>

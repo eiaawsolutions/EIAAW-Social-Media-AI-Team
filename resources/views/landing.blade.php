@@ -28,7 +28,7 @@
           <a href="#how" class="btn btn-ghost btn-lg">See how it works</a>
         </div>
         <div class="rvl" style="margin-top: 28px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute);">
-          Flat brand-based pricing &middot; no per-user tax &middot; white-label from Studio &middot; Malaysia-only in v1
+          Flat brand-based pricing &middot; no per-user tax &middot; no per-channel fees &middot; Malaysia-only in v1
         </div>
       </div>
       <div style="grid-column: 8 / span 5; padding-top: 60px;" class="elegant-figure-parent">
@@ -86,8 +86,8 @@
           ],
           [
             'n' => '05',
-            'title' => 'Per-user pricing punishes growth. White-label costs extra.',
-            'detail' => 'Hootsuite $199/user. Sprout $199/user. Sendible $300+ once you add white-label. Buffer charges per channel. A 10-person agency pays $24K–$48K/year — for AI everyone says still misses.',
+            'title' => 'Per-user pricing punishes growth. Per-channel fees pile up.',
+            'detail' => 'Hootsuite $199/user. Sprout $199/user. Buffer charges per channel. A 10-person agency pays $24K–$48K/year — for AI everyone says still misses. We price flat per brand, no per-seat or per-channel tax.',
           ],
           [
             'n' => '06',
@@ -277,7 +277,6 @@
             @endif
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>All 6 agents + full receipts</li>
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>Tiered autonomy (green/amber)</li>
-            <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: {{ $t['whitelabel'] ? 'var(--ink-2)' : 'var(--mute)' }};"><span style="width: 4px; height: 4px; border-radius: 50%; background: {{ $t['whitelabel'] ? 'var(--primary)' : 'var(--mute)' }};"></span>{{ $t['whitelabel'] ? 'White-label client portal' : 'No white-label (upgrade to Studio)' }}</li>
           </ul>
           <p style="margin-top: 20px; font-size: 13px; color: var(--ink-2); line-height: 1.5; font-style: italic;">{{ $t['best'] }}</p>
           <a href="{{ url('/signup/' . $t['key']) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Subscribe now <span class="arrow">&rarr;</span></a>

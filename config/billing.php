@@ -99,8 +99,8 @@ return [
             'name'        => 'Studio',
             'price_myr'   => 1688,
             'trial_days'  => 0,
-            'description' => '3 brands · 180 image posts + 15 video posts/mo · white-label included',
-            'features'    => '3 brands, 180 AI image posts/mo, 15 AI 15-sec video posts/mo, white-label client portal, all 6 agents',
+            'description' => '3 brands · 180 image posts + 15 video posts/mo · all 6 agents',
+            'features'    => '3 brands, 180 AI image posts/mo, 15 AI 15-sec video posts/mo, all 6 agents, hard compliance gate, full audit log',
             'platforms'   => ['facebook', 'instagram', 'threads', 'tiktok', 'youtube', 'linkedin'],
             'caps' => [
                 'max_brands' => 3,

@@ -63,9 +63,9 @@ class SignupController extends Controller
      * The landing page uses the same shape via the public static helper
      * tiersFromConfig() below so we cannot drift between the two surfaces.
      *
-     * The non-config bits (sales copy: best-for, highlight flag, white-label
-     * boolean) stay here because they're marketing decisions, not billing
-     * data — but they're keyed by plan slug so adding a new tier in config
+     * The non-config bits (sales copy: best-for, highlight flag) stay here
+     * because they're marketing decisions, not billing data — but they're
+     * keyed by plan slug so adding a new tier in config
      * doesn't silently break the picker if no copy is supplied (we skip
      * unknown tiers).
      */
@@ -84,7 +84,7 @@ class SignupController extends Controller
      *   price:string, unit:string, price_myr:int,
      *   annual_myr:int, annual_savings_myr:int,
      *   brands:string, posts:string, videos:string,
-     *   whitelabel:bool, best:string, highlight?:bool,
+     *   best:string, highlight?:bool,
      * }>
      */
     public static function tiersFromConfig(): array
@@ -94,15 +94,12 @@ class SignupController extends Controller
         $copy = [
             'solo' => [
                 'best' => 'For founders running their own brand.',
-                'whitelabel' => false,
             ],
             'studio' => [
-                'best' => 'For freelancers and small studios. White-label included.',
-                'whitelabel' => true,
+                'best' => 'For freelancers and small studios.',
             ],
             'agency' => [
-                'best' => 'For agencies with full client portal + per-client guardrail isolation.',
-                'whitelabel' => true,
+                'best' => 'For agencies with per-client guardrail isolation across every brand.',
                 'highlight' => true,
             ],
         ];
@@ -148,7 +145,6 @@ class SignupController extends Controller
                 'platforms_label' => $platformLabels === []
                     ? ''
                     : (count($platformLabels) . ' platforms: ' . implode(', ', $platformLabels)),
-                'whitelabel' => (bool) $cfg['whitelabel'],
                 'best' => (string) $cfg['best'],
                 'highlight' => (bool) ($cfg['highlight'] ?? false),
             ];
