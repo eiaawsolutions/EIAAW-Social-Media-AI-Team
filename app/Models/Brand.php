@@ -22,6 +22,7 @@ class Brand extends Model
         'locale',
         'timezone',
         'logo_url',
+        'metricool_blog_id',
         'config',
         'competitors',
         'competitor_intel_config',

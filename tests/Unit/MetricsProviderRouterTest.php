@@ -23,7 +23,7 @@ use Tests\TestCase;
  */
 class MetricsProviderRouterTest extends TestCase
 {
-    private function makePost(string $platform, string $workspaceType): ScheduledPost
+    private function makePost(string $platform, string $workspaceType, ?string $metricoolBlogId = null): ScheduledPost
     {
         $ws = new Workspace();
         $ws->id = 1;
@@ -33,6 +33,7 @@ class MetricsProviderRouterTest extends TestCase
 
         $brand = new Brand();
         $brand->id = 10;
+        $brand->metricool_blog_id = $metricoolBlogId; // null = not mapped to Metricool
         $brand->setRelation('workspace', $ws);
 
         $draft = new Draft();
@@ -112,9 +113,53 @@ class MetricsProviderRouterTest extends TestCase
             'backend.blotato.com/*' => Http::response(['items' => []], 200),
         ]);
 
-        // TikTok is not a Meta platform → Blotato regardless of token.
+        // TikTok is not a Meta platform AND brand has no Metricool blogId →
+        // Blotato regardless of token.
         $out = $this->router()->collect($this->makePost('tiktok', 'internal'));
 
         Http::assertNotSent(fn ($r) => str_contains($r->url(), 'graph.facebook.com'));
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'app.metricool.com'));
+    }
+
+    public function test_brand_with_metricool_blog_id_routes_to_metricool_not_blotato(): void
+    {
+        // Metricool configured + brand mapped → Metricool wins over Blotato.
+        config([
+            'services.metricool.api_token' => 'mc_real_token',
+            'services.metricool.user_id' => 4872275,
+            'services.meta.graph.system_user_token' => '', // no Meta path
+        ]);
+
+        Http::fake([
+            'app.metricool.com/*' => Http::response(['data' => []], 200),
+            'backend.blotato.com/*' => Http::response(['items' => []], 200),
+        ]);
+
+        // TikTok (non-Meta) customer post whose brand has a Metricool blogId.
+        $this->router()->collect($this->makePost('tiktok', 'customer', '6322515'));
+
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'app.metricool.com')
+            && str_contains($r->url(), 'blogId=6322515'));
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'backend.blotato.com'));
+    }
+
+    public function test_metricool_mapped_brand_still_falls_back_when_unconfigured(): void
+    {
+        // Brand HAS a blogId but the integration is NOT configured (no token)
+        // → must NOT hit Metricool; falls back to Blotato.
+        config([
+            'services.metricool.api_token' => '',
+            'services.metricool.user_id' => 0,
+            'services.meta.graph.system_user_token' => '',
+        ]);
+
+        Http::fake([
+            'app.metricool.com/*' => Http::response(['data' => []], 200),
+            'backend.blotato.com/*' => Http::response(['items' => []], 200),
+        ]);
+
+        $this->router()->collect($this->makePost('tiktok', 'customer', '6322515'));
+
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'app.metricool.com'));
     }
 }
