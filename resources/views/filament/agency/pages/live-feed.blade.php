@@ -159,18 +159,97 @@
                 padding-top: 6px;
                 border-top: 1px solid var(--eiaaw-line-soft);
             }
+            /* ---- Graphical per-post metrics panel ---- */
             .lf-metrics {
-                display: flex; align-items: center; gap: 10px;
-                font-family: var(--eiaaw-mono); font-size: 11px;
-                letter-spacing: .06em;
-                color: var(--eiaaw-ink-2);
-                padding: 6px 0 2px;
+                display: flex; flex-direction: column; gap: 8px;
+                padding: 8px 0 2px;
                 border-top: 1px solid var(--eiaaw-line-soft);
             }
-            .lf-metric { display: inline-flex; align-items: baseline; gap: 4px; }
-            .lf-metric-val { font-weight: 600; color: var(--eiaaw-ink); }
-            .lf-metric-lbl { font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--eiaaw-mute); }
-            .lf-metric-dash { color: var(--eiaaw-mute); font-weight: 600; }
+            /* Row 1: headline chips (icon + compact number + label) */
+            .lf-chips {
+                display: flex; align-items: stretch; gap: 6px;
+            }
+            .lf-chip {
+                flex: 1 1 0; min-width: 0;
+                display: flex; flex-direction: column; gap: 1px;
+                padding: 5px 7px;
+                background: var(--eiaaw-bg);
+                border: 1px solid var(--eiaaw-line-soft);
+                border-radius: 8px;
+            }
+            .lf-chip-top {
+                display: flex; align-items: center; gap: 4px;
+                color: var(--eiaaw-mute);
+            }
+            .lf-chip-top svg { width: 11px; height: 11px; flex: none; }
+            .lf-chip-lbl {
+                font-family: var(--eiaaw-mono); font-size: 8.5px;
+                letter-spacing: .1em; text-transform: uppercase;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            }
+            .lf-chip-val {
+                font-family: var(--eiaaw-mono); font-size: 13px;
+                font-weight: 600; color: var(--eiaaw-ink); line-height: 1.1;
+            }
+            .lf-chip-val.is-dash { color: var(--eiaaw-mute); font-weight: 600; }
+            .lf-chip-lead .lf-chip-top { color: var(--eiaaw-primary-dark); }
+            .lf-chip-lead { border-color: var(--eiaaw-primary); background: #ECFBF7; }
+
+            /* Row 2: stacked engagement spark bar + engagement-rate donut */
+            .lf-eng {
+                display: flex; align-items: center; gap: 9px;
+            }
+            .lf-bar {
+                flex: 1 1 auto; min-width: 0;
+                height: 7px; border-radius: 999px; overflow: hidden;
+                background: var(--eiaaw-line-soft);
+                display: flex;
+            }
+            .lf-bar span { height: 100%; display: block; }
+            .lf-bar .seg-likes { background: #EC4899; }
+            .lf-bar .seg-comments { background: #1FA896; }
+            .lf-bar .seg-shares { background: #6366F1; }
+            .lf-bar .seg-saves { background: #F59E0B; }
+            .lf-bar-empty { background: var(--eiaaw-line-soft); }
+            .lf-eng-rate {
+                flex: none;
+                display: inline-flex; align-items: center; gap: 5px;
+                font-family: var(--eiaaw-mono); font-size: 10.5px;
+                font-weight: 600; color: var(--eiaaw-ink-2);
+            }
+            .lf-donut { width: 16px; height: 16px; flex: none; transform: rotate(-90deg); }
+            .lf-donut-track { stroke: var(--eiaaw-line-soft); }
+            .lf-donut-fill { stroke: var(--eiaaw-primary); stroke-linecap: round; }
+
+            /* Legend / breakdown caption (only the parts that have a reading) */
+            .lf-eng-legend {
+                display: flex; flex-wrap: wrap; gap: 4px 10px;
+                font-family: var(--eiaaw-mono); font-size: 8.5px;
+                letter-spacing: .08em; text-transform: uppercase;
+                color: var(--eiaaw-mute);
+            }
+            .lf-eng-legend span { display: inline-flex; align-items: center; gap: 4px; }
+            .lf-eng-legend i {
+                width: 7px; height: 7px; border-radius: 2px; display: inline-block;
+            }
+            .lf-eng-legend .dot-likes { background: #EC4899; }
+            .lf-eng-legend .dot-comments { background: #1FA896; }
+            .lf-eng-legend .dot-shares { background: #6366F1; }
+            .lf-eng-legend .dot-saves { background: #F59E0B; }
+
+            /* Truthful no-data state */
+            .lf-metrics-pending {
+                display: flex; align-items: center; gap: 6px;
+                padding: 7px 0 2px;
+                border-top: 1px solid var(--eiaaw-line-soft);
+                font-family: var(--eiaaw-mono); font-size: 9.5px;
+                letter-spacing: .1em; text-transform: uppercase;
+                color: var(--eiaaw-mute);
+            }
+            .lf-metrics-pending::before {
+                content: ''; width: 5px; height: 5px; border-radius: 50%;
+                background: var(--eiaaw-line); flex: none;
+            }
             .lf-card.is-publishing {
                 border-style: dashed;
                 border-color: var(--eiaaw-line);
@@ -349,11 +428,38 @@
                                 $metric = (! $isPublishing && ! $isUnverified) ? ($latestMetrics[$post->id] ?? null) : null;
                                 $isVideoFirst = in_array($platform, $videoFirstPlatforms, true);
                                 $leadVal = $isVideoFirst ? ($metric?->video_views) : ($metric?->impressions);
-                                $leadLbl = $isVideoFirst ? 'views' : 'imp';
+                                // Fall back to the other reach measure if the lead is null but the
+                                // alternate exists (e.g. an IG reel where reach is null but views isn't).
+                                if ($metric && $leadVal === null) {
+                                    $leadVal = $isVideoFirst ? $metric->impressions : $metric->video_views;
+                                }
+                                $leadLbl = $isVideoFirst ? 'views' : 'reach';
+
+                                // A "reading" exists if ANY real counter is present. Dormant rows
+                                // (every counter NULL) are treated as no-data → pending state.
                                 $hasAnyMetric = $metric && (
                                     $metric->impressions !== null || $metric->video_views !== null
+                                    || $metric->reach !== null
                                     || $metric->likes !== null || $metric->comments !== null
+                                    || $metric->shares !== null || $metric->saves !== null
                                 );
+
+                                // Stacked engagement bar: proportions of likes/comments/shares/saves.
+                                // NULLs count as 0 for the proportion but are NOT shown as a reading.
+                                $eLikes = (int) ($metric?->likes ?? 0);
+                                $eComments = (int) ($metric?->comments ?? 0);
+                                $eShares = (int) ($metric?->shares ?? 0);
+                                $eSaves = (int) ($metric?->saves ?? 0);
+                                $eTotal = $eLikes + $eComments + $eShares + $eSaves;
+                                $pct = fn (int $part): float => $eTotal > 0 ? round($part / $eTotal * 100, 2) : 0.0;
+
+                                // Engagement rate stored as a fraction (e.g. 0.0483). Render as %.
+                                $engRate = $metric?->engagement_rate !== null ? (float) $metric->engagement_rate : null;
+                                $engPct = $engRate !== null ? round($engRate * 100, 1) : null;
+                                // Donut dash: circumference for r=6 ≈ 37.7. Cap fill at 100%.
+                                $donutC = 37.7;
+                                $donutFill = $engPct !== null ? min($engPct, 100) / 100 * $donutC : 0;
+
                                 $tooltip = null;
                                 if ($metric) {
                                     $age = $metric->observed_at?->diffForHumans(['parts' => 1, 'short' => true]);
@@ -362,18 +468,72 @@
                             @endphp
                             @if ($hasAnyMetric)
                                 <div class="lf-metrics" title="{{ $tooltip }}">
-                                    <span class="lf-metric">
-                                        <span class="lf-metric-val {{ $leadVal === null ? 'lf-metric-dash' : '' }}">{{ $fmtCount($leadVal) }}</span>
-                                        <span class="lf-metric-lbl">{{ $leadLbl }}</span>
-                                    </span>
-                                    <span class="lf-metric">
-                                        <span class="lf-metric-val {{ $metric->likes === null ? 'lf-metric-dash' : '' }}">{{ $fmtCount($metric->likes) }}</span>
-                                        <span class="lf-metric-lbl">likes</span>
-                                    </span>
-                                    <span class="lf-metric">
-                                        <span class="lf-metric-val {{ $metric->comments === null ? 'lf-metric-dash' : '' }}">{{ $fmtCount($metric->comments) }}</span>
-                                        <span class="lf-metric-lbl">cmts</span>
-                                    </span>
+                                    <div class="lf-chips">
+                                        <div class="lf-chip lf-chip-lead">
+                                            <span class="lf-chip-top">
+                                                @if ($isVideoFirst)
+                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>
+                                                @else
+                                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                                                @endif
+                                                <span class="lf-chip-lbl">{{ $leadLbl }}</span>
+                                            </span>
+                                            <span class="lf-chip-val {{ $leadVal === null ? 'is-dash' : '' }}">{{ $fmtCount($leadVal) }}</span>
+                                        </div>
+                                        <div class="lf-chip">
+                                            <span class="lf-chip-top">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg>
+                                                <span class="lf-chip-lbl">likes</span>
+                                            </span>
+                                            <span class="lf-chip-val {{ $metric->likes === null ? 'is-dash' : '' }}">{{ $fmtCount($metric->likes) }}</span>
+                                        </div>
+                                        <div class="lf-chip">
+                                            <span class="lf-chip-top">
+                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z"/></svg>
+                                                <span class="lf-chip-lbl">comments</span>
+                                            </span>
+                                            <span class="lf-chip-val {{ $metric->comments === null ? 'is-dash' : '' }}">{{ $fmtCount($metric->comments) }}</span>
+                                        </div>
+                                    </div>
+
+                                    @if ($eTotal > 0 || $engPct !== null)
+                                        <div class="lf-eng">
+                                            @if ($eTotal > 0)
+                                                <div class="lf-bar" aria-label="engagement breakdown">
+                                                    @if ($eLikes > 0)<span class="seg-likes" style="width: {{ $pct($eLikes) }}%"></span>@endif
+                                                    @if ($eComments > 0)<span class="seg-comments" style="width: {{ $pct($eComments) }}%"></span>@endif
+                                                    @if ($eShares > 0)<span class="seg-shares" style="width: {{ $pct($eShares) }}%"></span>@endif
+                                                    @if ($eSaves > 0)<span class="seg-saves" style="width: {{ $pct($eSaves) }}%"></span>@endif
+                                                </div>
+                                            @else
+                                                <div class="lf-bar lf-bar-empty" aria-hidden="true"></div>
+                                            @endif
+                                            @if ($engPct !== null)
+                                                <span class="lf-eng-rate" title="Engagement rate">
+                                                    <svg class="lf-donut" viewBox="0 0 16 16">
+                                                        <circle class="lf-donut-track" cx="8" cy="8" r="6" fill="none" stroke-width="2.5"/>
+                                                        <circle class="lf-donut-fill" cx="8" cy="8" r="6" fill="none" stroke-width="2.5"
+                                                                stroke-dasharray="{{ $donutFill }} {{ $donutC }}"/>
+                                                    </svg>
+                                                    {{ $engPct }}%
+                                                </span>
+                                            @endif
+                                        </div>
+
+                                        @if ($eTotal > 0)
+                                            <div class="lf-eng-legend">
+                                                @if ($eLikes > 0)<span><i class="dot-likes"></i>{{ $fmtCount($eLikes) }} likes</span>@endif
+                                                @if ($eComments > 0)<span><i class="dot-comments"></i>{{ $fmtCount($eComments) }} cmts</span>@endif
+                                                @if ($eShares > 0)<span><i class="dot-shares"></i>{{ $fmtCount($eShares) }} shares</span>@endif
+                                                @if ($eSaves > 0)<span><i class="dot-saves"></i>{{ $fmtCount($eSaves) }} saves</span>@endif
+                                            </div>
+                                        @endif
+                                    @endif
+                                </div>
+                            @elseif (! $isPublishing && ! $isUnverified)
+                                <div class="lf-metrics-pending"
+                                     title="Metrics are collected automatically once the platform reports engagement (via Metricool / Meta), or you can upload a CSV on the Performance page.">
+                                    metrics pending
                                 </div>
                             @endif
                             <div class="lf-foot">

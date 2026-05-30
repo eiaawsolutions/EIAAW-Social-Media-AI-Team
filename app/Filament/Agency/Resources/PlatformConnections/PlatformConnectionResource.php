@@ -14,15 +14,18 @@ use Illuminate\Database\Eloquent\Builder;
 
 /**
  * Platform Connections — read-only-ish list of social accounts the customer
- * has connected via Blotato. The actual connection flow happens in Blotato's
- * web UI (Blotato has done App Review with Meta/LinkedIn/TikTok/X/YouTube/etc;
- * we ride on top of their approved permissions for v1).
+ * has connected via Metricool. The actual connection flow happens through a
+ * Metricool connect-link in the "Platform setup" wizard (MetricoolSetup);
+ * Metricool has done App Review with each platform and we read the resulting
+ * connection state per brand from /admin/profile.
  *
  * The table page exposes:
- *   - One row per connected account (per brand)
- *   - "Sync from Blotato" header action (calls /v2/users/me/accounts)
- *   - "Open Blotato to add a platform" header action (deep-link)
- *   - Disconnect (marks status=revoked) — does NOT remove the row, preserves
+ *   - One row per connected network (per brand)
+ *   - "Refresh from Metricool" header action (re-reads /admin/profile via
+ *     MetricoolConnectionService::sync)
+ *   - "Connect a platform" header action → points at the connect-link wizard
+ *   - Target overrides per connection (consumed by MetricoolPublisher at
+ *     publish time) — editing one marks nothing revoked; preserves the
  *     ScheduledPost audit chain
  *
  * Stage-04 of SetupReadiness (`platform_connected`) flips to done = true once
@@ -38,9 +41,11 @@ class PlatformConnectionResource extends Resource
     protected static ?int $navigationSort = 4;
 
     /**
-     * No editable form for v1 — Blotato is the source of truth for connections.
-     * Stub schema satisfies Filament's resource contract; the page uses
-     * `ManageRecords` (no per-record edit modal).
+     * No editable form for v1 — Metricool is the source of truth for which
+     * accounts are connected (read from /admin/profile). Stub schema satisfies
+     * Filament's resource contract; the page uses `ManageRecords` (no per-record
+     * edit modal). The one editable thing — target overrides — lives in its own
+     * record action below.
      */
     public static function form(Schema $schema): Schema
     {
@@ -74,12 +79,13 @@ class PlatformConnectionResource extends Resource
                     ->fontFamily('mono')
                     ->prefix('@')
                     ->placeholder('—'),
-                Tables\Columns\TextColumn::make('blotato_account_id')
-                    ->label('Blotato ID')
+                Tables\Columns\TextColumn::make('brand.metricool_blog_id')
+                    ->label('Metricool brand')
                     ->fontFamily('mono')
                     ->color('gray')
                     ->size('sm')
                     ->limit(16)
+                    ->tooltip('The Metricool brand (blogId) this connection is targeted through. Set once per brand by EIAAW during setup.')
                     ->placeholder('—'),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
@@ -103,7 +109,7 @@ class PlatformConnectionResource extends Resource
                     ->falseColor('gray')
                     ->tooltip(fn (PlatformConnection $r) => is_array($r->target_overrides) && ! empty($r->target_overrides)
                         ? json_encode($r->target_overrides, JSON_UNESCAPED_SLASHES)
-                        : 'Personal account (no overrides — Blotato routes to profile)'),
+                        : 'Personal account (no overrides — Metricool routes to the connected profile)'),
             ])
             ->recordActions([
                 \Filament\Actions\Action::make('targetOverrides')
@@ -111,7 +117,7 @@ class PlatformConnectionResource extends Resource
                     ->icon('heroicon-o-cog-6-tooth')
                     ->color('gray')
                     ->modalHeading(fn (PlatformConnection $r) => 'Target overrides — ' . ucfirst($r->platform) . ' @' . ($r->display_handle ?: '?'))
-                    ->modalDescription('Personal accounts: leave fields blank — Blotato routes to your profile. Business pages: paste the platform-side numeric ID. These values get sent verbatim on every publish to this connection.')
+                    ->modalDescription('Personal accounts: leave fields blank — Metricool routes to the connected profile. Business pages: paste the platform-side numeric ID. These values get sent verbatim on every publish to this connection.')
                     ->schema(fn (PlatformConnection $r) => self::overrideFieldsFor($r))
                     ->fillForm(fn (PlatformConnection $r) => self::fillFormFromOverrides($r))
                     ->action(function (PlatformConnection $r, array $data): void {
@@ -129,7 +135,7 @@ class PlatformConnectionResource extends Resource
                     }),
             ])
             ->emptyStateHeading('No platforms connected yet')
-            ->emptyStateDescription('Connect your social accounts inside Blotato, then click "Sync from Blotato" above. Blotato has done the OAuth + app review with each platform; we read the resulting connections.')
+            ->emptyStateDescription('Connect your social accounts via the secure link in "Platform setup", then click "Refresh from Metricool" above. Metricool has done the OAuth + app review with each platform; we read the resulting connections.')
             ->emptyStateIcon(Heroicon::OutlinedLink);
     }
 
@@ -170,9 +176,10 @@ class PlatformConnectionResource extends Resource
     }
 
     /**
-     * Per-platform form fields for the "Target overrides" modal. Mirrors
-     * BlotatoClient::defaultTargetFor() so what the operator sees here is
-     * exactly what gets merged at publish time.
+     * Per-platform form fields for the "Target overrides" modal. These map onto
+     * MetricoolPublisher::perNetworkData() (the connection's target_overrides →
+     * Metricool's `<network>Data` block), so what the operator sets here is
+     * exactly what gets merged into every publish to this connection.
      *
      * @return array<int, \Filament\Forms\Components\Field>
      */
