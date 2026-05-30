@@ -155,6 +155,18 @@
                             </tr>
                         @endif
 
+                        {{-- Railway — measured via API when wired (else it falls into the fixed lines below as operator-set) --}}
+                        @if ($s['costs']['railway'])
+                            <tr>
+                                <td>
+                                    Railway (this project)
+                                    <span class="cm-muted">(${{ number_format($s['costs']['railway']['current_usd'], 2) }} cycle-to-date · est ${{ number_format($s['costs']['railway']['estimated_usd'], 2) }})</span>
+                                </td>
+                                <td><span class="cm-tag cm-tag-measured">measured · API</span></td>
+                                <td class="cm-num">{{ number_format($s['costs']['railway']['amount_myr'], 2) }}</td>
+                            </tr>
+                        @endif
+
                         {{-- Blotato (operator rate × live count) --}}
                         <tr>
                             <td>
@@ -205,6 +217,12 @@
                         <td>Less: Blotato seats</td>
                         <td class="cm-num">− {{ number_format($s['costs']['blotato_myr'], 2) }}</td>
                     </tr>
+                    @if ($s['costs']['railway'])
+                        <tr class="cm-pl-row">
+                            <td>Less: Railway (measured)</td>
+                            <td class="cm-num">− {{ number_format($s['costs']['railway']['amount_myr'], 2) }}</td>
+                        </tr>
+                    @endif
                     <tr class="cm-pl-row">
                         <td>Less: fixed infra</td>
                         <td class="cm-num">− {{ number_format($s['costs']['fixed_myr'], 2) }}</td>

@@ -72,5 +72,11 @@ return [
 
         // Auth helpers
         'app.key',
+
+        // Railway billing API token (Account/Workspace token) — read-only
+        // usage data for the HQ Cost Monitor's live Railway line. Workspace-
+        // scoped, so it must be an Account or Workspace token, never a project
+        // token. Resolved from a secret:// handle in RAILWAY_API_TOKEN.
+        'costs.railway.token',
     ],
 ];

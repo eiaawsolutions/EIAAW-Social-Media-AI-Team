@@ -93,6 +93,61 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Railway — live usage cost via the Railway GraphQL billing API (MEASURED)
+    |--------------------------------------------------------------------------
+    | When a Railway token is wired, App\Services\Monitoring\RailwayCostClient
+    | pulls this project's current-cycle + estimated usage from
+    | backboard.railway.com/graphql/v2 and converts resource quantities to USD
+    | using the unit prices below, replacing the operator-set `fixed.railway`
+    | line with a MEASURED one. If the token is missing or the call fails, the
+    | monitor silently falls back to `fixed.railway` (COST_RAILWAY_USD) so the
+    | page never breaks. This is why the Railway line is in BOTH places.
+    |
+    | TOKEN: an Account or Workspace token (NOT a project token — usage/`me`
+    | data is workspace-scoped). Per the EIAAW deploy contract it lives in
+    | Infisical and `token_handle` holds the `secret://...` reference; the
+    | resolver turns it into the real value at runtime. Create the token at
+    | https://railway.com/account/tokens (human action in the dashboard).
+    |
+    | Verified against the live schema 2026-05-30: estimatedUsage(projectId,
+    | measurements) and usage(projectId, measurements, startDate, endDate)
+    | each return rows of {measurement, (estimated)value} in resource units
+    | (vCPU-minutes, GB-months, GB egress) — NOT dollars — so we price them
+    | here. Unit prices are Railway's published rates (docs.railway.com
+    | pricing); edit if Railway repricing changes them.
+    */
+    'railway' => [
+        // Master switch. Off until a token is wired — until then the
+        // operator-set fixed.railway line carries the cost.
+        'enabled' => (bool) env('RAILWAY_COST_ENABLED', false),
+
+        // secret://... handle resolved by InfisicalResolver (EIAAW contract).
+        // NEVER a raw token here.
+        'token' => env('RAILWAY_API_TOKEN'),
+
+        // This project's UUID (eiaaw-smt). Scopes the usage query to THIS
+        // product only — other EIAAW projects have their own P&L.
+        'project_id' => env('RAILWAY_PROJECT_ID', 'a8e6c372-b44e-470a-b470-2d6ab36bf9ff'),
+
+        'endpoint' => env('RAILWAY_API_ENDPOINT', 'https://backboard.railway.com/graphql/v2'),
+
+        // Cache the API result this many seconds (the dashboard figure barely
+        // moves intra-hour; no need to hit the API on every 30s page poll).
+        'cache_ttl' => (int) env('RAILWAY_COST_CACHE_TTL', 3600),
+
+        // Published Railway unit prices (USD). Used to convert the usage-query
+        // resource quantities into dollars. Source: docs.railway.com pricing.
+        'unit_prices_usd' => [
+            'cpu_vcpu_minute' => (float) env('RAILWAY_PRICE_CPU_MIN', 0.000463),
+            'memory_gb_minute' => (float) env('RAILWAY_PRICE_MEM_MIN', 0.000231),
+            'disk_gb_month' => (float) env('RAILWAY_PRICE_DISK_MONTH', 0.15),
+            'network_tx_gb' => (float) env('RAILWAY_PRICE_EGRESS_GB', 0.05),
+            'backup_gb_month' => (float) env('RAILWAY_PRICE_BACKUP_MONTH', 0.15),
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Per-workspace variable cost — Blotato seat (OPERATOR-SET rate × live count)
     |--------------------------------------------------------------------------
     | Every PAID workspace gets a dedicated Blotato account that HQ provisions

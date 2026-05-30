@@ -59,7 +59,7 @@ class CostMonitor
      *   fx: float,
      *   signups: array{paying:int, by_plan:array<string,int>, internal:int, blotato_provisioned:int},
      *   revenue: array{total_myr:float, by_plan:array<string,array{count:int,unit_myr:float,subtotal_myr:float,name:string}>},
-     *   costs: array{ai_myr:float, ai_by_provider:array<string,float>, blotato_myr:float, fixed_myr:float, fixed_lines:array, total_myr:float},
+     *   costs: array{ai_myr:float, ai_by_provider:array<string,float>, blotato_myr:float, railway:?array, fixed_myr:float, fixed_lines:array, total_myr:float},
      *   profit: array{net_myr:float, margin_pct:?float},
      *   projection: array{revenue_myr:float, ai_cost_myr:float, profit_myr:float}|null,
      *   warnings: list<string>
@@ -198,17 +198,52 @@ class CostMonitor
     {
         $ai = $this->aiCost($start, $end, $fx);
         $blotatoMyr = $this->blotatoCost($blotatoProvisioned, $fx);
-        $fixed = $this->fixedCosts($fx);
 
-        $total = round($ai['total_myr'] + $blotatoMyr + $fixed['total_myr'], 2);
+        // Live Railway cost. When the API returns a figure we use it as a
+        // MEASURED line and suppress the operator-set `railway` fixed line so
+        // it is never double-counted. When it's null we leave the operator-set
+        // line in place (fallback).
+        $railway = $this->railwayCost($fx);
+        $suppressFixed = $railway !== null ? ['railway'] : [];
+
+        $fixed = $this->fixedCosts($fx, $suppressFixed);
+
+        $railwayMyr = $railway['amount_myr'] ?? 0.0;
+        $total = round($ai['total_myr'] + $blotatoMyr + $fixed['total_myr'] + $railwayMyr, 2);
 
         return [
             'ai_myr' => $ai['total_myr'],
             'ai_by_provider' => $ai['by_provider'],
             'blotato_myr' => $blotatoMyr,
+            'railway' => $railway, // null when not wired / API down (operator-set line carries it)
             'fixed_myr' => $fixed['total_myr'],
             'fixed_lines' => $fixed['lines'],
             'total_myr' => $total,
+        ];
+    }
+
+    /**
+     * Live Railway infra cost (MEASURED) for this project, in MYR, or null when
+     * the Railway API isn't wired or the call fails — in which case the
+     * operator-set `fixed.railway` line carries the cost instead. Converts the
+     * client's USD figure at FX and carries the USD estimate for the UI.
+     *
+     * @return array{amount_myr:float, current_usd:float, estimated_usd:float, estimated_myr:float, source:string}|null
+     */
+    public function railwayCost(float $fx): ?array
+    {
+        $cost = app(RailwayCostClient::class)->cost();
+
+        if ($cost === null) {
+            return null;
+        }
+
+        return [
+            'amount_myr' => round($cost['current_usd'] * $fx, 2),
+            'current_usd' => $cost['current_usd'],
+            'estimated_usd' => $cost['estimated_usd'],
+            'estimated_myr' => round($cost['estimated_usd'] * $fx, 2),
+            'source' => $cost['source'],
         ];
     }
 
@@ -263,12 +298,18 @@ class CostMonitor
      *
      * @return array{total_myr:float, lines:list<array{key:string,label:string,amount_myr:float,source:string,is_zero:bool}>}
      */
-    public function fixedCosts(float $fx): array
+    public function fixedCosts(float $fx, array $suppressKeys = []): array
     {
         $lines = [];
         $total = 0.0;
 
         foreach ((array) config('costs.fixed', []) as $key => $line) {
+            // Skip any line now provided by a live measured source (e.g. the
+            // operator-set `railway` line when the Railway API is wired).
+            if (in_array((string) $key, $suppressKeys, true)) {
+                continue;
+            }
+
             if (array_key_exists('amount_usd', $line)) {
                 $myr = round((float) $line['amount_usd'] * $fx, 2);
                 $source = 'usd';
@@ -306,7 +347,16 @@ class CostMonitor
         $daysInMonth = $end->day;
 
         $projectedAi = round(($costs['ai_myr'] / $daysElapsed) * $daysInMonth, 2);
-        $projectedCostTotal = round($projectedAi + $costs['blotato_myr'] + $costs['fixed_myr'], 2);
+
+        // Railway: prefer the API's own end-of-cycle ESTIMATE when measured
+        // (Railway already projects it); otherwise the operator-set line is
+        // already inside fixed_myr, so contribute 0 here.
+        $projectedRailway = $costs['railway']['estimated_myr'] ?? 0.0;
+
+        $projectedCostTotal = round(
+            $projectedAi + $costs['blotato_myr'] + $costs['fixed_myr'] + $projectedRailway,
+            2
+        );
 
         return [
             'revenue_myr' => round($revenueMyr, 2),
