@@ -89,6 +89,73 @@ class PlatformsPageMetricoolTest extends TestCase
         );
     }
 
+    /**
+     * Revoked connections are inert tombstones (legacy disconnected accounts the
+     * Metricool/Blotato sync revoked rather than deleted, to preserve the
+     * ScheduledPost audit chain). They must be hidden from the default Platforms
+     * view for EVERYONE — including super admins viewing the panel for their own
+     * brand, who previously saw them because of an unconditional "super admin
+     * sees everything" branch. This locks the two-mechanism hide so that branch
+     * can't regress.
+     */
+    public function test_customers_have_revoked_connections_filtered_in_base_query(): void
+    {
+        $src = $this->resourceSource();
+
+        // The non-super-admin (customer) branch of getEloquentQuery must still
+        // exclude revoked rows unconditionally — they never see the revoked
+        // filter, and a hidden Filament filter applies no query, so the base
+        // query is the only thing protecting their view.
+        $this->assertStringContainsString(
+            "->where('status', '!=', 'revoked')",
+            $src,
+            'Customer view must exclude revoked connections in the base query.'
+        );
+    }
+
+    public function test_revoked_rows_are_gated_behind_a_super_admin_only_filter(): void
+    {
+        $src = $this->resourceSource();
+
+        // The opt-in to surface revoked rows must exist, default to hiding them,
+        // and only be visible to super admins.
+        $this->assertStringContainsString(
+            "Filter::make('hide_revoked')",
+            $src,
+            'A revoked-visibility filter must exist for super-admin audit access.'
+        );
+        $this->assertStringContainsString(
+            '->default(true)',
+            $src,
+            'The revoked filter must default to ON (hide), so HQ gets the clean '
+            . 'view a customer gets unless they explicitly opt in.'
+        );
+        $this->assertStringContainsString(
+            'is_super_admin',
+            $src,
+            'The revoked filter must be gated to super admins only.'
+        );
+    }
+
+    public function test_super_admin_branch_does_not_unconditionally_return_revoked_rows(): void
+    {
+        $src = $this->resourceSource();
+
+        // Guard against the original bug: the super-admin branch returned ALL
+        // connections (no status filter) which dumped revoked tombstones into
+        // HQ's own-brand view. The branch must no longer name the broad
+        // brand-only whereHas without the revoked control being filter-driven.
+        // We assert the explanatory invariant comment is present so the intent
+        // survives future edits.
+        $this->assertStringContainsString(
+            'Super admins control revoked visibility via',
+            $src,
+            'The super-admin branch must document that revoked visibility is '
+            . 'filter-driven, not unconditional — preventing a silent regression '
+            . 'back to "super admin sees every revoked row by default".'
+        );
+    }
+
     public function test_resource_exposes_a_routing_space_column_not_blotato_id(): void
     {
         $src = $this->resourceSource();

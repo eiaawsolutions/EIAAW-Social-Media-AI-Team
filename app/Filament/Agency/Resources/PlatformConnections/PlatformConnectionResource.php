@@ -111,6 +111,27 @@ class PlatformConnectionResource extends Resource
                         ? json_encode($r->target_overrides, JSON_UNESCAPED_SLASHES)
                         : 'Personal account (no overrides — we route to the connected profile)'),
             ])
+            ->filters([
+                // Super-admin-only opt-in to surface revoked tombstones for
+                // support/audit. Defaults to ON (= hide revoked) so HQ gets the
+                // same clean view a customer does; toggling it OFF reveals the
+                // revoked rows.
+                //
+                // Mechanics (Filament v5): a filter's query callback runs ONLY
+                // when the toggle is active (InteractsWithTableQuery::apply
+                // short-circuits when isActive is false), so the filter is framed
+                // as "hide" (active = hide) rather than "show" (active = show).
+                // A *hidden* filter applies nothing at all, which is why customer
+                // hiding lives in getEloquentQuery() instead of here — this
+                // control is only ever shown to, and only ever affects, super
+                // admins.
+                Tables\Filters\Filter::make('hide_revoked')
+                    ->label('Hide revoked connections')
+                    ->toggle()
+                    ->default(true)
+                    ->visible(fn () => (bool) auth()->user()?->is_super_admin)
+                    ->query(fn (Builder $query): Builder => $query->where('status', '!=', 'revoked')),
+            ])
             ->recordActions([
                 \Filament\Actions\Action::make('targetOverrides')
                     ->label('Target overrides')
@@ -144,12 +165,25 @@ class PlatformConnectionResource extends Resource
      * BrandResource::getEloquentQuery — single source of truth across list,
      * record-resolution, summary, and modal queries.
      *
-     * Customer view hides 'revoked' connections: those are inert tombstones
-     * (legacy Blotato-era rows the Metricool sync revoked rather than deleted,
-     * to preserve the ScheduledPost audit chain — see MetricoolConnectionService
-     * ::sync). They never re-activate, so they're noise to the customer. We keep
-     * 'expired'/'reauth_required' visible — those are states the customer must
-     * act on. Super admins (HQ) still see revoked rows for support/audit.
+     * 'revoked' connections are hidden by default for EVERYONE. Those rows are
+     * inert tombstones (legacy Blotato-era rows the Metricool sync revoked rather
+     * than deleted, to preserve the ScheduledPost audit chain — see
+     * MetricoolConnectionService::sync). They never re-activate, so they're noise
+     * in the default view. We keep 'expired'/'reauth_required' visible — those
+     * are states the customer must act on.
+     *
+     * Two different mechanisms enforce the hide, because they answer different
+     * questions:
+     *   - Non-super-admins (customers): hidden HERE, unconditionally. They never
+     *     see the revoked filter (it's super-admin-only), and a hidden Filament
+     *     filter applies no query at all — so the exclusion must live in the base
+     *     query for them.
+     *   - Super admins (HQ): hidden by the "Hide revoked connections" table
+     *     filter, which defaults to ON. This gives HQ the same clean default view
+     *     a customer gets, while letting them toggle it OFF to surface tombstones
+     *     for support/audit. The exclusion is deliberately NOT hardcoded here for
+     *     them, because a base-query exclusion would strip revoked rows before the
+     *     filter could ever add them back.
      */
     public static function getEloquentQuery(): Builder
     {
@@ -157,19 +191,23 @@ class PlatformConnectionResource extends Resource
         $workspaceId = $user?->current_workspace_id
             ?? $user?->ownedWorkspaces()->value('id');
 
-        // Tenant isolation: super admin sees everything; anyone else without a
-        // resolvable workspace sees nothing (prevents cross-tenant IDOR — a
-        // platform connection holds OAuth tokens, so leakage is high-impact).
+        $query = parent::getEloquentQuery();
+
+        // Tenant isolation: super admin bypasses workspace scoping (support);
+        // anyone else without a resolvable workspace sees nothing (prevents
+        // cross-tenant IDOR — a platform connection holds OAuth tokens, so
+        // leakage is high-impact). Super admins control revoked visibility via
+        // the table filter, so no status constraint is applied to them here.
         if ($user?->is_super_admin) {
-            return parent::getEloquentQuery()
+            return $query
                 ->whereHas('brand', fn (Builder $q) => $q->whereNull('archived_at'));
         }
 
         if (! $workspaceId) {
-            return parent::getEloquentQuery()->whereRaw('1 = 0');
+            return $query->whereRaw('1 = 0');
         }
 
-        return parent::getEloquentQuery()
+        return $query
             ->where('status', '!=', 'revoked')
             ->whereHas('brand', function (Builder $q) use ($workspaceId) {
                 $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
