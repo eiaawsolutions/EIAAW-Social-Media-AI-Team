@@ -35,6 +35,11 @@ jobs:
     env:
       APP_ENV: testing
       APP_DEBUG: "false"
+      # Throwaway CI key — NOT a secret. Laravel reads APP_KEY straight from the
+      # environment, so we set it here rather than running `php artisan
+      # key:generate` (which fails in CI: it tries to write to a .env file that
+      # doesn't exist in the repo). This value never touches prod.
+      APP_KEY: "base64:AJqYP6VKSNP57+jIuE2bZT5lpPSrfs8YuQCBDLr5bro="
       # Throwaway in-memory DB so the framework resolves a valid connection.
       # The suite is DB-free, so this is never queried — and it carries ZERO
       # prod credentials (the whole point of keeping CI hermetic).
@@ -71,9 +76,6 @@ jobs:
 
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
-
-      - name: Generate APP_KEY
-        run: php artisan key:generate --ansi
 
       - name: Run test suite
         run: php artisan test --no-interaction
