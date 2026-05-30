@@ -182,6 +182,14 @@ return [
     ],
 
     // ─── Publishing ─────────────────────────────────────────────────
+    // Provider selection for the publish path (SubmitScheduledPost via
+    // PublisherFactory). Default 'metricool' — the Blotato→Metricool switch.
+    // 'blotato' is the rollback path until Blotato is decommissioned in a
+    // follow-up PR. Flip with PUBLISH_PROVIDER, no redeploy of code.
+    'publishing' => [
+        'provider' => env('PUBLISH_PROVIDER', 'metricool'),
+    ],
+
     'blotato' => [
         'api_key' => env('BLOTATO_API_KEY'),
         'base_url' => env('BLOTATO_BASE_URL', 'https://backend.blotato.com'),
