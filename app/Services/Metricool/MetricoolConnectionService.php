@@ -116,13 +116,21 @@ class MetricoolConnectionService
         DB::transaction(function () use ($brand, $result, &$synced, &$seen) {
             foreach ($result['networks'] as $platform => $handle) {
                 $seen[] = $platform;
-                PlatformConnection::updateOrCreate(
+                // Key the upsert on (brand_id, platform) ONLY — the business
+                // invariant is one active connection per network per brand.
+                // The platform_account_id (handle) is NOT part of the match key:
+                // Metricool reports a different handle than the legacy Blotato
+                // rows did (e.g. a Facebook page id vs the display name), so
+                // keying on it would never find the existing row and would
+                // insert a duplicate on every re-sync. Instead we update the
+                // handle in place as a value below.
+                $kept = PlatformConnection::updateOrCreate(
                     [
                         'brand_id' => $brand->id,
                         'platform' => $platform,
-                        'platform_account_id' => $handle,
                     ],
                     [
+                        'platform_account_id' => $handle,
                         'display_handle' => ltrim($handle, '@'),
                         // No per-account id in Metricool — targeting is by
                         // brand blogId + network. Keep blotato_account_id null.
@@ -136,16 +144,29 @@ class MetricoolConnectionService
                         'status' => 'active',
                     ],
                 );
+
+                // Self-heal pre-existing duplicates: if any OTHER active row
+                // exists for this (brand, platform) — e.g. a leftover legacy
+                // Blotato-era row from before the migration, which carries a
+                // non-null blotato_account_id and a different handle — revoke it
+                // so exactly one active connection per network survives.
+                PlatformConnection::query()
+                    ->where('brand_id', $brand->id)
+                    ->where('platform', $platform)
+                    ->whereKeyNot($kept->getKey())
+                    ->where('status', 'active')
+                    ->update(['status' => 'revoked']);
+
                 $synced++;
             }
         });
 
-        // Revoke connections that Metricool no longer reports for this brand,
-        // but ONLY ones that look Metricool-managed (blotato_account_id null) —
-        // don't touch legacy Blotato rows during the migration window.
+        // Revoke connections for networks Metricool no longer reports for this
+        // brand. Now that a single row per (brand, platform) is canonical, this
+        // covers legacy Blotato rows too (the per-platform self-heal above
+        // already collapsed any duplicates for still-connected networks).
         $revoked = PlatformConnection::query()
             ->where('brand_id', $brand->id)
-            ->whereNull('blotato_account_id')
             ->where('status', 'active')
             ->when($seen !== [], fn ($q) => $q->whereNotIn('platform', $seen))
             ->update(['status' => 'revoked']);
