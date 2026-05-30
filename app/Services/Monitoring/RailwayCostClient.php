@@ -76,12 +76,36 @@ class RailwayCostClient
     {
         $measurements = ['CPU_USAGE', 'MEMORY_USAGE_GB', 'DISK_USAGE_GB', 'NETWORK_TX_GB', 'BACKUP_USAGE_GB'];
 
+        // estimatedUsage is the ROBUST query: no date args (those are where a
+        // type mismatch caused HTTP 400), it's what powers the dashboard's
+        // "Estimated" figure, and it's the authoritative end-of-cycle number.
+        // We make this the primary call so a single bad query can't sink the
+        // whole feature.
+        $estimated = $this->queryEstimated($token, $projectId, $measurements);
+        if ($estimated === null) {
+            return null;
+        }
+
+        // usage (cycle-to-date) is a best-effort SECONDARY. If its date-arg
+        // typing trips a 400, we degrade to showing the estimate for both
+        // figures rather than failing the whole line.
+        $current = $this->queryCurrent($token, $projectId, $measurements);
+
+        return [
+            'current_usd' => round($current ?? $estimated, 2),
+            'estimated_usd' => round($estimated, 2),
+            'source' => 'railway-api',
+        ];
+    }
+
+    /**
+     * estimatedUsage(projectId, measurements) → priced USD, or null on failure.
+     * No date arguments, so the request shape is minimal and stable.
+     */
+    private function queryEstimated(string $token, string $projectId, array $measurements): ?float
+    {
         $query = <<<'GQL'
-        query ProjectCost($projectId: String!, $measurements: [MetricMeasurement!]!, $startDate: String!, $endDate: String!) {
-          usage(projectId: $projectId, measurements: $measurements, startDate: $startDate, endDate: $endDate) {
-            measurement
-            value
-          }
+        query Est($projectId: String!, $measurements: [MetricMeasurement!]!) {
           estimatedUsage(projectId: $projectId, measurements: $measurements) {
             measurement
             estimatedValue
@@ -89,14 +113,61 @@ class RailwayCostClient
         }
         GQL;
 
-        $variables = [
+        $data = $this->gql($token, $query, [
             'projectId' => $projectId,
             'measurements' => $measurements,
-            // ISO-8601; Railway expects RFC3339-ish strings.
+        ]);
+
+        if ($data === null) {
+            return null;
+        }
+
+        return $this->priceRows($data['estimatedUsage'] ?? [], 'estimatedValue');
+    }
+
+    /**
+     * usage(projectId, measurements, startDate, endDate) → priced USD, or null.
+     * Best-effort: callers treat null as "fall back to the estimate". Railway
+     * types the date args as DateTime scalars; we pass ISO-8601 which Railway
+     * accepts for DateTime, and declare the GraphQL var type as DateTime to
+     * match the schema (a String! declaration is what produced the 400).
+     */
+    private function queryCurrent(string $token, string $projectId, array $measurements): ?float
+    {
+        $query = <<<'GQL'
+        query Cur($projectId: String!, $measurements: [MetricMeasurement!]!, $startDate: DateTime!, $endDate: DateTime!) {
+          usage(projectId: $projectId, measurements: $measurements, startDate: $startDate, endDate: $endDate) {
+            measurement
+            value
+          }
+        }
+        GQL;
+
+        $data = $this->gql($token, $query, [
+            'projectId' => $projectId,
+            'measurements' => $measurements,
             'startDate' => now()->startOfMonth()->toIso8601String(),
             'endDate' => now()->toIso8601String(),
-        ];
+        ]);
 
+        if ($data === null) {
+            return null;
+        }
+
+        return $this->priceRows($data['usage'] ?? [], 'value');
+    }
+
+    /**
+     * Execute a single GraphQL query and return its `data` payload, or null on
+     * any failure (HTTP error, GraphQL errors, malformed body). Logs the
+     * response body on failure so a query-shape problem is diagnosable from the
+     * logs without leaking the token (only the request body + status are logged).
+     *
+     * @param  array<string, mixed>  $variables
+     * @return array<string, mixed>|null
+     */
+    private function gql(string $token, string $query, array $variables): ?array
+    {
         try {
             $response = Http::withHeaders([
                 'Authorization' => "Bearer {$token}",
@@ -110,15 +181,17 @@ class RailwayCostClient
                 ]);
 
             if ($response->failed()) {
-                Log::warning('RailwayCostClient: HTTP failure', ['status' => $response->status()]);
+                Log::warning('RailwayCostClient: HTTP failure', [
+                    'status' => $response->status(),
+                    // Body carries Railway's validation message; no token in it.
+                    'body' => mb_substr($response->body(), 0, 500),
+                ]);
 
                 return null;
             }
 
             $json = $response->json();
 
-            // GraphQL returns 200 with an `errors` array on auth/validation
-            // problems — treat that as a failure, not a zero cost.
             if (! is_array($json) || isset($json['errors']) || ! isset($json['data'])) {
                 Log::warning('RailwayCostClient: GraphQL errors', [
                     'errors' => $json['errors'] ?? 'malformed',
@@ -127,22 +200,7 @@ class RailwayCostClient
                 return null;
             }
 
-            $data = $json['data'];
-
-            $current = $this->priceRows($data['usage'] ?? [], 'value');
-            $estimated = $this->priceRows($data['estimatedUsage'] ?? [], 'estimatedValue');
-
-            // If both came back with zero rows, the shape changed or the
-            // project has no usage — don't fabricate a 0 cost; signal failure.
-            if ($current === null && $estimated === null) {
-                return null;
-            }
-
-            return [
-                'current_usd' => round($current ?? 0.0, 2),
-                'estimated_usd' => round($estimated ?? ($current ?? 0.0), 2),
-                'source' => 'railway-api',
-            ];
+            return $json['data'];
         } catch (\Throwable $e) {
             Log::warning('RailwayCostClient: exception', ['message' => $e->getMessage()]);
 
