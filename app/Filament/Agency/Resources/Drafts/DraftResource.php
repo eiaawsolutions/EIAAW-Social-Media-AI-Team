@@ -145,12 +145,6 @@ class DraftResource extends Resource
                         default => 'gray',
                     })
                     ->placeholder('—'),
-                Tables\Columns\TextColumn::make('cost_usd')
-                    ->label('Cost')
-                    ->money('USD', divideBy: 1)
-                    ->color('gray')
-                    ->size('sm')
-                    ->placeholder('—'),
                 Tables\Columns\TextColumn::make('created_at')
                     ->since()
                     ->color('gray')
