@@ -167,14 +167,14 @@
                             </tr>
                         @endif
 
-                        {{-- Blotato (operator rate × live count) --}}
+                        {{-- Metricool (flat shared subscription, operator-set) --}}
                         <tr>
                             <td>
-                                Blotato seats
-                                <span class="cm-muted">({{ $s['signups']['blotato_provisioned'] }} × ${{ number_format((float) config('costs.per_workspace.blotato.amount_usd'), 0) }})</span>
+                                Metricool (shared agency account)
+                                <span class="cm-muted">(flat ${{ number_format((float) config('costs.subscriptions.metricool.amount_usd'), 0) }}/mo)</span>
                             </td>
-                            <td><span class="cm-tag cm-tag-operator">operator rate</span></td>
-                            <td class="cm-num">{{ number_format($s['costs']['blotato_myr'], 2) }}</td>
+                            <td><span class="cm-tag cm-tag-operator">operator-set</span></td>
+                            <td class="cm-num">{{ number_format($s['costs']['metricool_myr'], 2) }}</td>
                         </tr>
 
                         {{-- Fixed infra lines (operator-set) --}}
@@ -214,8 +214,8 @@
                         <td class="cm-num">− {{ number_format($s['costs']['ai_myr'], 2) }}</td>
                     </tr>
                     <tr class="cm-pl-row">
-                        <td>Less: Blotato seats</td>
-                        <td class="cm-num">− {{ number_format($s['costs']['blotato_myr'], 2) }}</td>
+                        <td>Less: Metricool subscription</td>
+                        <td class="cm-num">− {{ number_format($s['costs']['metricool_myr'], 2) }}</td>
                     </tr>
                     @if ($s['costs']['railway'])
                         <tr class="cm-pl-row">

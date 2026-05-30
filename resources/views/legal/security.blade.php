@@ -23,7 +23,7 @@
   <h2>Tenant &amp; brand isolation</h2>
   <ul>
     <li>Each workspace is isolated. Brand evidence, drafts, and receipts belong to a single workspace and are not shared across customers.</li>
-    <li>Every workspace gets its <strong>own dedicated Blotato publishing account</strong> — connected social tokens are never pooled across customers.</li>
+    <li>Every workspace gets its <strong>own dedicated Metricool publishing account</strong> — connected social tokens are never pooled across customers.</li>
     <li>Authorization is enforced on every request, not just in the UI, to prevent cross-tenant access.</li>
   </ul>
 

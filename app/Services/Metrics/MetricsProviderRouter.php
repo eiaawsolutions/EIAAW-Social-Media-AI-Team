@@ -16,32 +16,27 @@ use App\Services\Metricool\MetricoolClient;
  *      Business Manager System User token is configured. Real metrics now,
  *      no Meta App Review (Standard Access covers owned accounts).
  *   2. Metricool — any post whose brand is mapped to a Metricool blogId
- *      (brands.metricool_blog_id) and Metricool is configured. This is the
- *      WORKING per-post analytics path the Blotato→Metricool switch added;
- *      verified live 2026-05-30 (memory metricool-field-map). One shared
- *      token, brand scoped by blogId.
- *   3. Blotato analytics (dormant) — fallback for anything else. Records
- *      "no data yet" until Blotato's analytics backend ships.
+ *      (brands.metricool_blog_id) and Metricool is configured. The working
+ *      per-post analytics path; verified live 2026-05-30 (memory
+ *      metricool-field-map). One shared token, brand scoped by blogId.
  *
  * Plus the CSV upload fallback (operator-driven at /agency/performance, not
  * routed here) for posts no provider can report on.
  *
+ * Since the Blotato decommission, a post that matches NEITHER provider gets an
+ * empty result — CollectPostMetrics writes no snapshot for it (the operator's
+ * CSV upload remains the path for such posts). No fabricated zeros.
+ *
  * FUTURE (customer Meta OAuth): when per-customer Meta tokens land, the Meta
  * branch grows to build MetaGraphClient from the per-connection token. The
  * branch goes HERE, not in the job.
- *
- * Selection is conservative and never leaves a post provider-less: Meta only
- * for HQ-owned IG/FB with a token; Metricool only when the brand has a blogId
- * AND the integration is configured; otherwise Blotato (which degrades to a
- * no-data snapshot).
  */
 class MetricsProviderRouter
 {
-    public function __construct(private readonly BlotatoMetricsCollector $blotato) {}
-
     /**
      * Resolve the provider and collect. Returns the collector's discriminated
-     * result verbatim (see Meta / Metricool / Blotato collectors).
+     * result verbatim (see Meta / Metricool collectors), or [] when no provider
+     * applies.
      *
      * @return array<string,mixed>
      */
@@ -57,7 +52,10 @@ class MetricsProviderRouter
             return $metricool->collect($post);
         }
 
-        return $this->blotato->collect($post);
+        // No provider applies (not HQ IG/FB, brand not on Metricool). Nothing
+        // to collect — CollectPostMetrics writes no snapshot. CSV upload covers
+        // these.
+        return [];
     }
 
     /**

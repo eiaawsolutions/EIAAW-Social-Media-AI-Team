@@ -6,7 +6,6 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\Draft;
 use App\Services\Billing\PlanCaps;
-use App\Services\Blotato\BlotatoClient;
 use App\Services\Branding\BrandVideoComposer;
 use App\Services\Branding\FalTtsClient;
 use App\Services\Branding\QuoteWriter;
@@ -20,11 +19,12 @@ use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 
 /**
- * Generates one short-form video per Draft via FAL.AI Google Veo 3 Fast,
- * then re-hosts it on Blotato so it can attach to /v2/posts. Reels /
- * Shorts / TikTok are the highest-CPM organic distribution in 2026 —
- * skipping vertical video = leaving 60%+ of platform performance on
- * the table.
+ * Generates one short-form video per Draft via FAL.AI Google Veo 3 Fast.
+ * Media is normalized at publish time by MetricoolPublisher::submit()
+ * (MetricoolClient::normalizeMedia()), so the agent just hands off the
+ * generated video URL — no up-front media re-host. Reels / Shorts / TikTok
+ * are the highest-CPM organic distribution in 2026 — skipping vertical video
+ * = leaving 60%+ of platform performance on the table.
  *
  * The clip is generated from the SCRIPTED post content: DraftSceneBrief
  * (hook + distilled quote + CTA + target emotion + visual_direction) drives
@@ -46,7 +46,7 @@ use InvalidArgumentException;
  * = 8s base + one extend. Only on the native-audio path (the FFmpeg composer
  * path stays single-clip).
  *
- * Output: replaces draft.asset_url with the Blotato-hosted .mp4 URL,
+ * Output: replaces draft.asset_url with the generated .mp4 URL,
  * keeps the original still in asset_urls history.
  *
  * Cost: Veo 3 Fast base is $0.10/sec (audio off) / $0.15/sec (audio on);
@@ -61,7 +61,8 @@ use InvalidArgumentException;
  *   - prompt_override (string)
  *   - duration_seconds (int target — base snapped to Veo's 4/6/8s; >8s built
  *     via +7s extend steps, capped at MAX_TARGET_SECONDS)
- *   - skip_blotato_upload (bool) — dev-only
+ *   - skip_blotato_upload (bool) — legacy/no-op; media is normalized at
+ *     publish time by Metricool, so the source URL is always passed through
  */
 class VideoAgent extends BaseAgent
 {
@@ -176,36 +177,28 @@ class VideoAgent extends BaseAgent
             if ($picked) {
                 /** @var \App\Models\BrandAsset $asset */
                 $asset = $picked['asset'];
-                // Upload through THIS WORKSPACE's Blotato — the returned URL
-                // is account-scoped and createPost() on another account 403s.
-                try {
-                    $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
-                        ->uploadMediaFromUrl($asset->public_url);
-                } catch (\Throwable $e) {
-                    Log::warning('VideoAgent: library asset Blotato upload failed; falling back to FAL', [
-                        'asset_id' => $asset->id,
-                        'workspace_id' => $brand->workspace_id,
-                        'error' => $e->getMessage(),
-                    ]);
-                    $blotatoUrl = null;
-                }
+                // Use the library asset's public URL directly. Media is
+                // normalized at publish time by MetricoolPublisher::submit()
+                // (MetricoolClient::normalizeMedia()), so no up-front re-host
+                // round-trip is needed here.
+                $libraryUrl = $asset->public_url;
 
-                if ($blotatoUrl) {
+                if ($libraryUrl) {
                     $newHistory = is_array($draft->asset_urls) ? $draft->asset_urls : [];
                     if ($draft->asset_url && ! in_array($draft->asset_url, $newHistory, true)) {
                         $newHistory[] = $draft->asset_url;
                     }
-                    $newHistory[] = $blotatoUrl;
+                    $newHistory[] = $libraryUrl;
                     $newHistory[] = $asset->public_url;
                     $draft->update([
-                        'asset_url' => $blotatoUrl,
+                        'asset_url' => $libraryUrl,
                         'asset_urls' => array_values(array_unique($newHistory)),
                     ]);
                     $asset->recordUse();
 
                     return AgentResult::ok([
                         'draft_id' => $draft->id,
-                        'asset_url' => $blotatoUrl,
+                        'asset_url' => $libraryUrl,
                         'library_asset_id' => $asset->id,
                         'platform' => $draft->platform,
                         'cost_usd' => 0.0,
@@ -295,7 +288,7 @@ class VideoAgent extends BaseAgent
         // ── Extend chain — only when the target exceeds Veo Fast's 8s cap. ──
         // Each Veo 3.1 extend-video step appends a fixed 7s, continuing the
         // scene + audio from the prior clip. We feed the FAL-hosted URL (720p,
-        // reachable by FAL) — NOT a Blotato re-host — as the source. Soft-fail:
+        // reachable by FAL) directly as the source. Soft-fail:
         // if an extend step breaks we keep the longest clip we have so far
         // rather than losing the whole generation.
         $extendSteps = FalAiClient::extendStepsForTarget($targetDuration, $baseDuration);
@@ -389,7 +382,8 @@ class VideoAgent extends BaseAgent
             }
         }
 
-        // Publish branded video to public disk so Blotato can fetch it.
+        // Publish branded video to public disk so the publisher can fetch it
+        // (Metricool normalizes media at publish time).
         $urlForBlotato = $falUrl;
         if ($brandedLocalPath !== null && is_file($brandedLocalPath)) {
             try {
@@ -405,22 +399,12 @@ class VideoAgent extends BaseAgent
             }
         }
 
-        // Re-host on Blotato (this workspace's account) so it's publishable.
+        // Use the published/FAL video URL directly. Media is normalized at
+        // publish time by MetricoolPublisher::submit() (which calls
+        // MetricoolClient::normalizeMedia()), so no up-front re-host round-trip
+        // is needed here. The legacy skip_blotato_upload flag is now always the
+        // effective behaviour — the URL is passed through unchanged.
         $finalUrl = $urlForBlotato;
-        if (empty($input['skip_blotato_upload'])) {
-            try {
-                $blotato = BlotatoClient::forWorkspace($brand->workspace);
-                $finalUrl = $blotato->uploadMediaFromUrl($urlForBlotato);
-            } catch (\Throwable $e) {
-                Log::error('VideoAgent: Blotato media upload failed', [
-                    'draft_id' => $draft->id,
-                    'workspace_id' => $brand->workspace_id,
-                    'fal_url' => $falUrl,
-                    'error' => $e->getMessage(),
-                ]);
-                return AgentResult::fail('Video generated but Blotato upload failed: ' . substr($e->getMessage(), 0, 240));
-            }
-        }
 
         // Move existing still into asset_urls history (so the user can
         // see what we built from), put the video URL as primary asset_url.

@@ -9,6 +9,11 @@
   heading="What we <em>shipped</em>"
   intro="We ship in the open. Every entry below is a real change to the product — no vapourware, no roadmap theatre."
 >
+  <h2>30 May 2026 — Publishing partner</h2>
+  <ul>
+    <li>Moved to <strong>Metricool</strong> as our publishing and analytics partner. Every workspace still gets its own dedicated, isolated publishing account — connected social tokens are never pooled across customers.</li>
+  </ul>
+
   <h2>28 May 2026 — Launch shape</h2>
   <ul>
     <li>Retired the 14-day trial. You subscribe and your dedicated publishing account is provisioned by our team, typically within one business day.</li>

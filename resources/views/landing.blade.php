@@ -156,7 +156,7 @@
     </div>
 
     <p class="rvl" style="margin-top: 32px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); text-align: center;">
-      Plus a Scheduler that ships via Blotato, an Optimizer that retunes weekly from real engagement, a Repurpose agent that recycles winners across platforms, and a Competitor-intel agent that refreshes Mondays
+      Plus a Scheduler that ships via Metricool, an Optimizer that retunes weekly from real engagement, a Repurpose agent that recycles winners across platforms, and a Competitor-intel agent that refreshes Mondays
     </p>
   </div>
 </section>

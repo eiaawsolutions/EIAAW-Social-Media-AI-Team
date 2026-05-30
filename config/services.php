@@ -181,41 +181,40 @@ return [
         'retention_days' => (int) env('COMPETITOR_INTEL_RETENTION_DAYS', 30),
     ],
 
-    // ─── Publishing ─────────────────────────────────────────────────
-    // Provider selection for the publish path (SubmitScheduledPost via
-    // PublisherFactory). Default 'metricool' — the Blotato→Metricool switch.
-    // 'blotato' is the rollback path until Blotato is decommissioned in a
-    // follow-up PR. Flip with PUBLISH_PROVIDER, no redeploy of code.
-    'publishing' => [
-        'provider' => env('PUBLISH_PROVIDER', 'metricool'),
-    ],
-
-    'blotato' => [
-        'api_key' => env('BLOTATO_API_KEY'),
-        'base_url' => env('BLOTATO_BASE_URL', 'https://backend.blotato.com'),
-        'request_timeout' => (int) env('BLOTATO_REQUEST_TIMEOUT', 30),
-    ],
-
-    // ─── Metricool (evaluation: candidate Blotato replacement) ──────
-    // Unlike Blotato, Metricool is NATIVELY multi-brand: ONE account holds N
-    // brands (each a blogId), and ONE API token (sent as the X-Mc-Auth header)
-    // covers every brand. So — deliberately — there is a SINGLE token handle
-    // here, NOT a per-workspace handle like blotato_api_key_handle. Each SMT
-    // client maps to a Metricool brand via brands.metricool_blog_id; isolation
-    // is enforced server-side by scoping every call to the right blogId.
-    // Per the EIAAW Deploy Contract the raw token lives in Infisical;
-    // METRICOOL_API_TOKEN holds a `secret://…` handle resolved at boot. The
-    // user_id is the numeric Metricool account id (not secret) and pairs with
-    // blogId on every request. Empty token = integration dormant (probes no-op
-    // with a clear message). This block exists for the verification probes
-    // (metricool:probe-metrics / metricool:probe-publish) — wiring the live
-    // collector/publisher is gated on those passing. See memory
-    // metricool-evaluation + metricool-multitenancy.
+    // ─── Publishing (Metricool — sole publisher + metrics provider) ──
+    // Metricool is NATIVELY multi-brand: ONE account holds N brands (each a
+    // blogId), and ONE API token (the X-Mc-Auth header) covers every brand.
+    // So there is a SINGLE token handle here — each SMT client maps to a
+    // Metricool brand via brands.metricool_blog_id; isolation is enforced
+    // server-side by scoping every call to the right blogId. Per the EIAAW
+    // Deploy Contract the raw token lives in Infisical; METRICOOL_API_TOKEN
+    // holds a `secret://…` handle resolved at boot. The user_id is the numeric
+    // Metricool account id (not secret) and pairs with blogId on every request.
+    // Empty token = publishing/metrics dormant (factory throws, probes no-op).
     'metricool' => [
         'api_token' => env('METRICOOL_API_TOKEN'),   // secret:// handle → X-Mc-Auth token
         'user_id' => env('METRICOOL_USER_ID'),       // numeric account id (non-secret)
         'base_url' => env('METRICOOL_BASE_URL', 'https://app.metricool.com/api'),
         'request_timeout' => (int) env('METRICOOL_REQUEST_TIMEOUT', 30),
+    ],
+
+    // ─── Google Sheets export ───────────────────────────────────────
+    // Optional: pushes the REAL metrics we already hold (post_metrics —
+    // Meta Graph + CSV imports) into a Google Sheet for operators who want a
+    // spreadsheet view. We call the Sheets REST API directly with a service-
+    // account JWT (no heavy SDK). Per the EIAAW Deploy Contract the raw
+    // service-account JSON lives in Infisical — GOOGLE_SERVICE_ACCOUNT_JSON
+    // holds a `secret://…` handle resolved at boot, NOT a committed
+    // credentials.json. Empty handle = export disabled (command no-ops with a
+    // clear message). The operator shares the target sheet with the service
+    // account's client_email as Editor.
+    'google_sheets' => [
+        'service_account_json' => env('GOOGLE_SERVICE_ACCOUNT_JSON'), // secret:// handle → full SA JSON string
+        'spreadsheet_id' => env('GOOGLE_METRICS_SPREADSHEET_ID'),
+        'token_endpoint' => env('GOOGLE_OAUTH_TOKEN_ENDPOINT', 'https://oauth2.googleapis.com/token'),
+        'api_base_url' => env('GOOGLE_SHEETS_API_BASE', 'https://sheets.googleapis.com/v4/spreadsheets'),
+        'scope' => 'https://www.googleapis.com/auth/spreadsheets',
+        'request_timeout' => (int) env('GOOGLE_SHEETS_REQUEST_TIMEOUT', 30),
     ],
 
     // ─── Billing ────────────────────────────────────────────────────

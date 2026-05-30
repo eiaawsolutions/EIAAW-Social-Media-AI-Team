@@ -25,17 +25,16 @@ use Illuminate\Support\Collection;
  *     stored cost_myr, falling back to cost_usd × FX only when cost_myr is
  *     null (older rows), matching the writers' own convention.
  *
- *   - BLOTATO COST scales with live signups: a flat operator-set USD rate ×
- *     the REAL count of paid workspaces that have a Blotato handle wired. The
- *     rate is an assumption (and the UI says so); the count is measured.
+ *   - METRICOOL COST is a flat operator-set subscription: Metricool is one
+ *     shared agency account on a fixed monthly plan, so its cost does NOT scale
+ *     with signups. The figure is an assumption (and the UI says so).
  *
  *   - FIXED COST is operator-set (config/costs.php) and surfaced as such. The
  *     UI flags any 0 line so profit is never quietly overstated.
  *
- * Because revenue, AI cost, and the Blotato count all read live tables, the
- * monitor moves the instant a workspace signs up, an agent runs, or a Blotato
- * seat is provisioned — which is the "live update based on live signups" the
- * brief asked for.
+ * Because revenue and AI cost both read live tables, the monitor moves the
+ * instant a workspace signs up or an agent runs — which is the "live update
+ * based on live signups" the brief asked for.
  */
 class CostMonitor
 {
@@ -57,9 +56,9 @@ class CostMonitor
      * @return array{
      *   period: array{label:string, start:Carbon, end:Carbon, is_current:bool, day_of_month:int, days_in_month:int},
      *   fx: float,
-     *   signups: array{paying:int, by_plan:array<string,int>, internal:int, blotato_provisioned:int},
+     *   signups: array{paying:int, by_plan:array<string,int>, internal:int},
      *   revenue: array{total_myr:float, by_plan:array<string,array{count:int,unit_myr:float,subtotal_myr:float,name:string}>},
-     *   costs: array{ai_myr:float, ai_by_provider:array<string,float>, blotato_myr:float, railway:?array, fixed_myr:float, fixed_lines:array, total_myr:float},
+     *   costs: array{ai_myr:float, ai_by_provider:array<string,float>, metricool_myr:float, railway:?array, fixed_myr:float, fixed_lines:array, total_myr:float},
      *   profit: array{net_myr:float, margin_pct:?float},
      *   projection: array{revenue_myr:float, ai_cost_myr:float, profit_myr:float}|null,
      *   warnings: list<string>
@@ -76,7 +75,7 @@ class CostMonitor
 
         $signups = $this->signups();
         $revenue = $this->revenue($signups['by_plan']);
-        $costs = $this->costs($start, $end, $signups['blotato_provisioned'], $fx);
+        $costs = $this->costs($start, $end, $fx);
 
         $netMyr = round($revenue['total_myr'] - $costs['total_myr'], 2);
         $marginPct = $revenue['total_myr'] > 0
@@ -110,7 +109,7 @@ class CostMonitor
     /**
      * USD→MYR rate from the cost register (defaults to the 4.7 used by the AI
      * writers). A null OR zero config value falls back to 4.7 — a 0 FX would
-     * silently zero out every USD-denominated cost (Blotato + USD fixed lines),
+     * silently zero out every USD-denominated cost (Metricool + USD fixed lines),
      * understating cost and overstating profit, so we never let it through.
      */
     public function fxRate(): float
@@ -122,10 +121,9 @@ class CostMonitor
 
     /**
      * Live signup counts. `by_plan` counts ONLY paying workspaces (drives
-     * revenue). `blotato_provisioned` counts paid workspaces with a Blotato
-     * handle wired (drives the Blotato cost line).
+     * revenue). `internal` counts non-revenue EIAAW workspaces (excluded).
      *
-     * @return array{paying:int, by_plan:array<string,int>, internal:int, blotato_provisioned:int}
+     * @return array{paying:int, by_plan:array<string,int>, internal:int}
      */
     public function signups(): array
     {
@@ -138,12 +136,6 @@ class CostMonitor
             ->map(fn ($c) => (int) $c)
             ->all();
 
-        $blotatoProvisioned = Workspace::query()
-            ->whereIn('subscription_status', self::PAYING_STATES)
-            ->whereNotIn('plan', self::NON_REVENUE_PLANS)
-            ->whereNotNull('blotato_api_key_handle')
-            ->count();
-
         $internal = Workspace::query()
             ->whereIn('plan', self::NON_REVENUE_PLANS)
             ->count();
@@ -152,7 +144,6 @@ class CostMonitor
             'paying' => array_sum($byPlan),
             'by_plan' => $byPlan,
             'internal' => $internal,
-            'blotato_provisioned' => $blotatoProvisioned,
         ];
     }
 
@@ -192,12 +183,12 @@ class CostMonitor
     /**
      * Every cost line for the period, in MYR.
      *
-     * @return array{ai_myr:float, ai_by_provider:array<string,float>, blotato_myr:float, fixed_myr:float, fixed_lines:array, total_myr:float}
+     * @return array{ai_myr:float, ai_by_provider:array<string,float>, metricool_myr:float, fixed_myr:float, fixed_lines:array, total_myr:float}
      */
-    public function costs(Carbon $start, Carbon $end, int $blotatoProvisioned, float $fx): array
+    public function costs(Carbon $start, Carbon $end, float $fx): array
     {
         $ai = $this->aiCost($start, $end, $fx);
-        $blotatoMyr = $this->blotatoCost($blotatoProvisioned, $fx);
+        $metricoolMyr = $this->metricoolCost($fx);
 
         // Live Railway cost. When the API returns a figure we use it as a
         // MEASURED line and suppress the operator-set `railway` fixed line so
@@ -209,12 +200,12 @@ class CostMonitor
         $fixed = $this->fixedCosts($fx, $suppressFixed);
 
         $railwayMyr = $railway['amount_myr'] ?? 0.0;
-        $total = round($ai['total_myr'] + $blotatoMyr + $fixed['total_myr'] + $railwayMyr, 2);
+        $total = round($ai['total_myr'] + $metricoolMyr + $fixed['total_myr'] + $railwayMyr, 2);
 
         return [
             'ai_myr' => $ai['total_myr'],
             'ai_by_provider' => $ai['by_provider'],
-            'blotato_myr' => $blotatoMyr,
+            'metricool_myr' => $metricoolMyr,
             'railway' => $railway, // null when not wired / API down (operator-set line carries it)
             'fixed_myr' => $fixed['total_myr'],
             'fixed_lines' => $fixed['lines'],
@@ -283,12 +274,12 @@ class CostMonitor
         ];
     }
 
-    /** Blotato seat cost = operator-set USD rate × live provisioned count, in MYR. */
-    public function blotatoCost(int $provisionedCount, float $fx): float
+    /** Metricool subscription = flat operator-set USD figure (one shared account), in MYR. */
+    public function metricoolCost(float $fx): float
     {
-        $rateUsd = (float) config('costs.per_workspace.blotato.amount_usd', 0);
+        $amountUsd = (float) config('costs.subscriptions.metricool.amount_usd', 0);
 
-        return round($rateUsd * $fx * $provisionedCount, 2);
+        return round($amountUsd * $fx, 2);
     }
 
     /**
@@ -338,7 +329,7 @@ class CostMonitor
      * Straight-line month-end projection FOR THE CURRENT MONTH. Revenue is
      * recurring so it does not pro-rate (the live MRR is already the month's
      * revenue). Only the variable AI cost is run-rated: (spend so far / days
-     * elapsed) × days in month. Fixed + Blotato are recurring, so they carry
+     * elapsed) × days in month. Fixed + Metricool are recurring, so they carry
      * at face value. Clearly a projection, surfaced separately from actuals.
      */
     private function projectMonthEnd(float $revenueMyr, array $costs, Carbon $start, Carbon $end): array
@@ -354,7 +345,7 @@ class CostMonitor
         $projectedRailway = $costs['railway']['estimated_myr'] ?? 0.0;
 
         $projectedCostTotal = round(
-            $projectedAi + $costs['blotato_myr'] + $costs['fixed_myr'] + $projectedRailway,
+            $projectedAi + $costs['metricool_myr'] + $costs['fixed_myr'] + $projectedRailway,
             2
         );
 
@@ -368,7 +359,7 @@ class CostMonitor
     /**
      * Honesty flags for the UI. We warn when fixed-cost lines are still 0
      * (profit is overstated until the operator enters real figures) and when
-     * the Blotato rate is unset.
+     * the Metricool subscription figure is unset.
      *
      * @return list<string>
      */
@@ -382,8 +373,8 @@ class CostMonitor
             $warnings[] = "Fixed cost not entered yet ({$labels}) — profit is overstated until set in config/costs.php.";
         }
 
-        if ((float) config('costs.per_workspace.blotato.amount_usd', 0) <= 0) {
-            $warnings[] = 'Blotato per-workspace rate is 0 — set COST_BLOTATO_PER_WORKSPACE_USD or config/costs.php.';
+        if ((float) config('costs.subscriptions.metricool.amount_usd', 0) <= 0) {
+            $warnings[] = 'Metricool subscription is 0 — set COST_METRICOOL_MONTHLY_USD or config/costs.php.';
         }
 
         return $warnings;

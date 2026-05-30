@@ -30,7 +30,6 @@ class VideoAgentClassResolutionTest extends TestCase
             \App\Services\Branding\FalTtsClient::class,
             \App\Services\Branding\QuoteWriter::class,
             \App\Services\Billing\PlanCaps::class,
-            \App\Services\Blotato\BlotatoClient::class,
             \App\Models\AiCost::class,
             \App\Models\Draft::class,
             \App\Models\Brand::class,

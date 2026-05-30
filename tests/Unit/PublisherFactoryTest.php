@@ -2,27 +2,21 @@
 
 namespace Tests\Unit;
 
-use App\Services\Publishing\BlotatoPublisher;
 use App\Services\Publishing\MetricoolPublisher;
 use App\Services\Publishing\PublisherFactory;
 use RuntimeException;
 use Tests\TestCase;
 
 /**
- * PublisherFactory — the PUBLISH_PROVIDER flag seam for the Blotato→Metricool
- * switch. DB-free; asserts which publisher the flag selects and that a
- * misconfigured Metricool surfaces loudly rather than silently mis-routing.
+ * PublisherFactory — the single construction point for the publish path since
+ * the Blotato decommission. Metricool is now the sole publisher; the factory no
+ * longer reads PUBLISH_PROVIDER (the flag is dead). DB-free; asserts the factory
+ * builds Metricool when configured and surfaces a misconfiguration loudly rather
+ * than silently mis-routing customer posts.
  */
 class PublisherFactoryTest extends TestCase
 {
-    public function test_blotato_flag_makes_blotato_publisher(): void
-    {
-        config(['services.publishing.provider' => 'blotato']);
-
-        $this->assertInstanceOf(BlotatoPublisher::class, (new PublisherFactory())->make());
-    }
-
-    public function test_metricool_flag_with_config_makes_metricool_publisher(): void
+    public function test_makes_metricool_publisher_when_configured(): void
     {
         config([
             'services.publishing.provider' => 'metricool',
@@ -35,11 +29,13 @@ class PublisherFactoryTest extends TestCase
         $this->assertSame('metricool', $pub->key());
     }
 
-    public function test_default_provider_is_metricool(): void
+    public function test_factory_ignores_the_dead_publish_provider_flag(): void
     {
-        // No explicit provider set → default must be metricool (the switch).
+        // Post-decommission the factory no longer reads PUBLISH_PROVIDER. Even a
+        // stale 'blotato' value must still build Metricool (the sole publisher),
+        // never resurrect a Blotato publisher.
         config([
-            'services.publishing.provider' => null,
+            'services.publishing.provider' => 'blotato',
             'services.metricool.api_token' => 'mc_real_token',
             'services.metricool.user_id' => 4872275,
         ]);
@@ -47,28 +43,18 @@ class PublisherFactoryTest extends TestCase
         $this->assertInstanceOf(MetricoolPublisher::class, (new PublisherFactory())->make());
     }
 
-    public function test_metricool_flag_without_config_throws_loudly(): void
+    public function test_metricool_without_config_throws_loudly(): void
     {
-        // PUBLISH_PROVIDER=metricool but no token → must throw, NOT silently
-        // fall back to Blotato (mis-routing customer posts is worse than a
-        // loud failure the operator can fix).
+        // No Metricool token → must throw, NOT silently no-op. A misconfigured
+        // publish provider must surface so the operator can fix it; mis-routing
+        // (or dropping) customer posts is worse than a loud failure.
         config([
-            'services.publishing.provider' => 'metricool',
             'services.metricool.api_token' => '',
             'services.metricool.user_id' => 0,
         ]);
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessageMatches('/not configured/');
-        (new PublisherFactory())->make();
-    }
-
-    public function test_unknown_provider_throws(): void
-    {
-        config(['services.publishing.provider' => 'hootsuite']);
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessageMatches('/Unknown PUBLISH_PROVIDER/');
         (new PublisherFactory())->make();
     }
 }

@@ -26,10 +26,11 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * Stage 09 of SetupReadiness flips green when a published post has
  * platform_post_id (collected by MetricsCollector) OR a CSV upload exists.
  *
- * Metrics source: automated readings come from Blotato's analytics API via
- * BlotatoMetricsCollector. That backend is still on Blotato's roadmap, so
- * until it ships, the CSV upload below is the live "real metrics" path; once
- * Blotato turns analytics on, automated snapshots start flowing with no
+ * Metrics source: automated readings come from Meta Graph (owned accounts)
+ * or Metricool, routed per post by MetricsProviderRouter. When a provider has
+ * no reading yet, the CSV upload below is the live "real metrics" path (and
+ * remains the fallback afterwards for posts neither provider can report on);
+ * once readings are available, automated snapshots start flowing with no
  * change here. Either way, every number shown is a real reading or sourced
  * upload — never fabricated.
  */
@@ -56,10 +57,10 @@ class Performance extends Page
     }
 
     /**
-     * CSV import + template download. While Blotato's analytics backend is
-     * still on its roadmap, this is the live path for getting real engagement
-     * numbers onto the dashboard (and remains the fallback afterwards for
-     * posts Blotato can't report on). Operator exports analytics from each
+     * CSV import + template download. The live path for getting real
+     * engagement numbers onto the dashboard for any post the automated
+     * providers (Meta Graph / Metricool) can't report on. Operator exports
+     * analytics from each
      * platform's native dashboard (Meta Business Suite, LinkedIn page
      * analytics, TikTok studio, YT Studio, Threads Insights), pastes the post
      * URL, uploads. Each row → PostMetric snapshot with source='csv_upload'.

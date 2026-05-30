@@ -7,7 +7,6 @@ use App\Models\Brand;
 use App\Models\BrandAsset;
 use App\Models\Draft;
 use App\Services\Billing\PlanCaps;
-use App\Services\Blotato\BlotatoClient;
 use App\Services\Branding\BrandImageStamper;
 use App\Services\Branding\PosterContentWriter;
 use App\Services\Branding\QuoteWriter;
@@ -22,10 +21,15 @@ use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 /**
- * Generates one image per Draft via FAL.AI, then re-hosts it on Blotato so
- * it can be attached to /v2/posts at publish time. Posts without imagery
- * underperform 5-10x on every visual platform — this is the agent that
+ * Generates one image per Draft via FAL.AI and persists the resulting public
+ * media URL on the draft so it can be attached at publish time. Posts without
+ * imagery underperform 5-10x on every visual platform — this is the agent that
  * makes the difference between "AI text drafts" and "shipped social media".
+ *
+ * Media is NOT re-hosted up front; it is normalized at publish time by
+ * MetricoolPublisher::submit() (MetricoolClient::normalizeMedia()), so the
+ * agent simply stores the source URL (FAL still, branded image, or library
+ * asset) directly.
  *
  * Flow:
  *   1. Build the FAL prompt from the brand's visual_direction column on
@@ -34,17 +38,16 @@ use InvalidArgumentException;
  *   2. Cost circuit breaker: if today's ai_costs total for this workspace
  *      already exceeds the configured cap, fail loud rather than burn $.
  *   3. Call FalAiClient::generateImage. Capture latency + cost.
- *   4. Upload the resulting fal.media URL to Blotato /v2/media to convert
- *      it into a Blotato-hosted URL (Blotato rejects external mediaUrls).
- *   5. Persist the Blotato URL on draft.asset_url so SubmitScheduledPost
- *      attaches it at publish time.
+ *   4. Persist the source media URL on draft.asset_url so SubmitScheduledPost
+ *      attaches it at publish time (Metricool normalizes it then).
  *
  * Required input:
  *   - draft_id (int)
  *
  * Optional input:
  *   - prompt_override (string) — bypass auto-generated prompt entirely.
- *   - skip_blotato_upload (bool) — for dev/testing; saves the fal.media URL.
+ *   - skip_blotato_upload (bool) — legacy no-op; media is never re-hosted
+ *     up front now (the source URL is always used directly).
  */
 class DesignerAgent extends BaseAgent
 {
@@ -135,36 +138,24 @@ class DesignerAgent extends BaseAgent
                 /** @var BrandAsset $asset */
                 $asset = $picked['asset'];
 
-                // Re-host through THIS WORKSPACE'S Blotato account so /v2/posts
-                // accepts it. The media URL returned by Blotato is scoped to
-                // the uploading account — if HQ uploads it, a customer's
-                // createPost() call gets 403 because the account doesn't own
-                // that media. Always upload via the brand's workspace's key.
-                try {
-                    $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
-                        ->uploadMediaFromUrl($asset->public_url);
-                } catch (\Throwable $e) {
-                    Log::warning('DesignerAgent: library asset Blotato upload failed; falling back to FAL', [
-                        'asset_id' => $asset->id,
-                        'workspace_id' => $brand->workspace_id,
-                        'error' => $e->getMessage(),
-                    ]);
-                    $blotatoUrl = null;
-                }
+                // Use the library asset's public URL directly. Media is no
+                // longer re-hosted up front; it is normalized at publish time
+                // by MetricoolPublisher::submit() (MetricoolClient::normalizeMedia()).
+                $libraryUrl = $asset->public_url;
 
-                if ($blotatoUrl) {
+                if ($libraryUrl) {
                     $draft->update([
-                        'asset_url' => $blotatoUrl,
+                        'asset_url' => $libraryUrl,
                         'asset_urls' => array_values(array_unique(array_merge(
                             is_array($draft->asset_urls) ? $draft->asset_urls : [],
-                            [$blotatoUrl, $asset->public_url],
+                            [$libraryUrl, $asset->public_url],
                         ))),
                     ]);
                     $asset->recordUse();
 
                     return AgentResult::ok([
                         'draft_id' => $draft->id,
-                        'asset_url' => $blotatoUrl,
+                        'asset_url' => $libraryUrl,
                         'library_asset_id' => $asset->id,
                         'library_asset_label' => $asset->original_filename,
                         'platform' => $draft->platform,
@@ -176,7 +167,7 @@ class DesignerAgent extends BaseAgent
                         'cost_usd' => 0.0,
                     ]);
                 }
-                // Fall through to FAL if Blotato re-host failed.
+                // Fall through to FAL if the library asset had no usable URL.
             }
         }
 
@@ -286,10 +277,11 @@ class DesignerAgent extends BaseAgent
         }
 
         // If we successfully stamped a branded version, publish it to the
-        // public disk and use that URL for Blotato. Branded image lives at
+        // public disk and use that URL directly. Branded image lives at
         // <APP_URL>/storage/branding/<draftid>-<random>.jpg — discoverable
-        // only by direct path, served once to Blotato then garbage-collected
-        // by the existing storage:link cleanup job.
+        // only by direct path, fetched once at publish time (Metricool
+        // normalizes it then) then garbage-collected by the existing
+        // storage:link cleanup job.
         $urlForBlotato = $falUrl;
         if ($brandedLocalPath !== null && is_file($brandedLocalPath)) {
             try {
@@ -306,23 +298,12 @@ class DesignerAgent extends BaseAgent
             }
         }
 
-        // Re-host on Blotato (this workspace's account) unless explicitly skipped.
+        // Use the source media URL directly (branded image if we published one,
+        // else the raw FAL still). Media is no longer re-hosted up front; it is
+        // normalized at publish time by MetricoolPublisher::submit()
+        // (MetricoolClient::normalizeMedia()). The legacy skip_blotato_upload
+        // input is now always-on behaviour, so it no longer branches anything.
         $finalUrl = $urlForBlotato;
-        if (empty($input['skip_blotato_upload'])) {
-            try {
-                $blotato = BlotatoClient::forWorkspace($brand->workspace);
-                $finalUrl = $blotato->uploadMediaFromUrl($urlForBlotato);
-            } catch (\Throwable $e) {
-                Log::error('DesignerAgent: Blotato media upload failed', [
-                    'draft_id' => $draft->id,
-                    'workspace_id' => $brand->workspace_id,
-                    'fal_url' => $falUrl,
-                    'error' => $e->getMessage(),
-                ]);
-
-                return AgentResult::fail('Image generated but Blotato upload failed: '.substr($e->getMessage(), 0, 200));
-            }
-        }
 
         $draft->update([
             'asset_url' => $finalUrl,

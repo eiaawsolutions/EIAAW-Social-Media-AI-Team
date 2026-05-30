@@ -19,7 +19,7 @@
                 Welcome to EIAAW, {{ $user->name }}.
               </h1>
               <p style="margin: 16px 0 0; font-size: 15px; line-height: 1.55; color: #2A3438;">
-                Your <strong>{{ $planName }}</strong> workspace <strong>{{ $workspace->name }}</strong> is ready. Your card has been charged for your first month. <strong>Next:</strong> our team is provisioning your dedicated Blotato publishing account — you'll receive a second email with your Blotato login within 1 business day.
+                Your <strong>{{ $planName }}</strong> workspace <strong>{{ $workspace->name }}</strong> is ready. Your card has been charged for your first month. <strong>Next:</strong> our team is provisioning your dedicated Metricool publishing account — you'll receive a second email with your Metricool login within 1 business day.
               </p>
             </td>
           </tr>

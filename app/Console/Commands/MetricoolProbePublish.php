@@ -34,7 +34,7 @@ class MetricoolProbePublish extends Command
                             {--dry-run : also build a live Metricool schedulePost body (no post created)}
                             {--blog=0 : blogId to use for the dry-run body}';
 
-    protected $description = 'PROBE: parity matrix of what SubmitScheduledPost sends to Blotato vs what Metricool can do.';
+    protected $description = 'PROBE: parity matrix of what SubmitScheduledPost sends, mapped to Metricool.';
 
     /**
      * Capability parity matrix. Each row:

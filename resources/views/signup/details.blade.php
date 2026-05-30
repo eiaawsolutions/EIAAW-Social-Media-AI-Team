@@ -19,7 +19,7 @@
             Tell us your name and email.
           </h1>
           <p class="lead" style="margin-top: 18px; max-width: 56ch;">
-            We need these to set up your workspace. The next screen is Stripe — we never see your card. Your subscription is charged the moment you confirm, and our team provisions your dedicated Blotato account within 1 business day.
+            We need these to set up your workspace. The next screen is Stripe — we never see your card. Your subscription is charged the moment you confirm, and our team provisions your dedicated Metricool publishing account within 1 business day.
           </p>
         </div>
 
@@ -109,7 +109,7 @@
               <div style="display: flex; justify-content: space-between;"><span>Renews</span><strong style="color: var(--ink);">Monthly</strong></div>
             </div>
             <p style="margin-top: 22px; font-size: 12px; color: var(--mute); line-height: 1.5;">
-              Charged today. Our team provisions your dedicated Blotato account within 1 business day &mdash; you'll get an email with your Blotato login. Cancel any time from the billing page; renewals stop immediately.
+              Charged today. Our team provisions your dedicated Metricool publishing account within 1 business day &mdash; you'll get an email with your Metricool login. Cancel any time from the billing page; renewals stop immediately.
             </p>
           </div>
         </div>

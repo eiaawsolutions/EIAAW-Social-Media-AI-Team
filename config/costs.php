@@ -17,7 +17,7 @@
 |      Monitor reads them directly; nothing in THIS file affects them.
 |
 |   2. OPERATOR-SET costs — fixed infra (Railway, Resend, Cloudflare, the
-|      domain) and the per-workspace Blotato seat. The app cannot know these;
+|      domain) and the flat Metricool subscription. The app cannot know these;
 |      only the operator does. They are declared HERE, clearly as assumptions,
 |      and surfaced in the UI with an "operator-set" tag so they are never
 |      mistaken for a measured number. Edit the real figures below.
@@ -176,27 +176,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Per-workspace variable cost — Blotato seat (OPERATOR-SET rate × live count)
+    | Metricool — shared agency subscription (OPERATOR-SET, FLAT monthly)
     |--------------------------------------------------------------------------
-    | Every PAID workspace gets a dedicated Blotato account that HQ provisions
-    | manually (~$29–$97/mo USD per the billing config notes). This cost scales
-    | 1:1 with live signups, which is exactly the "live update based on live
-    | signups" the monitor must reflect.
+    | Metricool is the single publisher + metrics provider for the whole agency.
+    | It is ONE shared account on a flat monthly plan — NOT a per-workspace seat
+    | — so its cost does NOT scale with signups. It is a fixed subscription line
+    | the operator declares here (one flat USD figure), and the monitor adds it
+    | once regardless of how many workspaces are live.
     |
-    | The RATE here is operator-set (one flat USD figure). The COUNT is REAL —
-    | the monitor counts workspaces that actually have a Blotato handle wired
-    | (`blotato_api_key_handle` set). So total Blotato cost = rate × live count,
-    | and it moves the moment a new workspace is provisioned.
-    |
-    | If you later record each workspace's actual Blotato plan ($29 vs $97),
-    | store it per-workspace and switch the monitor to sum actuals (documented
-    | follow-up). For now a single blended rate is the truthful approximation,
-    | and the UI labels it as such.
+    | (This replaces the old per-workspace Blotato seat, which scaled 1:1 with
+    | signups by counting `blotato_api_key_handle`. Metricool's flat plan needs
+    | no per-workspace counting at all.)
     */
-    'per_workspace' => [
-        'blotato' => [
-            'label' => 'Blotato seat (per paid workspace)',
-            'amount_usd' => (float) env('COST_BLOTATO_PER_WORKSPACE_USD', 29),
+    'subscriptions' => [
+        'metricool' => [
+            'label' => 'Metricool (shared agency account)',
+            'amount_usd' => (float) env('COST_METRICOOL_MONTHLY_USD', 67),
         ],
     ],
 

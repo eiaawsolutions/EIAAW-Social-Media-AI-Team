@@ -2,204 +2,37 @@
 
 namespace App\Console\Commands;
 
-use App\Models\ScheduledPost;
-use App\Models\Workspace;
-use App\Services\Blotato\BlotatoClient;
-use App\Services\Publishing\PostVerificationRules;
 use Illuminate\Console\Command;
 
 /**
- * Re-verifies every ScheduledPost currently marked `published` against
- * Blotato's actual status, then either:
- *   - confirms (saves the real platform_post_id / platform_post_url Blotato
- *     now returns, if it didn't before), or
- *   - downgrades to `submitted` so the live feed stops claiming a post
- *     exists when the platform has no record of it.
+ * DECOMMISSIONED.
  *
- * Background: PostVerificationRules now requires either platform_post_id or
- * a real-post-URL pattern to consider a post verified-published. We have
- * 32 historical rows in prod marked `published` (2026-05-03 → 2026-05-06)
- * that pre-date the verification gate. Most have null/empty platform_post_id
- * and only a profile-root URL (or no URL at all). This command cleans them
- * up by going back to Blotato as the source of truth for each.
+ * This command re-verified every ScheduledPost marked `published` against
+ * Blotato's actual status (Blotato was the publishing provider), then either
+ * confirmed the row (saving the real platform_post_id / platform_post_url) or
+ * downgraded it to `submitted` so the live feed stopped claiming a post
+ * existed when the platform had no record of it.
  *
- * Operator UX: dry-run by default surface counts without touching DB. Pass
- * --apply to write changes. Re-running is idempotent — verified rows stay
- * verified, downgraded rows stay submitted (no double-downgrade churn).
+ * Blotato has been decommissioned. Publishing now runs through Metricool, and
+ * media is normalized at publish time by MetricoolPublisher::submit(). There is
+ * no Blotato `getPostStatus` source of truth left to reconcile against, so this
+ * command no longer applies. It is kept as a registered no-op to avoid breaking
+ * any scheduler/cron entry or operator muscle-memory that still references it;
+ * it logs the decommission notice and exits successfully without touching the DB.
  */
 class PostsReconcilePublished extends Command
 {
     protected $signature = 'posts:reconcile-published
-                            {--limit=200 : max rows to re-verify per run}
-                            {--platform= : limit to one platform (tiktok, youtube, etc.)}
-                            {--apply : actually write changes (default is dry-run)}';
+                            {--limit=200 : (ignored) retained for back-compat}
+                            {--platform= : (ignored) retained for back-compat}
+                            {--apply : (ignored) retained for back-compat}';
 
-    protected $description = 'Re-verify published ScheduledPosts against Blotato — downgrade unverified rows to submitted.';
+    protected $description = 'DECOMMISSIONED — Blotato publish-status reconciliation no longer applies (publishing is via Metricool).';
 
     public function handle(): int
     {
-        $limit = max(1, (int) $this->option('limit'));
-        $platformFilter = strtolower(trim((string) $this->option('platform'))) ?: null;
-        $apply = (bool) $this->option('apply');
+        $this->warn('Blotato decommissioned — reconciliation no longer applicable. Publishing runs through Metricool, which normalizes media at publish time; there is no Blotato status to reconcile against. No rows were touched.');
 
-        // Per-workspace clients are resolved inside the row loop. We process
-        // posts across many workspaces in a single reconcile run, so a single
-        // up-front client would route every status fetch through HQ's
-        // Blotato account — which only returns data for HQ-submitted posts
-        // (silently empty results for every customer post). Cache by
-        // workspace id so we don't re-resolve Infisical for every row.
-        $clientByWorkspace = [];
-
-        $q = ScheduledPost::with(['draft', 'brand.workspace'])
-            ->where('status', 'published')
-            ->whereNotNull('blotato_post_id')
-            ->orderBy('id')
-            ->limit($limit);
-
-        if ($platformFilter !== null) {
-            $q->whereHas('draft', fn ($d) => $d->where('platform', $platformFilter));
-        }
-
-        $rows = $q->get();
-        if ($rows->isEmpty()) {
-            $this->info('Nothing to reconcile.');
-            return self::SUCCESS;
-        }
-
-        $stats = ['checked' => 0, 'verified_pre_existing' => 0, 'verified_after_refresh' => 0,
-                  'downgraded' => 0, 'blotato_missing' => 0, 'errors' => 0];
-
-        foreach ($rows as $post) {
-            $stats['checked']++;
-            $platform = (string) ($post->draft?->platform ?? '');
-
-            // Already verified by the new rules? Skip — no need to call Blotato.
-            $existing = PostVerificationRules::verify($platform, $post->platform_post_id, $post->platform_post_url);
-            if ($existing['verified']) {
-                $stats['verified_pre_existing']++;
-                $this->line(sprintf('SP%d %s — already verified (%s)', $post->id, $platform, $existing['reason']));
-                continue;
-            }
-
-            // Per-workspace client (cached so multiple posts in the same
-            // workspace share one resolved key). Skip rows whose workspace
-            // hasn't been wired to Blotato — they can't be reconciled.
-            $workspace = $post->brand?->workspace;
-            if (! $workspace) {
-                $stats['errors']++;
-                $this->warn(sprintf('SP%d skipped — no workspace context.', $post->id));
-                continue;
-            }
-
-            if (! isset($clientByWorkspace[$workspace->id])) {
-                try {
-                    $clientByWorkspace[$workspace->id] = BlotatoClient::forWorkspace($workspace);
-                } catch (\Throwable $e) {
-                    $clientByWorkspace[$workspace->id] = false; // memoize the failure
-                    $this->warn(sprintf('Workspace #%d Blotato unconfigured: %s', $workspace->id, $e->getMessage()));
-                }
-            }
-            $client = $clientByWorkspace[$workspace->id];
-            if ($client === false) {
-                $stats['errors']++;
-                continue;
-            }
-
-            // Re-fetch from Blotato. Some posts that were unverified at first
-            // poll later resolve to a real id/url once the platform adapter
-            // catches up, so a fresh fetch can save them.
-            try {
-                $status = $client->getPostStatus($post->blotato_post_id);
-            } catch (\Throwable $e) {
-                $stats['errors']++;
-                $this->warn(sprintf('SP%d Blotato status fetch failed: %s', $post->id, substr($e->getMessage(), 0, 120)));
-                continue;
-            }
-
-            $state = strtolower((string) ($status['state'] ?? $status['status'] ?? ''));
-            $newId = $this->digKeys($status, ['postId', 'post_id', 'platformPostId', 'externalId', 'id']);
-            // Blotato shifted to `publicUrl` for newer submissions; keep old
-            // keys for back-compat. Mirror of SubmitScheduledPost change.
-            $newUrl = $this->digKeys($status, ['publicUrl', 'public_url', 'postUrl', 'post_url', 'platformPostUrl', 'permalink', 'url', 'shareUrl', 'share_url']);
-
-            $verdict = PostVerificationRules::verify($platform, $newId, $newUrl);
-
-            if ($verdict['verified']) {
-                $stats['verified_after_refresh']++;
-                $this->info(sprintf('SP%d %s → verified after refresh (%s)', $post->id, $platform, $verdict['reason']));
-                if ($apply) {
-                    $post->update([
-                        'platform_post_id' => $newId,
-                        'platform_post_url' => $newUrl,
-                    ]);
-                }
-                continue;
-            }
-
-            // Blotato itself can't confirm a real platform delivery.
-            $stats['downgraded']++;
-            $this->warn(sprintf(
-                'SP%d %s → downgrading: state=%s, %s [Blotato keys: %s]',
-                $post->id, $platform, $state ?: '(empty)', $verdict['reason'],
-                implode(',', array_keys($status)),
-            ));
-            if ($apply) {
-                $post->update([
-                    'status' => 'submitted',
-                    'platform_post_id' => null,
-                    // Wipe profile-root URLs but keep anything that looked like a real post.
-                    'platform_post_url' => PostVerificationRules::isRealPostUrl($platform, $post->platform_post_url)
-                        ? $post->platform_post_url
-                        : null,
-                    'published_at' => null,
-                    'last_error' => sprintf(
-                        'Reconciled %s: %s. Awaiting platform-side confirmation.',
-                        now()->toIso8601String(),
-                        $verdict['reason'],
-                    ),
-                ]);
-                // Don't auto-flip the linked draft — the operator may have
-                // human-verified status on it via /agency/drafts.
-            }
-        }
-
-        $this->line('');
-        $this->line('--- summary ---');
-        $this->line("checked:                     {$stats['checked']}");
-        $this->line("already verified:            {$stats['verified_pre_existing']}");
-        $this->line("verified after refresh:      {$stats['verified_after_refresh']}");
-        $this->line("downgraded to submitted:     {$stats['downgraded']}");
-        $this->line("errors (Blotato unreachable): {$stats['errors']}");
-        $this->line('');
-        if (! $apply) {
-            $this->warn('DRY-RUN — nothing written. Re-run with --apply to commit changes.');
-        }
         return self::SUCCESS;
-    }
-
-    /**
-     * Mirror of SubmitScheduledPost::digKeys — walks Blotato envelopes for
-     * the first non-empty string under any candidate key.
-     *
-     * @param  array<string,mixed>  $payload
-     * @param  array<int,string>    $keys
-     */
-    private function digKeys(array $payload, array $keys): ?string
-    {
-        foreach ($keys as $k) {
-            if (! empty($payload[$k]) && is_string($payload[$k])) {
-                return $payload[$k];
-            }
-        }
-        foreach (['result', 'data', 'post', 'submission'] as $envelope) {
-            if (isset($payload[$envelope]) && is_array($payload[$envelope])) {
-                foreach ($keys as $k) {
-                    if (! empty($payload[$envelope][$k]) && is_string($payload[$envelope][$k])) {
-                        return $payload[$envelope][$k];
-                    }
-                }
-            }
-        }
-        return null;
     }
 }
