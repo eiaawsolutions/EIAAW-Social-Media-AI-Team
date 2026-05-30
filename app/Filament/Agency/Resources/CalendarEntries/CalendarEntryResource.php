@@ -336,7 +336,7 @@ class CalendarEntryResource extends Resource
                     ->color('primary')
                     ->requiresConfirmation()
                     ->modalHeading('Re-draft this entry on every listed platform?')
-                    ->modalDescription('Existing rejected drafts get cleared first; jobs fan out one per (entry, platform). Cost: ~$0.04 per image + Writer LLM. Daily caps enforced.')
+                    ->modalDescription('Existing rejected drafts get cleared first; jobs fan out one per (entry, platform). Daily caps enforced.')
                     ->action(function (CalendarEntry $r): void {
                         $platforms = is_array($r->platforms) ? $r->platforms : [];
                         if (! $platforms) {

@@ -42,7 +42,7 @@ class ManageDrafts extends ManageRecords
                 ->modalDescription(
                     'Use after a Writer/Compliance prompt fix or after enriching the brand corpus. '
                     . 'Zeroes the per-draft attempt counter on every compliance_failed draft that has hit the cap, '
-                    . 'and queues fresh redrafts. Each draft will run up to '.\App\Jobs\RedraftFailedDraft::MAX_REVISIONS.' more attempts (~$0.02–0.05 each).'
+                    . 'and queues fresh redrafts. Each draft will run up to '.\App\Jobs\RedraftFailedDraft::MAX_REVISIONS.' more attempts.'
                 )
                 ->schema([
                     TextInput::make('limit')
@@ -105,7 +105,7 @@ class ManageDrafts extends ManageRecords
                 )
                 ->schema([
                     TextInput::make('limit')
-                        ->label('Max drafts to redraft (safety cap — each costs ~$0.02–0.05)')
+                        ->label('Max drafts to redraft (safety cap)')
                         ->numeric()
                         ->default(20)
                         ->minValue(1)

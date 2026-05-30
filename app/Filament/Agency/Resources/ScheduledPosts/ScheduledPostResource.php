@@ -282,7 +282,7 @@ class ScheduledPostResource extends Resource
                     ->visible(fn (ScheduledPost $r) => in_array($r->status, ['failed', 'cancelled']))
                     ->requiresConfirmation()
                     ->modalHeading('Re-run Writer + Designer + Compliance on this draft?')
-                    ->modalDescription('Regenerates the caption and image for the underlying draft, then re-queues this scheduled post in 5 minutes. Costs ~$0.04 (image) + a few cents (LLM). Burns one image-cap unit.')
+                    ->modalDescription('Regenerates the caption and image for the underlying draft, then re-queues this scheduled post in 5 minutes. Uses one image-cap unit.')
                     ->action(function (ScheduledPost $r): void {
                         @set_time_limit(180);
                         $draft = $r->draft;

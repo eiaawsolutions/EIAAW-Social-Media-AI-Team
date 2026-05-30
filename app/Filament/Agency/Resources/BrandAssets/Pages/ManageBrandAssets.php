@@ -88,7 +88,7 @@ class ManageBrandAssets extends ManageRecords
                 ->preserveFilenames()
                 ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/quicktime', 'video/webm'])
                 ->maxSize(50 * 1024) // 50 MB per file
-                ->helperText('Tagged via Claude vision on save (~3s, $0.01 each) so the agents can find them.')
+                ->helperText('Automatically tagged on save (~3s each) so the agents can find them.')
                 ->required(),
 
             // ---- Customised-post fields (revealed only for that intent) ----

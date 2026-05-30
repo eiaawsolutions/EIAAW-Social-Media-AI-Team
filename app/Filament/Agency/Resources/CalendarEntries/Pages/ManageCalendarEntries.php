@@ -36,8 +36,7 @@ class ManageCalendarEntries extends ManageRecords
                 ->modalHeading('Draft every calendar entry that has no draft yet?')
                 ->modalDescription(
                     'Fans out one background job per (entry, platform) pair. Each job runs Writer + Designer + Compliance.'
-                    . ' Cost: ~$0.04 per image (FAL flux-pro/v1.1) plus Writer LLM cost.'
-                    . ' Daily image budget cap is enforced per workspace.'
+                    . ' A daily generation cap is enforced per workspace.'
                 )
                 ->action(function (): void {
                     $brand = $this->resolveCurrentBrand();

@@ -130,7 +130,7 @@ class BrandAssetResource extends Resource
                     ->icon('heroicon-o-tag')
                     ->color('gray')
                     ->requiresConfirmation()
-                    ->modalDescription('Re-runs Claude vision to regenerate description + tags + embedding. ~1c per image, ~3s.')
+                    ->modalDescription('Re-runs vision tagging to regenerate the description, tags, and embedding (~3s).')
                     ->action(function (BrandAsset $r): void {
                         @set_time_limit(120);
                         try {

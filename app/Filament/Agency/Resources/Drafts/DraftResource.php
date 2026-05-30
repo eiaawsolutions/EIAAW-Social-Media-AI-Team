@@ -483,15 +483,9 @@ class DraftResource extends Resource
                         // image and can retry video manually.
                         $videoNote = self::rerunVideoIfNeeded($r);
 
-                        $source = $result->data['source'] ?? 'fal';
                         Notification::make()
-                            ->title('Image ready · '.$source)
-                            ->body(sprintf(
-                                '$%.4f · %dms%s',
-                                $result->data['cost_usd'] ?? 0,
-                                $result->data['latency_ms'] ?? 0,
-                                $videoNote,
-                            ))
+                            ->title('Image ready')
+                            ->body('Image regenerated for this draft.'.$videoNote)
                             ->success()
                             ->send();
                     }),
@@ -515,7 +509,7 @@ class DraftResource extends Resource
                             ]);
                         } catch (\Throwable $e) {
                             Notification::make()
-                                ->title('FAL crashed')
+                                ->title('Image generation crashed')
                                 ->body(substr($e->getMessage(), 0, 240))
                                 ->danger()
                                 ->send();
@@ -524,7 +518,7 @@ class DraftResource extends Resource
                         }
                         if (! $result->ok) {
                             Notification::make()
-                                ->title('FAL refused')
+                                ->title('Could not generate image')
                                 ->body($result->errorMessage ?: 'unknown')
                                 ->danger()
                                 ->send();
@@ -537,13 +531,7 @@ class DraftResource extends Resource
 
                         Notification::make()
                             ->title('AI image ready')
-                            ->body(sprintf(
-                                '$%.4f · %dms · model %s%s',
-                                $result->data['cost_usd'] ?? 0,
-                                $result->data['latency_ms'] ?? 0,
-                                $result->data['model'] ?? '?',
-                                $videoNote,
-                            ))
+                            ->body('A fresh AI image was generated for this draft.'.$videoNote)
                             ->success()
                             ->send();
                     }),
@@ -556,8 +544,8 @@ class DraftResource extends Resource
                         && ! in_array($r->status, ['published', 'rejected']))
                     ->requiresConfirmation()
                     ->modalDescription(fn (Draft $r) => empty($r->asset_url)
-                        ? 'Run VideoAgent (FAL Wan 2.6 text-to-video, ~$0.50, ~30s).'
-                        : 'Use the current still as keyframe and generate a 5s vertical video around it (FAL Wan 2.6 image-to-video, ~$0.50, ~30s). Old still moves into asset_urls history.')
+                        ? 'Generates a short vertical video for this draft with AI.'
+                        : 'Uses the current still as the keyframe and generates a 5s vertical video around it. The old still moves into the asset history.')
                     ->action(function (Draft $r): void {
                         @set_time_limit(420);
                         try {
@@ -585,11 +573,8 @@ class DraftResource extends Resource
                         Notification::make()
                             ->title('Video ready')
                             ->body(sprintf(
-                                '$%.2f · %dms · %ss · %s',
-                                $result->data['cost_usd'] ?? 0,
-                                $result->data['latency_ms'] ?? 0,
+                                'A %ss vertical video was generated for this draft.',
                                 $result->data['duration_seconds'] ?? '?',
-                                ($result->data['used_keyframe'] ?? false) ? 'i2v' : 't2v',
                             ))
                             ->success()
                             ->send();
@@ -634,7 +619,7 @@ class DraftResource extends Resource
                     ->requiresConfirmation()
                     ->modalHeading('Redraft this failed post')
                     ->modalDescription(fn (Draft $r) => sprintf(
-                        'Asks the Writer to fix the %d failure(s) on this draft, then re-runs Compliance. Attempt %d of %d. Each attempt costs ~$0.02–0.05.',
+                        'Asks the Writer to fix the %d failure(s) on this draft, then re-runs Compliance. Attempt %d of %d.',
                         $r->complianceChecks()->where('result', 'fail')->count(),
                         ($r->revision_count ?? 0) + 1,
                         RedraftFailedDraft::MAX_REVISIONS,
@@ -700,22 +685,24 @@ class DraftResource extends Resource
     }
 
     /**
-     * Modal copy for the regen-image actions. Model-aware: reads the configured
-     * image model so the cost/label stays accurate as the model changes, and
-     * tells the operator when THIS draft will render as a summary poster
-     * (designed headline + key points as text) vs a text-free photo. When the
-     * calendar entry is a video format on a video-capable platform, also warns
-     * VideoAgent will re-run (else asset_url=jpeg on a video draft, which
-     * YouTube/TikTok scrub as static-image-as-video).
+     * Modal copy for the regen-image actions. Tells the operator when THIS
+     * draft will render as a summary poster (designed headline + key points as
+     * text) vs a text-free photo. When the calendar entry is a video format on
+     * a video-capable platform, also warns the video will be re-rendered (else
+     * asset_url=jpeg on a video draft, which YouTube/TikTok scrub as
+     * static-image-as-video).
+     *
+     * Customer-facing: deliberately omits the underlying AI model name and any
+     * per-generation cost — those are internal economics the operator doesn't
+     * surface to clients (see the matching Drafts-table cost-column removal).
      */
     private static function regenModalDescription(Draft $draft, string $mode): string
     {
         $model = (string) config('services.fal.image_model', 'fal-ai/nano-banana');
-        $label = self::imageModelLabel($model);
 
         $base = $mode === 'force-fal'
-            ? "Bypasses the brand asset library and goes straight to FAL.AI. Use when you want bespoke art for this draft. Generates with {$label}."
-            : "Picks the best matching image from your brand asset library. Falls back to FAL ({$label}) only if no library asset matches.";
+            ? 'Bypasses the brand asset library and generates a fresh image with AI. Use when you want bespoke art for this draft.'
+            : 'Picks the best matching image from your brand asset library, and falls back to a fresh AI image only if no library asset matches.';
 
         // Tell the operator the actual output kind for THIS draft.
         $entry = $draft->calendarEntry;
@@ -728,24 +715,10 @@ class DraftResource extends Resource
             : ' This draft renders as a text-free editorial photo (the quote is stamped on afterward where applicable).';
 
         if (self::draftNeedsVideo($draft)) {
-            $base .= ' Because this draft is a video format on a video-capable platform, VideoAgent will also re-run after the image is ready (~$0.50, ~30s) so the publish target stays an mp4.';
+            $base .= ' Because this draft is a video format on a video-capable platform, the video will also be re-rendered after the image is ready so the publish target stays an mp4.';
         }
 
         return $base;
-    }
-
-    /** Human-readable model name + approximate per-image cost for modal copy. */
-    private static function imageModelLabel(string $model): string
-    {
-        return match ($model) {
-            'fal-ai/nano-banana' => 'Nano Banana (Gemini 2.5 Flash Image, ~$0.039)',
-            'fal-ai/flux-pro/v1.1' => 'Flux Pro (~$0.04)',
-            'fal-ai/flux/schnell' => 'Flux Schnell (~$0.003)',
-            'fal-ai/flux/dev' => 'Flux Dev (~$0.025)',
-            'fal-ai/recraft-v3' => 'Recraft v3 (~$0.04)',
-            'fal-ai/imagen4/preview' => 'Imagen 4 (~$0.025)',
-            default => $model,
-        };
     }
 
     /**
@@ -794,9 +767,7 @@ class DraftResource extends Resource
             return ' · video re-run failed: '.substr((string) $videoResult->errorMessage, 0, 80);
         }
 
-        $videoCost = $videoResult->data['cost_usd'] ?? 0;
-
-        return ' · video ready · +$'.number_format((float) $videoCost, 4);
+        return ' · video ready';
     }
 
     /**
