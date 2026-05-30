@@ -121,17 +121,25 @@
             </div>
         </div>
 
-        {{-- Opens the existing floating support form (the "Tell us what you're
-             working on" lead-capture mounted panel-wide by AgencyPanelProvider's
-             BODY_END hook). data-smt="contact" is handled by smt-chat.js, which
-             posts to /api/contact → SupportChatController. Button, not anchor,
-             so keyboard + screen-reader semantics are correct. --}}
-        <p class="text-xs text-gray-400 text-center">
-            Need help?
-            <button type="button" data-smt="contact" class="text-primary-600 underline hover:text-primary-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 rounded">
+        {{-- "Talk to us" opens the existing floating support form (the "Tell us
+             what you're working on" lead-capture mounted panel-wide by
+             AgencyPanelProvider's BODY_END hook). data-smt="contact" is handled
+             by smt-chat.js, which posts to /api/contact → SupportChatController.
+             Styled as an outlined (secondary) button so it stays visually
+             subordinate to the Subscribe primary CTA above; matches the button
+             language used in connect-metricool.blade.php. --}}
+        <div class="flex flex-col items-center gap-2 pt-1">
+            <button
+                type="button"
+                data-smt="contact"
+                class="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+                <svg class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.6" stroke="currentColor" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 9.75a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
+                </svg>
                 Talk to us
             </button>
-            — we reply same day.
-        </p>
+            <p class="text-xs text-gray-400">We reply same day.</p>
+        </div>
     </div>
 </x-filament-panels::page>
