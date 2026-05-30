@@ -143,6 +143,26 @@ return [
     'meta' => [
         'ad_library_base_url' => env('META_AD_LIBRARY_BASE_URL', 'https://graph.facebook.com/v20.0/ads_archive'),
         'ad_library_request_timeout' => (int) env('META_AD_LIBRARY_REQUEST_TIMEOUT', 30),
+
+        // ─── Graph API for first-party post analytics ────────────────────
+        // Direct IG/FB insights pull for HQ's OWN accounts (Standard Access —
+        // no Meta App Review needed for accounts we own/manage). Auth uses a
+        // Business Manager SYSTEM USER token, which is permanent (never
+        // expires) — ideal for server-to-server analytics with no recurring
+        // user re-login. Per the EIAAW Deploy Contract the raw token lives in
+        // Infisical; META_GRAPH_SYSTEM_USER_TOKEN holds a `secret://…` handle
+        // that SecretsServiceProvider resolves at boot. Empty = Meta provider
+        // disabled (collector falls back to Blotato/CSV), so this is safe to
+        // ship before the token is provisioned.
+        //
+        // Customer accounts (Advanced Access via per-customer OAuth) are a
+        // later phase — see MetricsProviderRouter for the seam.
+        'graph' => [
+            'base_url' => env('META_GRAPH_BASE_URL', 'https://graph.facebook.com'),
+            'api_version' => env('META_GRAPH_API_VERSION', 'v21.0'),
+            'system_user_token' => env('META_GRAPH_SYSTEM_USER_TOKEN'), // secret:// handle, resolved at boot
+            'request_timeout' => (int) env('META_GRAPH_REQUEST_TIMEOUT', 30),
+        ],
     ],
 
     'firecrawl' => [

@@ -10,11 +10,13 @@ use Illuminate\Support\Collection;
 /**
  * Parse + persist a CSV of platform analytics into post_metrics.
  *
- * Canonical "real metrics" path until v1.1 first-party OAuth pulls land
- * (see BlotatoMetricsCollector docblock). Operator exports analytics from
- * each platform's native dashboard, pastes the post URL alongside the
- * counters, and uploads. Each row becomes a PostMetric snapshot with
- * source='csv_upload'.
+ * The "real metrics" fallback while Blotato's analytics backend is still on
+ * its roadmap (see BlotatoMetricsCollector docblock — the API routes exist
+ * but return no data yet). Operator exports analytics from each platform's
+ * native dashboard, pastes the post URL alongside the counters, and uploads.
+ * Each row becomes a PostMetric snapshot with source='csv_upload'. Stays
+ * useful even after Blotato ships analytics, for posts published outside
+ * Blotato or platforms it never covers.
  *
  * Row matching: post_url is matched against scheduled_posts.platform_post_url.
  * Posts that haven't yet captured platform_post_url (verification gap)

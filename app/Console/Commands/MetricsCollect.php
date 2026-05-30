@@ -20,6 +20,12 @@ use Illuminate\Support\Carbon;
  *
  * The cron entry runs every 30 min. Each tier is gated by checking
  * "last metric snapshot for this post is older than the tier interval".
+ *
+ * Source: BlotatoMetricsCollector pulls from Blotato's analytics API. That
+ * backend is still on Blotato's roadmap, so the collector currently records
+ * "no data yet" (no fabricated values) and begins capturing real numbers
+ * automatically once Blotato turns analytics on — this tiered cron already
+ * drives that path, no further wiring needed. See BlotatoMetricsCollector.
  */
 class MetricsCollect extends Command
 {

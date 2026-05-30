@@ -136,4 +136,35 @@ class RailwayCostClientTest extends TestCase
 
         $this->assertNull((new RailwayCostClient)->cost());
     }
+
+    public function test_degrades_to_estimate_when_usage_query_fails(): void
+    {
+        // The resilience contract: estimatedUsage is primary. If the secondary
+        // `usage` (cycle-to-date) query 400s — e.g. a date-arg type mismatch —
+        // the client must STILL return a result, using the estimate for both
+        // current and estimated, rather than failing the whole Railway line.
+        // Sequence the fakes: 1st call (estimatedUsage) ok, 2nd (usage) 400.
+        Http::fakeSequence()
+            ->push(['data' => ['estimatedUsage' => [
+                ['measurement' => 'DISK_USAGE_GB', 'estimatedValue' => 20],
+            ]]], 200)
+            ->push('Bad Request: variable type mismatch', 400);
+
+        $cost = (new RailwayCostClient)->cost();
+
+        $this->assertNotNull($cost);
+        // estimate: 20 GB × 0.15 = 3.00; current degrades to the estimate.
+        $this->assertSame(3.00, $cost['estimated_usd']);
+        $this->assertSame(3.00, $cost['current_usd']);
+    }
+
+    public function test_returns_null_when_the_estimate_query_itself_fails(): void
+    {
+        // If the PRIMARY estimatedUsage query fails, there's no trustworthy
+        // figure at all — return null so the monitor falls back to the
+        // operator-set line (never a fabricated 0).
+        Http::fake(['*' => Http::response('Bad Request', 400)]);
+
+        $this->assertNull((new RailwayCostClient)->cost());
+    }
 }
