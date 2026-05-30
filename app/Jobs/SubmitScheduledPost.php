@@ -334,13 +334,18 @@ class SubmitScheduledPost implements ShouldQueue
             return;
         }
 
-        // Blotato status response shape (verified 2026-05-02 + 2026-05-06):
-        //   { state|status: published|failed|processing, postId|post_id,
-        //     postUrl|post_url, error|message, ... }
-        // Blotato has been observed to nest the URL one level deep under
-        // `result`, `data`, or `post` for older submissions, so fall through
-        // to dotted lookups before declaring it missing.
+        // Blotato status response. DOCUMENTED shape per backend.blotato.com/openapi.json
+        // (GET /v2/posts/{id} 200) is exactly 5 fields:
+        //   { postSubmissionId, status: in-progress|failed|published|scheduled,
+        //     scheduledTime, publicUrl, errorMessage }
+        // Note: there is NO platform-side post id in the contract — `publicUrl`
+        // is the only published-post identifier Blotato returns. The `state`,
+        // `postId`-family, and nested-envelope lookups below are NON-CONTRACTUAL
+        // fallbacks kept for undocumented fields older submissions were observed
+        // emitting live (SP76+); they're belt-and-suspenders, not the spec path.
         $state = strtolower((string) ($status['state'] ?? $status['status'] ?? ''));
+        // Almost always null against the documented contract (no postId field) —
+        // verification below therefore runs off publicUrl. Kept for resilience.
         $platformPostId = $this->digKeys($status, ['postId', 'post_id', 'platformPostId', 'externalId', 'id']);
         // 2026-05-06: Blotato switched the URL field to `publicUrl` for newer
         // submissions (verified live for SP76+ across LinkedIn, Threads,
@@ -349,6 +354,11 @@ class SubmitScheduledPost implements ShouldQueue
         $platformPostUrl = $this->digKeys($status, ['publicUrl', 'public_url', 'postUrl', 'post_url', 'platformPostUrl', 'permalink', 'url', 'shareUrl', 'share_url']);
         $error = $status['error'] ?? $status['message'] ?? null;
 
+        // Documented status enum is published | failed | in-progress | scheduled.
+        // The terminal branches below match `published`/`failed` (plus a few
+        // non-contractual synonyms); `in-progress` and `scheduled` fall through
+        // to "still processing" so the poller revisits. (Earlier comments said
+        // `processing` — that value is not in Blotato's contract.)
         if (in_array($state, ['published', 'success', 'completed'])) {
             // Verification gate — Blotato has been observed to return
             // state=published before its TikTok/YouTube/IG/Threads adapters

@@ -7,11 +7,21 @@ use App\Models\Brand;
 use App\Models\BrandAsset;
 use App\Models\Workspace;
 use App\Services\Imagery\BrandAssetTagger;
+use App\Services\Imagery\CustomisedPostScheduler;
+use App\Services\Imagery\CustomisedNarrativeWriter;
 use Filament\Actions\Action;
+use Filament\Forms\Components\CheckboxList;
+use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\Hidden;
+use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TagsInput;
+use Filament\Forms\Components\Textarea;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ManageRecords;
+use Filament\Schemas\Components\Utilities\Set;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
 
 class ManageBrandAssets extends ManageRecords
@@ -20,7 +30,7 @@ class ManageBrandAssets extends ManageRecords
 
     public function getSubheading(): ?string
     {
-        return 'Brand-approved images and videos the Designer pulls from. Upload, tag, reuse.';
+        return 'Brand-approved images and videos the Designer pulls from. Upload for general agent use, or schedule a customised post around one.';
     }
 
     protected function getHeaderActions(): array
@@ -31,75 +41,337 @@ class ManageBrandAssets extends ManageRecords
                 ->icon('heroicon-o-arrow-up-tray')
                 ->color('primary')
                 ->modalHeading('Upload brand assets')
-                ->modalDescription('Drop in brand-approved images / videos. They go through Claude vision tagging on save (~3s per image, $0.01 each).')
-                ->schema([
-                    Select::make('brand_id')
-                        ->label('Brand')
-                        ->options(fn () => $this->brandOptions())
-                        ->default(fn () => $this->defaultBrandId())
-                        ->required(),
-                    FileUpload::make('files')
-                        ->label('Files (drag-drop, multiple allowed)')
-                        ->multiple()
-                        ->disk($this->preferredDisk())
-                        ->directory(fn (callable $get) => 'brand-assets/' . ($get('brand_id') ?: 'unsorted'))
-                        ->visibility('public')
-                        ->preserveFilenames()
-                        ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/quicktime', 'video/webm'])
-                        ->maxSize(50 * 1024) // 50 MB per file
-                        ->required(),
-                ])
-                ->action(function (array $data): void {
-                    @set_time_limit(300);
-                    $disk = $this->preferredDisk();
-                    $brandId = (int) $data['brand_id'];
-                    $files = $data['files'] ?? [];
-                    if (! is_array($files)) $files = [$files];
-
-                    $created = 0;
-                    foreach ($files as $relativePath) {
-                        $absoluteUrl = Storage::disk($disk)->url($relativePath);
-                        $isVideo = str_starts_with(Storage::disk($disk)->mimeType($relativePath) ?: '', 'video/');
-                        $asset = BrandAsset::create([
-                            'brand_id' => $brandId,
-                            'uploaded_by_user_id' => auth()->id(),
-                            'media_type' => $isVideo ? 'video' : 'image',
-                            'source' => 'upload',
-                            'storage_disk' => $disk,
-                            'storage_path' => $relativePath,
-                            'public_url' => $absoluteUrl,
-                            'original_filename' => basename($relativePath),
-                            'mime_type' => Storage::disk($disk)->mimeType($relativePath) ?: null,
-                            'file_size_bytes' => Storage::disk($disk)->size($relativePath) ?: null,
-                            'brand_approved' => true,
-                        ]);
-
-                        try {
-                            app(BrandAssetTagger::class)->tag($asset);
-                        } catch (\Throwable $e) {
-                            // Tagging is best-effort; the asset still lives.
-                            \Illuminate\Support\Facades\Log::warning('upload: tagger failed', [
-                                'asset_id' => $asset->id,
-                                'error' => $e->getMessage(),
-                            ]);
-                        }
-
-                        $created++;
-                    }
-
-                    Notification::make()
-                        ->title("Uploaded {$created} asset(s)")
-                        ->body('Tagging + embedding ran inline. Designer/Video agents will start picking from these immediately.')
-                        ->success()
-                        ->send();
-                }),
+                ->modalDescription('Add brand-approved images / videos. Choose whether the agents may use them freely, or schedule one as a customised post.')
+                ->modalSubmitActionLabel(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED
+                    ? 'Schedule customised post'
+                    : 'Upload')
+                ->schema($this->uploadSchema())
+                ->action(fn (array $data) => $this->handleUpload($data)),
         ];
+    }
+
+    /** @return array<int, \Filament\Schemas\Components\Component|\Filament\Forms\Components\Field> */
+    private function uploadSchema(): array
+    {
+        return [
+            Select::make('brand_id')
+                ->label('Brand')
+                ->options(fn () => $this->brandOptions())
+                ->default(fn () => $this->defaultBrandId())
+                ->live()
+                ->required(),
+
+            Radio::make('usage_intent')
+                ->label('How will this asset be used?')
+                ->options([
+                    BrandAsset::INTENT_GENERAL => 'General usage — let the agents post with it',
+                    BrandAsset::INTENT_CUSTOMISED => 'Customised post — I\'ll schedule a specific post around it',
+                ])
+                ->descriptions([
+                    BrandAsset::INTENT_GENERAL => 'Goes into the pool the Designer + Video agents semantically pick from when they build your posts. Best for stock photography, b-roll, brand shots.',
+                    BrandAsset::INTENT_CUSTOMISED => 'Reserved for one dedicated post you control: your own caption (or an AI-written one), the platforms, and the publish date. The agents won\'t reuse it.',
+                ])
+                ->default(BrandAsset::INTENT_GENERAL)
+                ->required()
+                ->live(),
+
+            // ---- Files ----
+            FileUpload::make('files')
+                ->label(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED
+                    ? 'File (one asset for this post)'
+                    : 'Files (drag-drop, multiple allowed)')
+                ->multiple(fn (callable $get) => $get('usage_intent') !== BrandAsset::INTENT_CUSTOMISED)
+                ->maxFiles(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED ? 1 : null)
+                ->disk($this->preferredDisk())
+                ->directory(fn (callable $get) => 'brand-assets/' . ($get('brand_id') ?: 'unsorted'))
+                ->visibility('public')
+                ->preserveFilenames()
+                ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/quicktime', 'video/webm'])
+                ->maxSize(50 * 1024) // 50 MB per file
+                ->helperText('Tagged via Claude vision on save (~3s, $0.01 each) so the agents can find them.')
+                ->required(),
+
+            // ---- Customised-post fields (revealed only for that intent) ----
+            CheckboxList::make('platforms')
+                ->label('Publish to')
+                ->options($this->platformOptions())
+                ->columns(2)
+                ->bulkToggleable()
+                ->helperText('One post is created per platform, each fitted to its caption limit.')
+                ->visible(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED)
+                ->required(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED),
+
+            Textarea::make('narrative')
+                ->label('Post narrative')
+                ->rows(5)
+                ->placeholder('Write the caption for this post — or use the AI writer to draft it, then edit.')
+                ->helperText('This exact text publishes (trimmed per platform). You authored it, so it skips the AI compliance redraft loop.')
+                ->hintAction($this->aiWriterAction())
+                ->visible(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED)
+                ->required(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED)
+                ->maxLength(5000),
+
+            // Records whether the narrative was AI-written (set by the hint
+            // action) or hand-typed (default). Persisted on the asset row.
+            Hidden::make('narrative_source')->default('manual'),
+
+            TagsInput::make('hashtags')
+                ->label('Hashtags (optional)')
+                ->placeholder('add a tag + Enter')
+                ->helperText('Without the #. Capped per platform at publish time.')
+                ->visible(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED),
+
+            DateTimePicker::make('publish_at')
+                ->label('Publish date & time')
+                ->seconds(false)
+                ->native(false)
+                ->minDate(now()->subMinutes(5))
+                ->default(now()->addHour()->startOfHour())
+                ->helperText(fn () => 'In your brand timezone (' . ($this->defaultBrandTimezone() ?: 'UTC') . '). Past times publish within a few minutes.')
+                ->visible(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED)
+                ->required(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED),
+        ];
+    }
+
+    /**
+     * The "Generate with AI writer" hint action. Runs the Writer inline against
+     * the asset's vision tags + brand voice, then fills the narrative field so
+     * the operator REVIEWS + EDITS before scheduling (review-before-schedule).
+     * Needs at least one uploaded file (so we can see what the post is about).
+     */
+    private function aiWriterAction(): Action
+    {
+        return Action::make('generateNarrative')
+            ->label('Generate with AI writer')
+            ->icon('heroicon-m-sparkles')
+            ->action(function (callable $get, Set $set): void {
+                @set_time_limit(120);
+
+                $brandId = (int) ($get('brand_id') ?: 0);
+                $brand = $brandId ? Brand::find($brandId) : null;
+                if (! $brand) {
+                    Notification::make()->title('Pick a brand first')->warning()->send();
+                    return;
+                }
+
+                $files = $get('files') ?: [];
+                if (! is_array($files)) $files = [$files];
+                $firstFile = $files[0] ?? null;
+                if (! $firstFile) {
+                    Notification::make()
+                        ->title('Upload the file first')
+                        ->body('The AI writer needs to see the asset before it can write about it.')
+                        ->warning()
+                        ->send();
+                    return;
+                }
+
+                $platforms = is_array($get('platforms')) ? $get('platforms') : [];
+                $platform = $platforms[0] ?? 'instagram';
+
+                try {
+                    $narrative = app(CustomisedNarrativeWriter::class)->draftFor(
+                        brand: $brand,
+                        disk: $this->preferredDisk(),
+                        relativePath: (string) $firstFile,
+                        platform: $platform,
+                    );
+                } catch (\Throwable $e) {
+                    Notification::make()
+                        ->title('AI writer could not draft')
+                        ->body(substr($e->getMessage(), 0, 240))
+                        ->danger()
+                        ->send();
+                    return;
+                }
+
+                if ($narrative === '') {
+                    Notification::make()->title('AI writer returned nothing — try again')->warning()->send();
+                    return;
+                }
+
+                $set('narrative', $narrative);
+                $set('narrative_source', 'ai_writer');
+                Notification::make()
+                    ->title('Draft written — review and edit before scheduling')
+                    ->success()
+                    ->send();
+            });
+    }
+
+    /**
+     * Single entry point for the upload action. Forks on usage_intent.
+     */
+    private function handleUpload(array $data): void
+    {
+        @set_time_limit(300);
+
+        $intent = $data['usage_intent'] ?? BrandAsset::INTENT_GENERAL;
+
+        if ($intent === BrandAsset::INTENT_CUSTOMISED) {
+            $this->handleCustomisedUpload($data);
+            return;
+        }
+
+        $this->handleGeneralUpload($data);
+    }
+
+    /** Today's behaviour: tag + embed, asset joins the agent pool. */
+    private function handleGeneralUpload(array $data): void
+    {
+        $disk = $this->preferredDisk();
+        $brandId = (int) $data['brand_id'];
+        $files = $data['files'] ?? [];
+        if (! is_array($files)) $files = [$files];
+
+        $created = 0;
+        foreach ($files as $relativePath) {
+            $asset = $this->persistAsset($disk, $brandId, (string) $relativePath, BrandAsset::INTENT_GENERAL);
+            $this->tagSafely($asset);
+            $created++;
+        }
+
+        Notification::make()
+            ->title("Uploaded {$created} asset(s)")
+            ->body('Tagging + embedding ran inline. Designer/Video agents will start picking from these immediately.')
+            ->success()
+            ->send();
+    }
+
+    /**
+     * Customised path: persist the single asset, tag it (so topic/visual
+     * direction is meaningful), then schedule one post per platform via the
+     * existing Draft → ScheduledPost → SubmitScheduledPost rail.
+     */
+    private function handleCustomisedUpload(array $data): void
+    {
+        $disk = $this->preferredDisk();
+        $brandId = (int) $data['brand_id'];
+        $brand = Brand::find($brandId);
+        if (! $brand) {
+            Notification::make()->title('Brand not found')->danger()->send();
+            return;
+        }
+
+        $files = $data['files'] ?? [];
+        if (! is_array($files)) $files = [$files];
+        $relativePath = (string) ($files[0] ?? '');
+        if ($relativePath === '') {
+            Notification::make()->title('No file uploaded')->danger()->send();
+            return;
+        }
+
+        $platforms = array_values((array) ($data['platforms'] ?? []));
+        $narrative = trim((string) ($data['narrative'] ?? ''));
+        $hashtags = array_values((array) ($data['hashtags'] ?? []));
+        $publishAtRaw = $data['publish_at'] ?? null;
+
+        if (empty($platforms) || $narrative === '' || ! $publishAtRaw) {
+            Notification::make()
+                ->title('Missing details')
+                ->body('A customised post needs at least one platform, a narrative, and a publish date.')
+                ->danger()
+                ->send();
+            return;
+        }
+
+        // Interpret the picked datetime in the brand timezone, store as a
+        // timezone-aware Carbon. The scheduler localises it back for the entry.
+        $brandTz = $brand->timezone ?: 'UTC';
+        try {
+            $publishAt = Carbon::parse($publishAtRaw, $brandTz);
+        } catch (\Throwable) {
+            $publishAt = now($brandTz)->addHour();
+        }
+
+        // Persist + tag the asset BEFORE scheduling so its description anchors
+        // the calendar entry's topic/visual_direction.
+        $asset = $this->persistAsset($disk, $brandId, $relativePath, BrandAsset::INTENT_CUSTOMISED);
+        $this->tagSafely($asset);
+
+        try {
+            $result = app(CustomisedPostScheduler::class)->schedule(
+                asset: $asset,
+                brand: $brand,
+                narrative: $narrative,
+                platforms: $platforms,
+                publishAt: $publishAt,
+                narrativeSource: ! empty($data['narrative_source']) ? (string) $data['narrative_source'] : 'manual',
+                hashtags: $hashtags,
+            );
+        } catch (\Throwable $e) {
+            Notification::make()
+                ->title('Could not schedule the customised post')
+                ->body(substr($e->getMessage(), 0, 240))
+                ->danger()
+                ->persistent()
+                ->send();
+            return;
+        }
+
+        $count = count($result['drafts']);
+        $when = $publishAt->copy()->setTimezone($brandTz)->format('D, M j Y · g:i A');
+        Notification::make()
+            ->title("Scheduled {$count} customised post(s)")
+            ->body("Publishing " . implode(', ', $platforms) . " on {$when}. Track it on the Schedule page.")
+            ->success()
+            ->send();
+    }
+
+    /** Create one BrandAsset row from an uploaded relative path. */
+    private function persistAsset(string $disk, int $brandId, string $relativePath, string $intent): BrandAsset
+    {
+        $absoluteUrl = Storage::disk($disk)->url($relativePath);
+        $isVideo = str_starts_with(Storage::disk($disk)->mimeType($relativePath) ?: '', 'video/');
+
+        return BrandAsset::create([
+            'brand_id' => $brandId,
+            'uploaded_by_user_id' => auth()->id(),
+            'media_type' => $isVideo ? 'video' : 'image',
+            'source' => 'upload',
+            'usage_intent' => $intent,
+            'storage_disk' => $disk,
+            'storage_path' => $relativePath,
+            'public_url' => $absoluteUrl,
+            'original_filename' => basename($relativePath),
+            'mime_type' => Storage::disk($disk)->mimeType($relativePath) ?: null,
+            'file_size_bytes' => Storage::disk($disk)->size($relativePath) ?: null,
+            'brand_approved' => true,
+        ]);
+    }
+
+    /** Best-effort vision tagging — the asset survives even if it fails. */
+    private function tagSafely(BrandAsset $asset): void
+    {
+        try {
+            app(BrandAssetTagger::class)->tag($asset);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('upload: tagger failed', [
+                'asset_id' => $asset->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /** R2 if env is configured, else local public disk. */
     private function preferredDisk(): string
     {
         return config('filesystems.disks.r2.bucket') ? 'r2' : 'public';
+    }
+
+    /** @return array<string, string> platform enum => label */
+    private function platformOptions(): array
+    {
+        return [
+            'instagram' => 'Instagram',
+            'facebook' => 'Facebook',
+            'linkedin' => 'LinkedIn',
+            'tiktok' => 'TikTok',
+            'threads' => 'Threads',
+            'x' => 'X (Twitter)',
+            'youtube' => 'YouTube',
+            'pinterest' => 'Pinterest',
+        ];
     }
 
     /** @return array<int, string> brand_id => display name */
@@ -122,6 +394,12 @@ class ManageBrandAssets extends ManageRecords
             ->whereNull('archived_at')
             ->orderBy('id')
             ->value('id');
+    }
+
+    private function defaultBrandTimezone(): ?string
+    {
+        $id = $this->defaultBrandId();
+        return $id ? Brand::whereKey($id)->value('timezone') : null;
     }
 
     private function workspace(): ?Workspace

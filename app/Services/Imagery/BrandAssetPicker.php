@@ -54,16 +54,20 @@ class BrandAssetPicker
         }
 
         // Pull top 5 by cosine + their distances. Apply tie-breakers in PHP.
+        // usage_intent = 'general' only: customised assets are reserved for the
+        // one dedicated post the operator scheduled around them, so the agents
+        // must never re-pick a hand-scheduled visual for an auto-planned draft.
         $rows = DB::select(
             'SELECT id, embedding <=> ? AS distance
              FROM brand_assets
              WHERE brand_id = ?
                AND media_type = ?
+               AND usage_intent = ?
                AND archived_at IS NULL
                AND embedding IS NOT NULL
              ORDER BY embedding <=> ?
              LIMIT 5',
-            [(string) $vector, $brand->id, $mediaType, (string) $vector],
+            [(string) $vector, $brand->id, $mediaType, BrandAsset::INTENT_GENERAL, (string) $vector],
         );
 
         if (empty($rows)) {
@@ -104,6 +108,7 @@ class BrandAssetPicker
     {
         return BrandAsset::where('brand_id', $brand->id)
             ->where('media_type', $mediaType)
+            ->generalPool()
             ->whereNull('archived_at')
             ->exists();
     }

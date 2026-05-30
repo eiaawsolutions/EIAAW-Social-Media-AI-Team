@@ -49,6 +49,16 @@ class BrandAssetResource extends Resource
                 Tables\Columns\TextColumn::make('media_type')
                     ->badge()
                     ->color(fn (string $state) => $state === 'video' ? 'info' : 'success'),
+                Tables\Columns\TextColumn::make('usage_intent')
+                    ->label('Usage')
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state) => $state === BrandAsset::INTENT_CUSTOMISED ? 'Customised post' : 'General')
+                    ->color(fn (?string $state) => $state === BrandAsset::INTENT_CUSTOMISED ? 'warning' : 'gray')
+                    ->icon(fn (?string $state) => $state === BrandAsset::INTENT_CUSTOMISED ? 'heroicon-m-calendar-days' : 'heroicon-m-photo')
+                    ->description(fn (BrandAsset $r) => $r->isCustomised() && $r->scheduled_post_for
+                        ? $r->scheduled_post_for->setTimezone($r->brand?->timezone ?: 'UTC')->format('M j, g:i A')
+                        . ' · ' . implode(', ', (array) ($r->scheduled_platforms ?? []))
+                        : null),
                 Tables\Columns\TextColumn::make('original_filename')
                     ->label('Filename')
                     ->limit(40)
@@ -85,6 +95,12 @@ class BrandAssetResource extends Resource
                     'image' => 'Images',
                     'video' => 'Videos',
                 ]),
+                Tables\Filters\SelectFilter::make('usage_intent')
+                    ->label('Usage')
+                    ->options([
+                        BrandAsset::INTENT_GENERAL => 'General (agent pool)',
+                        BrandAsset::INTENT_CUSTOMISED => 'Customised post',
+                    ]),
                 Tables\Filters\TernaryFilter::make('brand_approved'),
             ])
             ->recordActions([

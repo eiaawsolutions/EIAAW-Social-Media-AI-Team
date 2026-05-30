@@ -11,9 +11,15 @@ class BrandAsset extends Model
 {
     use HasNeighbors;
 
+    /** Upload intents. general = agent pool; customised = reserved for one dedicated post. */
+    public const INTENT_GENERAL = 'general';
+    public const INTENT_CUSTOMISED = 'customised';
+
     protected $fillable = [
         'brand_id', 'uploaded_by_user_id',
-        'media_type', 'source',
+        'media_type', 'source', 'usage_intent',
+        'scheduled_platforms', 'scheduled_post_for', 'narrative_source',
+        'customised_calendar_entry_id',
         'storage_disk', 'storage_path', 'public_url', 'thumbnail_url',
         'original_filename', 'mime_type', 'file_size_bytes',
         'width_px', 'height_px', 'duration_seconds',
@@ -26,6 +32,8 @@ class BrandAsset extends Model
     {
         return [
             'tags' => 'array',
+            'scheduled_platforms' => 'array',
+            'scheduled_post_for' => 'datetime',
             'brand_approved' => 'boolean',
             'last_used_at' => 'datetime',
             'archived_at' => 'datetime',
@@ -43,8 +51,23 @@ class BrandAsset extends Model
         return $this->belongsTo(User::class, 'uploaded_by_user_id');
     }
 
+    /** The calendar entry that drives this asset's dedicated post(s), if customised. */
+    public function customisedCalendarEntry(): BelongsTo
+    {
+        return $this->belongsTo(CalendarEntry::class, 'customised_calendar_entry_id');
+    }
+
     public function isImage(): bool { return $this->media_type === 'image'; }
     public function isVideo(): bool { return $this->media_type === 'video'; }
+
+    public function isCustomised(): bool { return $this->usage_intent === self::INTENT_CUSTOMISED; }
+    public function isGeneral(): bool { return $this->usage_intent !== self::INTENT_CUSTOMISED; }
+
+    /** Only general-usage assets feed the agent picker pool. */
+    public function scopeGeneralPool(\Illuminate\Database\Eloquent\Builder $q): \Illuminate\Database\Eloquent\Builder
+    {
+        return $q->where('usage_intent', self::INTENT_GENERAL);
+    }
 
     /** Bump usage counters after the Picker selects this asset. */
     public function recordUse(): void

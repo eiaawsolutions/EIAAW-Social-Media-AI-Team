@@ -25,6 +25,29 @@
         <div style="font-size: 14px; color: #2A3438; margin-bottom: 12px;">{{ $asset->description }}</div>
     @endif
 
+    @if ($asset->isCustomised())
+        <div style="background: #FCF6E8; border: 1px solid #E8DFCC; border-radius: 10px; padding: 12px 14px; margin-bottom: 14px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #B26A00; margin-bottom: 6px;">
+                Customised post · reserved (agents won't reuse)
+            </div>
+            <div style="font-size: 13px; color: #2A3438;">
+                @if ($asset->scheduled_post_for)
+                    Scheduled for
+                    <strong>{{ $asset->scheduled_post_for->setTimezone($asset->brand?->timezone ?: 'UTC')->format('D, M j Y · g:i A') }}</strong>
+                    ({{ $asset->brand?->timezone ?: 'UTC' }})
+                @endif
+                @if (! empty($asset->scheduled_platforms))
+                    <div style="margin-top: 4px; color: #6B7A7F;">
+                        Platforms: {{ implode(', ', (array) $asset->scheduled_platforms) }}
+                    </div>
+                @endif
+                <div style="margin-top: 4px; color: #6B7A7F;">
+                    Narrative: {{ $asset->narrative_source === 'ai_writer' ? 'AI-written (reviewed)' : 'hand-written' }}
+                </div>
+            </div>
+        </div>
+    @endif
+
     @if (! empty($asset->tags))
         <div style="margin-bottom: 14px;">
             @foreach ($asset->tags as $tag)
