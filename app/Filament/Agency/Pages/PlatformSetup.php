@@ -42,9 +42,37 @@ class PlatformSetup extends Page
     public ?Workspace $workspace = null;
     public string $state = 'not_requested';
 
-    public function mount(): void
+    /**
+     * Legacy Blotato handoff. Only the active setup surface under the
+     * PUBLISH_PROVIDER=blotato rollback. When the provider is Metricool (the
+     * default), this page is dormant: we hide it from nav and bounce any stale
+     * bookmark / direct hit on /agency/platform-setup over to the Metricool
+     * connect wizard, so customers never land on the dead Blotato screen.
+     */
+    public static function publishProvider(): string
     {
+        return strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+    }
+
+    public static function isActiveProvider(): bool
+    {
+        return self::publishProvider() === 'blotato';
+    }
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        return self::isActiveProvider();
+    }
+
+    public function mount(): \Illuminate\Http\RedirectResponse|null
+    {
+        if (! self::isActiveProvider()) {
+            return redirect('/agency/metricool-setup');
+        }
+
         $this->refresh();
+
+        return null;
     }
 
     public function refresh(): void

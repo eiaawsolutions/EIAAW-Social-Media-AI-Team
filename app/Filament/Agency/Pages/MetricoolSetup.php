@@ -46,8 +46,31 @@ class MetricoolSetup extends Page
     /** @var array<int, array{id:int,name:string,state:string,blogId:?string,networks:array<int,string>}> */
     public array $brands = [];
 
+    /**
+     * This wizard is the Metricool setup surface. It is only the active setup
+     * page when PUBLISH_PROVIDER=metricool (the default). Under the blotato
+     * rollback the legacy PlatformSetup page takes over instead, so we hide
+     * this one from nav and block direct access to avoid two competing
+     * "Platform setup" entries pointing at different flows.
+     */
+    public static function publishProvider(): string
+    {
+        return strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+    }
+
+    public static function canAccess(): bool
+    {
+        return self::publishProvider() === 'metricool';
+    }
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        return self::canAccess();
+    }
+
     public function mount(): void
     {
+        abort_unless(self::canAccess(), 403);
         $this->refresh();
     }
 
