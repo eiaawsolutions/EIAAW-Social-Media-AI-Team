@@ -188,6 +188,28 @@ return [
         'request_timeout' => (int) env('BLOTATO_REQUEST_TIMEOUT', 30),
     ],
 
+    // ─── Metricool (evaluation: candidate Blotato replacement) ──────
+    // Unlike Blotato, Metricool is NATIVELY multi-brand: ONE account holds N
+    // brands (each a blogId), and ONE API token (sent as the X-Mc-Auth header)
+    // covers every brand. So — deliberately — there is a SINGLE token handle
+    // here, NOT a per-workspace handle like blotato_api_key_handle. Each SMT
+    // client maps to a Metricool brand via brands.metricool_blog_id; isolation
+    // is enforced server-side by scoping every call to the right blogId.
+    // Per the EIAAW Deploy Contract the raw token lives in Infisical;
+    // METRICOOL_API_TOKEN holds a `secret://…` handle resolved at boot. The
+    // user_id is the numeric Metricool account id (not secret) and pairs with
+    // blogId on every request. Empty token = integration dormant (probes no-op
+    // with a clear message). This block exists for the verification probes
+    // (metricool:probe-metrics / metricool:probe-publish) — wiring the live
+    // collector/publisher is gated on those passing. See memory
+    // metricool-evaluation + metricool-multitenancy.
+    'metricool' => [
+        'api_token' => env('METRICOOL_API_TOKEN'),   // secret:// handle → X-Mc-Auth token
+        'user_id' => env('METRICOOL_USER_ID'),       // numeric account id (non-secret)
+        'base_url' => env('METRICOOL_BASE_URL', 'https://app.metricool.com/api'),
+        'request_timeout' => (int) env('METRICOOL_REQUEST_TIMEOUT', 30),
+    ],
+
     // ─── Billing ────────────────────────────────────────────────────
     'stripe' => [
         'key' => env('STRIPE_KEY'),
