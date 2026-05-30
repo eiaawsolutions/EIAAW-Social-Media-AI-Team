@@ -121,8 +121,17 @@
             </div>
         </div>
 
+        {{-- Opens the existing floating support form (the "Tell us what you're
+             working on" lead-capture mounted panel-wide by AgencyPanelProvider's
+             BODY_END hook). data-smt="contact" is handled by smt-chat.js, which
+             posts to /api/contact → SupportChatController. Button, not anchor,
+             so keyboard + screen-reader semantics are correct. --}}
         <p class="text-xs text-gray-400 text-center">
-            Need help? Email <a href="mailto:eiaawsolutions@gmail.com" class="text-primary-600 underline">eiaawsolutions@gmail.com</a> — we reply same day.
+            Need help?
+            <button type="button" data-smt="contact" class="text-primary-600 underline hover:text-primary-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 rounded">
+                Talk to us
+            </button>
+            — we reply same day.
         </p>
     </div>
 </x-filament-panels::page>
