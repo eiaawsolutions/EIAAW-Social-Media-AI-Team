@@ -74,6 +74,7 @@ class CostMonitorStats extends StatsOverviewWidget
             Stat::make('Running cost', 'RM '.$this->money($cost))
                 ->description('AI RM '.$this->money($s['costs']['ai_myr'])
                     .' · Blotato RM '.$this->money($s['costs']['blotato_myr'])
+                    .($s['costs']['railway'] ? ' · Railway RM '.$this->money($s['costs']['railway']['amount_myr']) : '')
                     .' · fixed RM '.$this->money($s['costs']['fixed_myr']))
                 ->descriptionIcon('heroicon-m-banknotes')
                 ->color('warning'),
