@@ -143,6 +143,13 @@ class PlatformConnectionResource extends Resource
      * Constrain to brands the current user's workspace owns. Same pattern as
      * BrandResource::getEloquentQuery — single source of truth across list,
      * record-resolution, summary, and modal queries.
+     *
+     * Customer view hides 'revoked' connections: those are inert tombstones
+     * (legacy Blotato-era rows the Metricool sync revoked rather than deleted,
+     * to preserve the ScheduledPost audit chain — see MetricoolConnectionService
+     * ::sync). They never re-activate, so they're noise to the customer. We keep
+     * 'expired'/'reauth_required' visible — those are states the customer must
+     * act on. Super admins (HQ) still see revoked rows for support/audit.
      */
     public static function getEloquentQuery(): Builder
     {
@@ -163,6 +170,7 @@ class PlatformConnectionResource extends Resource
         }
 
         return parent::getEloquentQuery()
+            ->where('status', '!=', 'revoked')
             ->whereHas('brand', function (Builder $q) use ($workspaceId) {
                 $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
             });
