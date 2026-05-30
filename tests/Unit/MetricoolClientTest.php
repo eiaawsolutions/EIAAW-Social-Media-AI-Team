@@ -97,9 +97,9 @@ class MetricoolClientTest extends TestCase
 
         $result = $this->client()->postAnalytics(
             blogId: 222,
-            network: 'instagram',
             from: '2026-05-01',
             to: '2026-05-30',
+            network: 'instagram',
         );
 
         $this->assertTrue($result['found']);
@@ -110,8 +110,8 @@ class MetricoolClientTest extends TestCase
             return str_contains($request->url(), '/v2/analytics/posts/instagram')
                 && str_contains($request->url(), 'userId=4242')
                 && str_contains($request->url(), 'blogId=222')
-                && str_contains($request->url(), 'start=2026-05-01')
-                && str_contains($request->url(), 'end=2026-05-30');
+                && str_contains($request->url(), 'from=2026-05-01')
+                && str_contains($request->url(), 'to=2026-05-30');
         });
     }
 
@@ -123,7 +123,7 @@ class MetricoolClientTest extends TestCase
             ),
         ]);
 
-        $result = $this->client()->postAnalytics(123, 'threads', '2026-05-01', '2026-05-30');
+        $result = $this->client()->postAnalytics(123, '2026-05-01', '2026-05-30', 'threads');
 
         $this->assertFalse($result['found']);
         $this->assertSame(404, $result['status']);

@@ -82,8 +82,12 @@ class MetricoolProbeMetrics extends Command
             ->values()
             ->all();
         $days = max(1, (int) $this->option('days'));
-        $from = now()->subDays($days)->toDateString();
-        $to = now()->toDateString();
+        // Metricool validates the window as full ISO date-time
+        // (yyyy-MM-dd'T'HH:mm:ss), NOT a bare date — a YYYY-MM-DD string yields
+        // HTTP 400 "Invalid value … Valid format is date-time" (verified live
+        // 2026-05-30). Span the full days at the edges of the window.
+        $from = now()->subDays($days)->startOfDay()->format('Y-m-d\TH:i:s');
+        $to = now()->endOfDay()->format('Y-m-d\TH:i:s');
 
         $this->info("Probing Metricool analytics for blogId={$blog}, window {$from}..{$to}");
         $this->newLine();
@@ -93,7 +97,7 @@ class MetricoolProbeMetrics extends Command
         foreach ($networks as $network) {
             $this->line("── <fg=cyan>{$network}</> ──");
             try {
-                $result = $client->postAnalytics($blog, $network, $from, $to);
+                $result = $client->postAnalytics($blog, $from, $to, $network);
             } catch (\Throwable $e) {
                 $this->error("  request failed: " . $e->getMessage());
                 $verdict[$network] = ['_error' => $e->getMessage()];

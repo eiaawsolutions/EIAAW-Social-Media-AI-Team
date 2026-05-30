@@ -141,11 +141,15 @@ class MetricoolClient
      *
      * @return array{found:bool, status:int, body:mixed}
      */
-    public function postAnalytics(int $blogId, string $network, string $from, string $to): array
+    public function postAnalytics(int $blogId, string $from, string $to, string $network): array
     {
+        // Metricool's analytics endpoints validate the window as `from`/`to`
+        // (verified live 2026-05-30: sending start/end yields HTTP 400
+        // "getInstagramPosts.from must not be null"). Dates are ISO
+        // (YYYY-MM-DD); the API also accepts full dateTime.
         $query = array_merge($this->baseQuery($blogId), [
-            'start' => $from,   // ISO date (YYYY-MM-DD); Metricool also accepts dateTime
-            'end' => $to,
+            'from' => $from,
+            'to' => $to,
         ]);
 
         $response = $this->client()->get('/v2/analytics/posts/' . urlencode($network), $query);
