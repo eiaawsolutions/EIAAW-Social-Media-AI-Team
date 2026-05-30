@@ -41,7 +41,7 @@ class PostsRepublishStuck extends Command
                             {--apply : actually write changes (default is dry-run)}
                             {--i-know-this-publishes-twice : allow re-publishing rows that already have a verified public URL (will create a duplicate on the platform)}';
 
-    protected $description = 'Cancel a stuck/private ScheduledPost + reset draft so auto-scheduler creates a fresh SP under current BlotatoClient defaults.';
+    protected $description = 'Cancel a stuck/private ScheduledPost + reset draft so auto-scheduler creates a fresh SP under current publish defaults.';
 
     public function handle(): int
     {
@@ -120,7 +120,7 @@ class PostsRepublishStuck extends Command
                 $sp->update([
                     'status' => 'cancelled',
                     'last_error' => 'Cancelled by posts:republish-stuck on '.now()->toIso8601String()
-                        .' to resubmit under updated BlotatoClient defaults (TikTok PUBLIC_TO_EVERYONE / YouTube public).',
+                        .' to resubmit under updated publish defaults (TikTok PUBLIC_TO_EVERYONE / YouTube public).',
                 ]);
                 $stats['cancelled']++;
 

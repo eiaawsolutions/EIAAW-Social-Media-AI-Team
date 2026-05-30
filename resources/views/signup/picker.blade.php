@@ -12,7 +12,7 @@
       <h1 class="title section-h">
         Pick your plan. <em>Charged today.</em>
       </h1>
-      <div class="aside">Charged on signup &middot; cancel any time. All tiers include the full 6-agent team, complete receipts, and a dedicated Blotato account provisioned by our team within 1 business day.</div>
+      <div class="aside">Charged on signup &middot; cancel any time. All tiers include the full 6-agent team, complete receipts, and a dedicated Metricool publishing account provisioned by our team within 1 business day.</div>
     </div>
 
     @if (session('error'))

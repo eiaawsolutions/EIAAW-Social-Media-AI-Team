@@ -16,15 +16,15 @@ use Symfony\Component\HttpFoundation\Response;
  *   - workspace plan=eiaaw_internal → bypass (HQ workspaces never billed)
  *   - workspace has NO Cashier subscription record → log out + redirect to /signup
  *   - workspace has expired access → redirect to /agency/trial-expired
- *   - workspace lacks Blotato connection → redirect to /agency/platform-setup
- *     (unless they're on platform-setup / billing / profile / auth — those
+ *   - workspace has no Metricool-connected brand → redirect to /agency/metricool-setup
+ *     (unless they're on metricool-setup / billing / profile / auth — those
  *      routes remain available so the user can complete or pay or escape)
  *   - else → continue
  *
- * The Blotato gate is added because every workspace requires a paid Blotato
- * account that HQ provisions manually (see [[blotato-per-workspace-isolation]]).
- * Without it, publishing is impossible — gating the panel forces the customer
- * to walk through PlatformSetup before they can configure brands they can't use.
+ * The platform-connection gate exists because publishing is impossible until a
+ * brand has connected its socials in Metricool (the sole publisher since the
+ * Blotato decommission). Gating the panel forces the customer through the
+ * Metricool connect wizard before they configure brands they can't yet publish.
  */
 class EnforceTrialOrSubscription
 {
@@ -46,15 +46,13 @@ class EnforceTrialOrSubscription
     /**
      * Additional routes accessible while the platform-connection gate is
      * closed. Superset of ALLOWED_ROUTE_PATTERNS — the customer needs to reach
-     * a setup page (Metricool connect wizard OR the legacy Blotato one) to
-     * advance, and may still want billing / password change. Both setup pages
-     * are listed so the gate works under either PUBLISH_PROVIDER.
+     * the Metricool connect wizard to advance, and may still want billing /
+     * password change.
      */
     private const SETUP_ALLOWED_ROUTE_PATTERNS = [
         'filament.agency.auth.*',
         'filament.agency.pages.billing',
         'filament.agency.pages.metricool-setup',
-        'filament.agency.pages.platform-setup',
         'filament.agency.resources.profile.*',
         'filament.agency.profile',
     ];
@@ -110,24 +108,15 @@ class EnforceTrialOrSubscription
             // when state actually changed).
             $this->reconcileTrialStatus($workspace);
 
-            // Second gate: platform connection. Provider-aware (PUBLISH_PROVIDER):
-            //   metricool → workspace must have ≥1 Metricool-connected brand;
-            //               redirect to the Metricool connect wizard.
-            //   blotato   → legacy per-workspace Blotato connection (rollback).
-            // Only enforced AFTER active-access is confirmed — we never bounce a
-            // paying-but-unwired customer to trial-expired; we send them to the
-            // setup wizard so they can move forward.
-            $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
-            if ($provider === 'metricool') {
-                if (! $workspace->hasAnyMetricoolConnectedBrand()
-                    && ! $this->isAllowedRouteFor($request, self::SETUP_ALLOWED_ROUTE_PATTERNS)) {
-                    return redirect('/agency/metricool-setup');
-                }
-            } else {
-                if (! $workspace->hasBlotatoConnected()
-                    && ! $this->isAllowedRouteFor($request, self::SETUP_ALLOWED_ROUTE_PATTERNS)) {
-                    return redirect('/agency/platform-setup');
-                }
+            // Second gate: platform connection. Metricool is the sole publisher
+            // since the Blotato decommission, so the gate is unconditionally the
+            // Metricool one — workspace must have ≥1 Metricool-connected brand,
+            // else we send them to the connect wizard. Only enforced AFTER
+            // active-access is confirmed: we never bounce a paying-but-unwired
+            // customer to trial-expired; we send them forward to setup.
+            if (! $workspace->hasAnyMetricoolConnectedBrand()
+                && ! $this->isAllowedRouteFor($request, self::SETUP_ALLOWED_ROUTE_PATTERNS)) {
+                return redirect('/agency/metricool-setup');
             }
 
             return $next($request);

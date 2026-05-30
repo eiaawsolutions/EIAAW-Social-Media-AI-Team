@@ -59,17 +59,10 @@ return [
         'services.fal.video_daily_cap_usd',
         'services.voyage.api_key',
 
-        // Publishing
-        // services.blotato.api_key is the HQ-only fallback (resolved at boot
-        // from the .env handle). Per-workspace keys live on
-        // workspaces.blotato_api_key_handle and are resolved on demand by
-        // BlotatoClient::forWorkspace() — they're NOT in this allow-list
-        // because they're per-row and there's no fixed config path to rewrite.
-        'services.blotato.api_key',
-        // Metricool (Blotato-replacement evaluation). ONE shared token covers
-        // all brands (blogId scopes each call) — unlike Blotato there is no
-        // per-workspace handle, so a single fixed config path is correct here.
-        // The numeric user_id is NOT a secret and is read from plain env.
+        // Publishing — Metricool is the sole publisher + metrics provider.
+        // ONE shared token covers all brands (blogId scopes each call), so a
+        // single fixed config path is correct here. The numeric user_id is NOT
+        // a secret and is read from plain env.
         'services.metricool.api_token',
 
         // Mail

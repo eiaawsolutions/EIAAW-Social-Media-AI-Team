@@ -22,15 +22,15 @@ use Illuminate\Support\Facades\Log;
  *   - Meta Graph (first-party): HQ's OWN Instagram/Facebook posts when a
  *     Business Manager System User token is configured. REAL metrics now,
  *     no Meta App Review (Standard Access covers owned accounts).
- *   - Blotato analytics (dormant): everything else. Records "no data yet"
- *     until Blotato's analytics backend ships, then flows automatically.
+ *   - Metricool: everything the publisher reports on. Records "no data yet"
+ *     until a reading is available, then flows automatically.
  *   - Manual CSV upload via /agency/performance: operator fallback for any
  *     post neither provider can report on.
  * The router is the seam where per-customer Meta OAuth slots in later.
  *
  * Result handling: the collector returns a discriminated result —
  *   'metrics'         → real counters captured, write a full snapshot.
- *   'no_metrics_yet'  → matched the post but Blotato has nothing yet; write a
+ *   'no_metrics_yet'  → matched the post but no reading yet; write a
  *                       NULL-counter snapshot (so the dashboard distinguishes
  *                       "tried, none available" from "never tried") UNLESS we
  *                       already have an identical no-data row for this fetch
@@ -55,9 +55,9 @@ class CollectPostMetrics implements ShouldQueue
 
     public function handle(): void
     {
-        // Collectors read brand.workspace (provider routing + Blotato tenant
-        // key) and draft.platform (which provider / metric set), so eager-load
-        // both to avoid lazy-load N+1 inside the queue worker.
+        // Collectors read brand.workspace (provider routing + per-workspace
+        // provider key) and draft.platform (which provider / metric set), so
+        // eager-load both to avoid lazy-load N+1 inside the queue worker.
         $post = ScheduledPost::with(['brand.workspace', 'draft'])->find($this->scheduledPostId);
         if (! $post) return;
         if ($post->status !== 'published') return;
@@ -79,7 +79,7 @@ class CollectPostMetrics implements ShouldQueue
         $fetchedAt = $payload['blotato_last_fetched_at'] ?? null;
 
         // Dedup dormant no-data rows: if the latest snapshot for this post is
-        // ALSO a no-data reading from the same fetch cycle (Blotato's
+        // ALSO a no-data reading from the same fetch cycle (the provider's
         // lastFetchedAt, or null for Meta/404), don't pile on another empty
         // row. (A real reading always writes — it's a new point on the growth
         // curve even if values are unchanged.)
@@ -111,9 +111,9 @@ class CollectPostMetrics implements ShouldQueue
 
     /**
      * True when the most-recent snapshot for this post is itself a no-data
-     * reading from the same Blotato fetch cycle ($fetchedAt). Lets us skip
+     * reading from the same provider fetch cycle ($fetchedAt). Lets us skip
      * writing duplicate empty rows while a post is dormant. A null $fetchedAt
-     * (Blotato gave us no lastFetchedAt) compares as "same cycle" against a
+     * (provider gave us no lastFetchedAt) compares as "same cycle" against a
      * prior null so we still de-dupe the pure-404 case.
      */
     private function lastSnapshotIsSameNoData(int $scheduledPostId, ?string $fetchedAt): bool

@@ -29,7 +29,7 @@
     <li>Plans are billed in advance — monthly or annually — via Stripe. You are charged at signup.</li>
     <li>Each plan has hard caps on brands, published posts, and AI videos per month. When a cap is reached, posts may be deferred and video generation may be blocked until the next cycle or an upgrade.</li>
     <li>Prices are in Malaysian Ringgit (RM) and exclusive of any applicable taxes.</li>
-    <li>A dedicated Blotato publishing account is provisioned for your workspace by our team, typically within one business day of signup.</li>
+    <li>A dedicated Metricool publishing account is provisioned for your workspace by our team, typically within one business day of signup.</li>
   </ul>
 
   <h2>4. Cancellation &amp; refunds</h2>
@@ -62,7 +62,7 @@
 
   <h2>8. Third-party services</h2>
   <p>
-    The service depends on providers including Anthropic, FAL.AI, Stripe, and Blotato. Their availability and terms are outside our control; an outage at a provider may affect the service.
+    The service depends on providers including Anthropic, FAL.AI, Stripe, and Metricool. Their availability and terms are outside our control; an outage at a provider may affect the service.
   </p>
 
   <h2>9. Warranties &amp; liability</h2>

@@ -46,21 +46,14 @@ class SetupReadiness
 
     /**
      * Workspace-level stage 0: the publishing/metrics provider is connected.
-     * Provider-aware (PUBLISH_PROVIDER), mirroring EnforceTrialOrSubscription
-     * and the onboarding deck:
-     *   metricool → ≥1 brand has connected its socials via the secure link
-     *               (Workspace::hasAnyMetricoolConnectedBrand()); CTA →
-     *               /agency/metricool-setup.
-     *   blotato   → legacy per-workspace Blotato account verified (rollback);
-     *               CTA → /agency/platform-setup.
+     * Metricool is the sole publisher since the Blotato decommission, so this
+     * unconditionally delegates to the Metricool stage:
+     *   ≥1 brand has connected its socials via the secure link
+     *   (Workspace::hasAnyMetricoolConnectedBrand()); CTA → /agency/metricool-setup.
      */
     private function stage0_publishingAccount(Workspace $workspace): ReadinessStage
     {
-        $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
-
-        return $provider === 'metricool'
-            ? $this->stage0_metricool($workspace)
-            : $this->stage0_blotato($workspace);
+        return $this->stage0_metricool($workspace);
     }
 
     /** Metricool connect-link stage 0 — ≥1 brand connected via the secure link. */
@@ -89,45 +82,6 @@ class SetupReadiness
             skippable: false,
             ctaLabel: $cta,
             ctaUrl: url('/agency/metricool-setup'),
-            blockedBy: null,
-            evidence: $evidence,
-        );
-    }
-
-    /** Legacy Blotato stage 0 — rollback path (PUBLISH_PROVIDER=blotato). */
-    private function stage0_blotato(Workspace $workspace): ReadinessStage
-    {
-        $state = $workspace->blotatoSetupState();
-        $done = $state === 'connected';
-
-        [$cta, $evidence] = match ($state) {
-            'connected' => [
-                'View platform setup',
-                'Blotato account verified ' . optional($workspace->blotato_connected_at)->diffForHumans(),
-            ],
-            'credentialed' => [
-                'Verify Blotato connection',
-                'Credentials sent ' . optional($workspace->blotato_credentials_sent_at)->diffForHumans() . ' — waiting for you to verify',
-            ],
-            'requested' => [
-                'View setup status',
-                'Setup requested ' . optional($workspace->blotato_setup_requested_at)->diffForHumans() . ' — our team is provisioning',
-            ],
-            default => [
-                'Request Blotato setup',
-                null,
-            ],
-        };
-
-        return new ReadinessStage(
-            id: 'publishing_account',
-            order: 0,
-            label: 'Publishing account ready',
-            description: 'EIAAW publishes through a dedicated Blotato account per workspace. Our team provisions this for you within 1 business day of signup — you log in, connect your social handles, then verify here.',
-            done: $done,
-            skippable: false,
-            ctaLabel: $cta,
-            ctaUrl: url('/agency/platform-setup'),
             blockedBy: null,
             evidence: $evidence,
         );
@@ -242,13 +196,12 @@ class SetupReadiness
             ? $active->map(fn ($c) => ucfirst($c->platform).' (@'.($c->display_handle ?: 'unknown').')')->implode(', ')
             : null;
 
-        // Workspace must have a verified Blotato account before any brand
-        // can connect platforms — the Sync action calls Blotato's API to
-        // pull in handles. Without a connected workspace key, connections
-        // either fail or silently leak HQ's handles (see
-        // [[blotato-per-workspace-isolation]]).
-        $blockedBy = (! $done && ! $brand->workspace?->hasBlotatoConnected())
-            ? 'blotato_account'
+        // Workspace must have at least one Metricool-connected brand before
+        // any brand's platforms surface as connected — Metricool is the sole
+        // publisher/metrics provider and connections flow through the secure
+        // connect link (see Workspace::hasAnyMetricoolConnectedBrand()).
+        $blockedBy = (! $done && ! $brand->workspace?->hasAnyMetricoolConnectedBrand())
+            ? 'publishing_account'
             : null;
 
         return new ReadinessStage(

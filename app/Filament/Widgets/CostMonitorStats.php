@@ -10,8 +10,8 @@ use Illuminate\Support\Carbon;
 /**
  * The four headline numbers of the HQ Cost Monitor: this month's revenue, this
  * month's running cost, net profit, and margin. Polls every 30s (CanPoll) so
- * the figures move as workspaces sign up, agents run, and Blotato seats are
- * provisioned — the "live update based on live signups" the brief asked for.
+ * the figures move as workspaces sign up and agents run — the "live update
+ * based on live signups" the brief asked for.
  *
  * All figures come from App\Services\Monitoring\CostMonitor, which reads real
  * tables (workspaces, ai_costs) + the operator-set cost register. Nothing here
@@ -73,7 +73,7 @@ class CostMonitorStats extends StatsOverviewWidget
 
             Stat::make('Running cost', 'RM '.$this->money($cost))
                 ->description('AI RM '.$this->money($s['costs']['ai_myr'])
-                    .' · Blotato RM '.$this->money($s['costs']['blotato_myr'])
+                    .' · Metricool RM '.$this->money($s['costs']['metricool_myr'])
                     .($s['costs']['railway'] ? ' · Railway RM '.$this->money($s['costs']['railway']['amount_myr']) : '')
                     .' · fixed RM '.$this->money($s['costs']['fixed_myr']))
                 ->descriptionIcon('heroicon-m-banknotes')

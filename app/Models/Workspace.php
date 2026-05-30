@@ -52,12 +52,6 @@ class Workspace extends Model
         'publishing_paused',
         'publishing_paused_at',
         'publishing_paused_reason',
-        'blotato_api_key_handle',
-        'blotato_account_email',
-        'blotato_connected_at',
-        'blotato_setup_requested_at',
-        'blotato_login_url',
-        'blotato_credentials_sent_at',
     ];
 
     protected function casts(): array
@@ -69,9 +63,6 @@ class Workspace extends Model
             'suspended_at' => 'datetime',
             'publishing_paused' => 'boolean',
             'publishing_paused_at' => 'datetime',
-            'blotato_connected_at' => 'datetime',
-            'blotato_setup_requested_at' => 'datetime',
-            'blotato_credentials_sent_at' => 'datetime',
             'settings' => 'array',
         ];
     }
@@ -145,17 +136,6 @@ class Workspace extends Model
     }
 
     /**
-     * True iff this workspace has no Blotato account wired yet. UI surfaces
-     * a "Connect your Blotato account" empty state in /agency/platforms and
-     * publishing jobs short-circuit with a clear failure message instead of
-     * leaking HQ's accounts via the legacy fromConfig() path.
-     */
-    public function needsBlotatoSetup(): bool
-    {
-        return empty($this->blotato_api_key_handle);
-    }
-
-    /**
      * Active (non-archived) brand count. Drives PlanCaps::canAddBrand —
      * archived brands free up the slot so an operator can rotate without
      * an upgrade.
@@ -171,7 +151,7 @@ class Workspace extends Model
      * SubmitScheduledPost. Counts `status='published'` rows whose
      * `published_at` falls in this month. Does NOT count posts deferred to
      * next period (status='queued_next_period') because those rows haven't
-     * been billed against Blotato yet.
+     * been billed yet.
      */
     public function publishedPostsThisMonth(): int
     {
@@ -207,47 +187,10 @@ class Workspace extends Model
     }
 
     /**
-     * True iff the workspace has both provisioned a Blotato handle AND we've
-     * successfully pinged it at least once. Drives the green/grey "Connected"
-     * pill in the platforms page and the operator-side health dashboard.
-     */
-    public function hasBlotatoConnected(): bool
-    {
-        return ! empty($this->blotato_api_key_handle)
-            && $this->blotato_connected_at !== null;
-    }
-
-    /**
-     * One-of-four state machine for the /agency/platform-setup wizard:
-     *
-     *   - 'connected'  → handle is wired AND a ping has succeeded; user can publish
-     *   - 'credentialed' → HQ sent the customer their Blotato login; they need to verify
-     *   - 'requested'  → customer asked, HQ has not yet provisioned
-     *   - 'not_requested' → fresh workspace; customer must request HQ provision
-     *
-     * Order of checks matters — "connected" wins over everything once the
-     * ping has succeeded, even if credentials_sent_at is older.
-     */
-    public function blotatoSetupState(): string
-    {
-        if ($this->hasBlotatoConnected()) {
-            return 'connected';
-        }
-        if (! empty($this->blotato_login_url) && $this->blotato_credentials_sent_at !== null) {
-            return 'credentialed';
-        }
-        if ($this->blotato_setup_requested_at !== null) {
-            return 'requested';
-        }
-        return 'not_requested';
-    }
-
-    /**
      * True iff the workspace has at least one brand connected in Metricool
-     * (metricool_connected_at set). The Metricool analogue of
-     * hasBlotatoConnected() — but per-workspace it's "any brand connected",
+     * (metricool_connected_at set). Per-workspace it's "any brand connected",
      * since Metricool is brand-scoped. Drives the EnforceTrialOrSubscription
-     * setup gate when PUBLISH_PROVIDER=metricool.
+     * setup gate (Metricool is the sole publisher since the Blotato decommission).
      */
     public function hasAnyMetricoolConnectedBrand(): bool
     {

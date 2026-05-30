@@ -12,7 +12,6 @@ use App\Models\BrandAsset;
 use App\Models\Draft;
 use App\Models\PlatformConnection;
 use App\Models\ScheduledPost;
-use App\Services\Blotato\BlotatoClient;
 use App\Services\Blotato\PlatformMediaRules;
 use App\Services\Imagery\BrandAssetTagger;
 use App\Services\Imagery\FalAiClient;
@@ -771,8 +770,9 @@ class DraftResource extends Resource
         }
 
         // If Designer already returned an mp4 (e.g. brand-asset-library
-        // found a matching video and BlotatoClient::uploadMediaFromUrl
-        // returned a Blotato-hosted video URL), there's nothing to do.
+        // found a matching video and stored it as the draft's asset_url),
+        // there's nothing to do. Media is normalized at publish time by
+        // MetricoolPublisher, so the asset_url is just the source URL.
         $current = (string) ($draft->fresh()->asset_url ?? '');
         $currentLower = strtolower($current);
         if ($current !== '' && (
@@ -962,9 +962,10 @@ class DraftResource extends Resource
         $isVideo = str_starts_with($mime, 'video/');
         $mediaType = $isVideo ? 'video' : 'image';
 
-        // Compliance gate BEFORE Blotato re-host. For images we auto-compress
-        // and write the compliant file back over the upload; for videos a
-        // failure throws MediaComplianceException → fail popup with fixes.
+        // Compliance gate. For images we auto-compress and write the compliant
+        // file back over the upload; for videos a failure throws
+        // MediaComplianceException → fail popup with fixes. Media is normalized
+        // at publish time by Metricool, so no up-front re-host is needed.
         [$localPath, $cleanup] = self::localCopyOf($disk, $relativePath, $sourceUrl);
         try {
             $compNote = self::enforceMediaCompliance(
@@ -1212,24 +1213,25 @@ class DraftResource extends Resource
     }
 
     /**
-     * Re-host a media URL through the brand's workspace Blotato account so it's
-     * publishable. Per the per-workspace-isolation invariant we always use
-     * forWorkspace(), never fromConfig().
+     * Resolve the publishable media URL for a draft.
+     *
+     * Previously this re-hosted the media up-front through the brand's
+     * workspace Blotato account. That round-trip is gone: media is now
+     * normalized at publish time by MetricoolPublisher::submit() (via
+     * MetricoolClient::normalizeMedia()), so the original public source URL
+     * is what gets stored and published — exactly what the old Blotato
+     * fallback already used on failure.
      */
     private static function rehostOnBlotato(Brand $brand, string $url): string
     {
-        if (! $brand->workspace) {
-            throw new \RuntimeException('Brand has no workspace — cannot resolve Blotato account.');
-        }
-
-        return BlotatoClient::forWorkspace($brand->workspace)
-            ->uploadMediaFromUrl($url);
+        return $url;
     }
 
     /**
      * Persist the chosen media on the draft. asset_url becomes the
-     * Blotato-hosted (publishable) URL; asset_urls keeps a de-duplicated
-     * history including the original source URL for provenance.
+     * publishable source URL (media is normalized at publish time by
+     * Metricool, so no up-front re-host is needed); asset_urls keeps a
+     * de-duplicated history including the original source URL for provenance.
      *
      * @param  array<int, string>  $urlsToRemember
      */

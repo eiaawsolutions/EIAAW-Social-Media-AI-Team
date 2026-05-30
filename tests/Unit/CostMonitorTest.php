@@ -31,7 +31,7 @@ class CostMonitorTest extends TestCase
         // Pin the cost register to known values so the math is deterministic
         // and independent of whatever the operator has entered.
         config()->set('costs.fx.usd_to_myr', 4.7);
-        config()->set('costs.per_workspace.blotato.amount_usd', 29);
+        config()->set('costs.subscriptions.metricool.amount_usd', 67);
         config()->set('costs.fixed', [
             'railway' => ['label' => 'Railway', 'amount_usd' => 20],
             'domain' => ['label' => 'Domain', 'amount_myr' => 5],
@@ -73,24 +73,18 @@ class CostMonitorTest extends TestCase
         $this->assertSame([], $revenue['by_plan']);
     }
 
-    public function test_blotato_cost_is_rate_times_fx_times_live_count(): void
+    public function test_metricool_cost_is_flat_rate_times_fx(): void
     {
-        // $29 × 4.7 × 3 workspaces = RM 408.90.
-        $this->assertSame(408.90, $this->monitor->blotatoCost(3, 4.7));
+        // Metricool is ONE shared agency account (not per-workspace), so the
+        // cost is a flat subscription: $67 × 4.7 = RM 314.90, independent of
+        // how many workspaces or brands are live.
+        $this->assertSame(314.90, $this->monitor->metricoolCost(4.7));
     }
 
-    public function test_blotato_cost_is_zero_when_no_workspaces_provisioned(): void
+    public function test_metricool_cost_is_zero_when_rate_unset(): void
     {
-        $this->assertSame(0.0, $this->monitor->blotatoCost(0, 4.7));
-    }
-
-    public function test_blotato_cost_scales_one_to_one_with_signups(): void
-    {
-        // The "live update based on live signups" guarantee, at the unit level:
-        // one more provisioned workspace = exactly one more seat of cost.
-        $one = $this->monitor->blotatoCost(1, 4.7);
-        $two = $this->monitor->blotatoCost(2, 4.7);
-        $this->assertEqualsWithDelta($one, $two - $one, 0.001);
+        config()->set('costs.subscriptions.metricool.amount_usd', 0);
+        $this->assertSame(0.0, $this->monitor->metricoolCost(4.7));
     }
 
     public function test_fixed_costs_convert_usd_lines_and_pass_through_myr_lines(): void
@@ -119,10 +113,10 @@ class CostMonitorTest extends TestCase
         $this->assertFalse($byKey['railway']['is_zero']);
     }
 
-    public function test_blotato_rate_seeded_to_documented_29_usd_floor(): void
+    public function test_metricool_rate_defaults_to_documented_subscription(): void
     {
-        // The billing config documents ~$29–$97/mo per workspace. We seed the
-        // $29 floor as the default so the cost is never silently zero.
-        $this->assertSame(29.0, (float) config('costs.per_workspace.blotato.amount_usd'));
+        // config/costs.php seeds the Metricool shared-account subscription so
+        // the cost is never silently zero. (Test pins 67 in setUp.)
+        $this->assertSame(67.0, (float) config('costs.subscriptions.metricool.amount_usd'));
     }
 }
