@@ -154,7 +154,7 @@ class MetricoolSetup extends Page
 
         Notification::make()
             ->title('Setup requested — our team is on it.')
-            ->body('We\'ll set up your Metricool brand and send you a secure link to connect your social accounts, usually within 1 business day.')
+            ->body('We\'ll set up your secure space and send you a secure link to connect your social accounts, usually within 1 business day.')
             ->success()
             ->send();
     }
@@ -173,7 +173,7 @@ class MetricoolSetup extends Page
         if (empty($brand->metricool_blog_id)) {
             Notification::make()
                 ->title('Not set up yet')
-                ->body('Our team hasn\'t created your Metricool brand yet. Once we do, you\'ll get a link to connect your accounts.')
+                ->body('Our team hasn\'t set up your secure space yet. Once we do, you\'ll get a link to connect your accounts.')
                 ->warning()
                 ->send();
             return;

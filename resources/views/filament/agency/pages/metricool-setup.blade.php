@@ -33,8 +33,8 @@
         <div class="ps-eyebrow">Platform setup &middot; connect your accounts</div>
         <h2 class="ps-title">Connect your social accounts.</h2>
         <p class="ps-lead">
-            EIAAW publishes and reads metrics through Metricool. For each brand, we set up a secure space and send you a
-            link to connect your social accounts &mdash; <strong>no Metricool login needed</strong>. Once connected, we can
+            EIAAW publishes your content and reads your metrics for you. For each brand, we set up a secure space and send you a
+            link to connect your social accounts &mdash; <strong>no extra accounts or logins needed</strong>. Once connected, we can
             publish and pull real performance numbers automatically.
         </p>
 
@@ -77,7 +77,7 @@
 
                 @elseif ($state === 'not_mapped')
                     <p class="ps-lead" style="margin-top:12px;">
-                        We haven't set up this brand in Metricool yet. Request setup and we'll create your secure space and
+                        We haven't set up this brand's secure space yet. Request setup and we'll create it and
                         email you a link to connect your accounts &mdash; usually within 1 business day.
                     </p>
                     <div class="ps-actions">
@@ -103,7 +103,7 @@
                             <div class="ps-step-num ps-step-num-done">1</div>
                             <div>
                                 <div class="ps-step-title">Open the connection link we emailed you</div>
-                                <div class="ps-step-desc">It's secure and expires after 71 hours. No Metricool account needed. Can't find it? Email eiaawsolutions@gmail.com.</div>
+                                <div class="ps-step-desc">It's secure and expires after 71 hours. No extra account needed. Can't find it? Email eiaawsolutions@gmail.com.</div>
                             </div>
                         </div>
                         <div class="ps-step">
@@ -124,7 +124,7 @@
                     <div class="ps-actions">
                         <button type="button" wire:click="checkConnection({{ $brand['id'] }})" wire:loading.attr="disabled" class="ps-cta">
                             <span wire:loading.remove wire:target="checkConnection({{ $brand['id'] }})">I've connected &mdash; check now <span aria-hidden="true">&rarr;</span></span>
-                            <span wire:loading wire:target="checkConnection({{ $brand['id'] }})">Checking Metricool…</span>
+                            <span wire:loading wire:target="checkConnection({{ $brand['id'] }})">Checking…</span>
                         </button>
                     </div>
                 @endif
@@ -139,7 +139,7 @@
         @endforelse
 
         <div class="ps-foot">
-            One connection per brand &middot; status read live from Metricool when you check &middot; no Metricool login required
+            One connection per brand &middot; status read live when you check &middot; no extra logins required
         </div>
     </div>
 </x-filament-panels::page>

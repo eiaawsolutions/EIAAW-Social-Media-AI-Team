@@ -89,16 +89,36 @@ class PlatformsPageMetricoolTest extends TestCase
         );
     }
 
-    public function test_resource_exposes_a_metricool_brand_column_not_blotato_id(): void
+    public function test_resource_exposes_a_routing_space_column_not_blotato_id(): void
     {
         $src = $this->resourceSource();
 
-        // The column that read "Blotato ID" must now reflect the Metricool
-        // targeting key (the brand's metricool_blog_id / network handle).
+        // The column that read "Blotato ID" must now reflect the per-brand
+        // routing target (backed by metricool_blog_id), shown to customers
+        // under a white-labelled name — no third-party tool named in the UI.
         $this->assertStringContainsString(
-            "label('Metricool brand')",
+            "->label('Routing space')",
             $src,
-            'The id column must be relabelled to the Metricool targeting key.'
+            'The id column must be relabelled to the white-labelled routing key.'
+        );
+        // Customer-facing label must not name the third-party tool, nor the
+        // old Blotato wording.
+        $this->assertStringNotContainsString(
+            "->label('Metricool brand')",
+            $src,
+            'The customer-facing column label must not name Metricool.'
+        );
+        $this->assertStringNotContainsString(
+            "->label('Blotato ID')",
+            $src,
+            'The column must no longer carry the legacy Blotato label.'
+        );
+        // It still routes off the Metricool blogId underneath (column binding
+        // unchanged — only the visible label is white-labelled).
+        $this->assertStringContainsString(
+            "make('brand.metricool_blog_id')",
+            $src,
+            'The column must still bind to the brand metricool_blog_id.'
         );
     }
 }
