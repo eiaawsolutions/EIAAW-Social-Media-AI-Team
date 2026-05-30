@@ -176,7 +176,7 @@ class ClientOnboardingJourney extends Page
                     'Connected more later? Re-check on Platform Setup and they appear here.',
                 ],
                 'proof' => 'Each connected platform shows its handle, e.g. "Instagram (@yourbrand)". Green check on the first one.',
-                'screen' => '/agency/platforms',
+                'screen' => '/agency/platform-connections',
             ],
 
             // ── 07 · Stage 5 — Autonomy ───────────────────────────────
