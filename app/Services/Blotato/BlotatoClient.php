@@ -24,6 +24,20 @@ use RuntimeException;
  *   - POST /v2/media                       — upload media from URL
  *   - POST /v2/posts                       — create + schedule a post
  *   - GET  /v2/posts/{postSubmissionId}    — poll post status
+ *   - GET  /v2/published-posts             — list published posts (the bridge
+ *                                            from our submission id to the
+ *                                            platform publishedPostId, joined
+ *                                            on postUrl)
+ *   - GET  /v2/posts/{publishedPostId}/analytics — per-post engagement metrics
+ *
+ * Analytics caveat (verified live 2026-05-30): the /analytics + /published-posts
+ * ROUTES exist and authenticate, but Blotato's engagement-tracking backend is
+ * still on its roadmap — every published post currently returns HTTP 404
+ * {"message":"Analytics not available"} with empty metricsHistory, regardless
+ * of post age or (active, paid) plan tier. The metrics collector is wired
+ * against these endpoints DORMANTLY: it records "no data yet" without
+ * fabricating zeros, and begins capturing real numbers automatically the day
+ * Blotato ships analytics for the account. See BlotatoMetricsCollector.
  *
  * v1 surface we explicitly skip:
  *   - /v2/schedules/* (we own scheduling in Postgres via ScheduledPost)
@@ -362,6 +376,71 @@ class BlotatoClient
         $response = $this->client()->get('/v2/posts/' . urlencode($postSubmissionId));
         $this->throwIfError($response, 'getPostStatus');
         return $response->json() ?? [];
+    }
+
+    /**
+     * GET /v2/published-posts — list this account's published posts.
+     *
+     * Each item (verified live 2026-05-30):
+     *   { id: string, content: string, postUrl: string, platform: string,
+     *     createdAt: string, mediaUrls: string[], metricsHistory: array }
+     *
+     * NOTE: the item is keyed by the platform `id` (publishedPostId), NOT the
+     * `postSubmissionId` we store as scheduled_posts.blotato_post_id. There is
+     * no submission-id field on the item, so the bridge from our records to
+     * Blotato analytics is `postUrl` == scheduled_posts.platform_post_url.
+     *
+     * @param  array<string,mixed>  $query  optional filters (limit, platform, cursor…)
+     * @return array<int, array<string,mixed>>
+     *
+     * @throws RuntimeException on non-200 / shape error
+     */
+    public function getPublishedPosts(array $query = []): array
+    {
+        $response = $this->client()->get('/v2/published-posts', $query);
+        $this->throwIfError($response, 'getPublishedPosts');
+
+        $items = $response->json('items');
+        if (! is_array($items)) {
+            throw new RuntimeException('Blotato getPublishedPosts: response missing "items" array. Body: ' . $response->body());
+        }
+
+        return $items;
+    }
+
+    /**
+     * GET /v2/posts/{publishedPostId}/analytics — engagement metrics for one
+     * published post.
+     *
+     * Returns the LATEST KNOWN snapshot; it does NOT trigger a re-fetch — Blotato
+     * refreshes on its own cadence and stamps `lastFetchedAt`. Shape (per docs):
+     *   { publishedPostId, platform, lastFetchedAt, lastError,
+     *     metrics: {likesCount, commentsCount, sharesCount, savesCount,
+     *               viewsCount, impressionsCount, reachCount, …},  // all STRINGS
+     *     history: [ {…} ] }
+     *
+     * IMPORTANT: `$publishedPostId` is the platform id from getPublishedPosts(),
+     * NOT our stored submission id. Until Blotato's analytics backend ships this
+     * returns HTTP 404 {"message":"Analytics not available"} for every post —
+     * callers must treat 404 as "no metrics yet", not as a fatal error.
+     *
+     * @return array{found: bool, status: int, body: array<string,mixed>}
+     *         found=false when Blotato has no analytics for the post (404).
+     */
+    public function getPostAnalytics(string $publishedPostId): array
+    {
+        $response = $this->client()->get('/v2/posts/' . urlencode($publishedPostId) . '/analytics');
+
+        // 404 is the EXPECTED "no analytics available yet" signal, not an error.
+        // Return it as a structured not-found rather than throwing so the
+        // collector can record a no-data snapshot cleanly.
+        if ($response->status() === 404) {
+            return ['found' => false, 'status' => 404, 'body' => (array) $response->json()];
+        }
+
+        $this->throwIfError($response, 'getPostAnalytics');
+
+        return ['found' => true, 'status' => $response->status(), 'body' => $response->json() ?? []];
     }
 
     private function throwIfError(Response $response, string $op): void
