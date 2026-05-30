@@ -163,6 +163,35 @@ class MetricoolClient
     }
 
     /**
+     * GET /admin/profile?blogId=&userId= — the brand's full profile, including
+     * which social networks are connected (verified live 2026-05-30). Each
+     * network key holds the connected account handle/id when connected, or null
+     * when not. This is how the onboarding flow DETECTS that a customer has
+     * connected their socials via the share-link — no manual "verify" guessing.
+     *
+     * Returns the raw decoded body (a flat object keyed by network). Used by
+     * MetricoolConnectionService to derive connected-network state and to
+     * populate platform_connections.
+     *
+     * @return array{found:bool, status:int, body:array<string,mixed>}
+     */
+    public function getProfile(int $blogId, bool $refreshCache = false): array
+    {
+        $query = array_merge($this->baseQuery($blogId), [
+            'refreshBrandCache' => $refreshCache ? 'true' : 'false',
+        ]);
+        $response = $this->client()->get('/admin/profile', $query);
+
+        if ($response->status() === 404) {
+            return ['found' => false, 'status' => 404, 'body' => []];
+        }
+        $this->throwIfError($response, 'getProfile');
+
+        $body = $response->json();
+        return ['found' => true, 'status' => $response->status(), 'body' => is_array($body) ? $body : []];
+    }
+
+    /**
      * GET /actions/normalize/image/url — Metricool requires media URLs to be
      * normalised (re-hosted) before scheduling, exactly like Blotato's
      * /v2/media. Returns the normalised reference (mediaId or hosted URL).

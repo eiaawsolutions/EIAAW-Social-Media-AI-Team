@@ -241,4 +241,19 @@ class Workspace extends Model
         }
         return 'not_requested';
     }
+
+    /**
+     * True iff the workspace has at least one brand connected in Metricool
+     * (metricool_connected_at set). The Metricool analogue of
+     * hasBlotatoConnected() — but per-workspace it's "any brand connected",
+     * since Metricool is brand-scoped. Drives the EnforceTrialOrSubscription
+     * setup gate when PUBLISH_PROVIDER=metricool.
+     */
+    public function hasAnyMetricoolConnectedBrand(): bool
+    {
+        return $this->brands()
+            ->whereNull('archived_at')
+            ->whereNotNull('metricool_connected_at')
+            ->exists();
+    }
 }

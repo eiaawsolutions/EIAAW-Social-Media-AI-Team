@@ -1,0 +1,216 @@
+<?php
+
+namespace App\Filament\Agency\Pages;
+
+use App\Models\Brand;
+use App\Models\Workspace;
+use App\Services\Metricool\MetricoolClient;
+use App\Services\Metricool\MetricoolConnectionService;
+use Filament\Notifications\Notification;
+use Filament\Pages\Page;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+
+/**
+ * Metricool Setup wizard — the Metricool replacement for the Blotato handoff
+ * (PlatformSetup). Unlike Blotato, this is mostly SELF-SERVE on the detection
+ * side: connection state is read live from /admin/profile, so there's a real
+ * "Check connection" button instead of a best-effort ping.
+ *
+ * Per-BRAND (Metricool is natively multi-brand): each SMT brand maps to a
+ * Metricool brand via metricool_blog_id ([[metricool-multitenancy]]). The
+ * wizard operates on the workspace's brand(s).
+ *
+ * State machine — drives off Brand::metricoolSetupState():
+ *
+ *   not_mapped → customer clicks "Request setup" → emails HQ to create + map a
+ *                Metricool brand (operator runs brand:set-metricool-blog).
+ *   mapped     → brand mapped; show "Connect your socials" with the Metricool
+ *                share-link guidance, plus "I've connected — check" button.
+ *   link_sent  → connect-link shared; waiting; same check button.
+ *   connected  → green panel; brand is publish-ready.
+ *
+ * Allow-listed in EnforceTrialOrSubscription so it's reachable while the panel
+ * is otherwise gated.
+ */
+class MetricoolSetup extends Page
+{
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-link';
+    protected static ?string $navigationLabel = 'Platform setup';
+    protected static ?string $title = 'Connect your social accounts';
+    protected static ?int $navigationSort = -2;
+    protected string $view = 'filament.agency.pages.metricool-setup';
+
+    public ?Workspace $workspace = null;
+
+    /** @var array<int, array{id:int,name:string,state:string,blogId:?string,networks:array<int,string>}> */
+    public array $brands = [];
+
+    public function mount(): void
+    {
+        $this->refresh();
+    }
+
+    public function refresh(): void
+    {
+        $user = auth()->user();
+        if (! $user) {
+            return;
+        }
+
+        $this->workspace = $user->currentWorkspace
+            ?? $user->workspaces()->first()
+            ?? $user->ownedWorkspaces()->first();
+
+        if (! $this->workspace instanceof Workspace) {
+            return;
+        }
+
+        $this->brands = $this->workspace->brands()
+            ->whereNull('archived_at')
+            ->orderBy('id')
+            ->get()
+            ->map(fn (Brand $b) => [
+                'id' => $b->id,
+                'name' => $b->name,
+                'state' => $b->metricoolSetupState(),
+                'blogId' => $b->metricool_blog_id,
+                'networks' => $b->platformConnections()
+                    ->where('status', 'active')
+                    ->pluck('platform')
+                    ->all(),
+            ])
+            ->all();
+    }
+
+    /**
+     * Customer requests Metricool setup for a brand that isn't mapped yet.
+     * Emails HQ to create + map the Metricool brand. Idempotent.
+     */
+    public function requestSetup(int $brandId): void
+    {
+        $brand = $this->ownedBrand($brandId);
+        if (! $brand || $brand->metricoolSetupState() !== 'not_mapped') {
+            return;
+        }
+
+        try {
+            $operatorEmail = (string) (config('mail.cap_warning.from_address') ?: 'eiaawsolutions@gmail.com');
+            $ws = $this->workspace;
+            $body = sprintf(
+                "Brand #%d (%s) in workspace #%d (%s) requested Metricool setup.\n\n"
+                . "Steps:\n"
+                . "  1. In Metricool, create (or locate) a brand for this client; note its blogId.\n"
+                . "  2. Map it:  php artisan brand:set-metricool-blog %d <blogId>\n"
+                . "  3. In Metricool → Connections → Share, generate a connect-link (71h expiry) and send it to the customer "
+                . "(or have them connect from their own Metricool brand).\n"
+                . "  4. Mark it sent:  php artisan brand:set-metricool-blog %d --mark-link-sent\n"
+                . "  5. Once the customer connects, detection is automatic via the wizard's Check button, "
+                . "or run:  php artisan brand:set-metricool-blog %d --detect\n",
+                $brand->id,
+                $brand->name,
+                $ws->id,
+                $ws->slug,
+                $brand->id,
+                $brand->id,
+                $brand->id,
+            );
+            Mail::raw($body, function ($m) use ($operatorEmail, $brand) {
+                $m->to('eiaawsolutions@gmail.com')
+                  ->subject(sprintf('[SMT ops] Metricool setup request — brand#%d %s', $brand->id, $brand->name))
+                  ->from($operatorEmail, 'EIAAW SMT — Provisioning bot');
+            });
+        } catch (\Throwable $e) {
+            Log::error('MetricoolSetup: HQ notification email failed', [
+                'brand_id' => $brandId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        $this->refresh();
+
+        Notification::make()
+            ->title('Setup requested — our team is on it.')
+            ->body('We\'ll set up your Metricool brand and send you a secure link to connect your social accounts, usually within 1 business day.')
+            ->success()
+            ->send();
+    }
+
+    /**
+     * Customer clicks "I've connected my accounts — check now". Reads the live
+     * Metricool profile, mirrors connected networks into platform_connections,
+     * and flips the brand to 'connected' on first success.
+     */
+    public function checkConnection(int $brandId): void
+    {
+        $brand = $this->ownedBrand($brandId);
+        if (! $brand) {
+            return;
+        }
+        if (empty($brand->metricool_blog_id)) {
+            Notification::make()
+                ->title('Not set up yet')
+                ->body('Our team hasn\'t created your Metricool brand yet. Once we do, you\'ll get a link to connect your accounts.')
+                ->warning()
+                ->send();
+            return;
+        }
+
+        $client = MetricoolClient::fromConfig();
+        if ($client === null) {
+            Notification::make()
+                ->title('Connection check unavailable')
+                ->body('Our publishing integration isn\'t configured right now. Email eiaawsolutions@gmail.com and we\'ll sort it.')
+                ->danger()
+                ->send();
+            return;
+        }
+
+        try {
+            $result = (new MetricoolConnectionService($client))->sync($brand);
+        } catch (\Throwable $e) {
+            Log::error('MetricoolSetup: connection sync failed', [
+                'brand_id' => $brandId,
+                'error' => $e->getMessage(),
+            ]);
+            Notification::make()
+                ->title('Couldn\'t check right now')
+                ->body('Please try again in a moment. If it keeps failing, email eiaawsolutions@gmail.com.')
+                ->danger()
+                ->send();
+            return;
+        }
+
+        if (empty($result['networks'])) {
+            Notification::make()
+                ->title('No connected accounts found yet')
+                ->body('If you just connected, give it a minute and check again. Make sure you finished the connection in the link we sent you.')
+                ->warning()
+                ->send();
+            $this->refresh();
+            return;
+        }
+
+        if ($brand->metricool_connected_at === null) {
+            $brand->forceFill(['metricool_connected_at' => now()])->save();
+        }
+
+        $this->refresh();
+
+        Notification::make()
+            ->title('Connected! 🎉')
+            ->body(count($result['networks']) . ' account(s) detected: ' . implode(', ', $result['networks'])
+                . '. You\'re ready to publish.')
+            ->success()
+            ->send();
+    }
+
+    /** Resolve a brand id to a Brand the current workspace actually owns. */
+    private function ownedBrand(int $brandId): ?Brand
+    {
+        if (! $this->workspace instanceof Workspace) {
+            return null;
+        }
+        return $this->workspace->brands()->whereKey($brandId)->first();
+    }
+}
