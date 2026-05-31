@@ -74,7 +74,13 @@ return [
 
         // Mail
         'services.mailgun.secret',
+        // Resend needs the key in TWO config paths: the Laravel mail transport
+        // reads services.resend.key, while the resend/resend-laravel package's
+        // own client reads resend.api_key (config/resend.php). Both point at
+        // env('RESEND_KEY') and both must be resolved or queued Resend mail
+        // fails in the worker with ApiKeyIsMissing.
         'services.resend.key',
+        'resend.api_key',
         'mail.mailers.smtp.password',
 
         // Storage (Cloudflare R2 via S3-compatible disk)

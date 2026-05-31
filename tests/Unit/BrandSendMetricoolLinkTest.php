@@ -54,9 +54,38 @@ class BrandSendMetricoolLinkTest extends TestCase
         $src = $this->commandSource();
 
         $this->assertStringContainsString("empty(config('services.resend.key'))", $src,
-            'The guard must refuse to send via Resend when the key is unset.');
+            'The guard must refuse to send via Resend when the transport key is unset.');
         $this->assertStringContainsString('RESEND_KEY', $src,
             'The remediation must name the RESEND_KEY env that wires Resend.');
+    }
+
+    public function test_guard_also_checks_the_package_client_key(): void
+    {
+        $src = $this->commandSource();
+
+        // The resend-laravel package client reads resend.api_key, NOT
+        // services.resend.key. A populated transport key + empty package key
+        // fails ONLY in the worker after "Sent" is printed — so the guard must
+        // check resend.api_key too.
+        $this->assertStringContainsString("empty(config('resend.api_key'))", $src,
+            'The guard must also check resend.api_key (the package client key).');
+    }
+
+    public function test_resend_config_points_at_the_same_handle_env(): void
+    {
+        // config/resend.php must read env('RESEND_KEY') so the package client
+        // and the mail transport share one Infisical handle.
+        $cfg = file_get_contents(config_path('resend.php'));
+        $this->assertStringContainsString("env('RESEND_KEY')", $cfg,
+            'config/resend.php must read RESEND_KEY (the shared handle env).');
+    }
+
+    public function test_resend_api_key_is_in_the_secrets_resolve_allow_list(): void
+    {
+        // Without this, the secret:// handle in RESEND_KEY stays a literal
+        // string in config('resend.api_key') and the worker send fails.
+        $this->assertContains('resend.api_key', config('secrets.resolve'),
+            'resend.api_key must be allow-listed for Infisical resolution.');
     }
 
     public function test_guard_runs_before_send_and_aborts(): void

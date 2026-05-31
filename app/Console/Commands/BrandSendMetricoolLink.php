@@ -146,12 +146,25 @@ class BrandSendMetricoolLink extends Command
         }
 
         // resend needs a key; without it the send throws a cryptic auth error
-        // mid-flight. Catch it up front with a clear remediation.
-        if ($transport === 'resend' && empty(config('services.resend.key'))) {
-            $this->error("Mailer '{$mailer}' is Resend, but services.resend.key is empty.");
-            $this->line('Set RESEND_KEY (a secret:// handle → Infisical value) for eiaaw-smt-prod, then retry.');
-            $this->line('Per the EIAAW Deploy Contract the raw key lives in Infisical, NOT in Railway env.');
-            return self::FAILURE;
+        // mid-flight. Catch it up front with a clear remediation. Check BOTH
+        // config paths: the Laravel mail transport uses services.resend.key,
+        // but the resend/resend-laravel package's client (which actually
+        // transmits queued mail) uses resend.api_key. A populated transport key
+        // with an empty package key fails ONLY in the worker, after this
+        // command has already reported "Sent" — so guard the package key too.
+        if ($transport === 'resend') {
+            if (empty(config('services.resend.key'))) {
+                $this->error("Mailer '{$mailer}' is Resend, but services.resend.key is empty.");
+                $this->line('Set RESEND_KEY (a secret:// handle → Infisical value) for eiaaw-smt-prod, then retry.');
+                $this->line('Per the EIAAW Deploy Contract the raw key lives in Infisical, NOT in Railway env.');
+                return self::FAILURE;
+            }
+            if (empty(config('resend.api_key'))) {
+                $this->error('resend.api_key is empty — the resend-laravel package client has no key.');
+                $this->line('config/resend.php must read env(RESEND_KEY) and resend.api_key must be in config/secrets.php resolve list.');
+                $this->line('Without this the send is enqueued OK but FAILS in the worker (ApiKeyIsMissing).');
+                return self::FAILURE;
+            }
         }
 
         if ($transport === 'mailgun' && empty(config('services.mailgun.secret'))) {
