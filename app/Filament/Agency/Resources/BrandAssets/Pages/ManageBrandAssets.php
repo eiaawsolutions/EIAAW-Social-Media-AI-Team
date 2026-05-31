@@ -58,9 +58,14 @@ class ManageBrandAssets extends ManageRecords
                 ->color('primary')
                 ->modalHeading('Upload brand assets')
                 ->modalDescription('Add brand-approved images / videos. Choose whether the agents may use them freely, or schedule one as a customised post.')
-                ->modalSubmitActionLabel(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED
-                    ? 'Schedule customised post'
-                    : 'Upload')
+                // NOTE: a reactive `fn (callable $get) => ...` label here 500s in
+                // Filament v5 — the modal-submit-label closure is evaluated on the
+                // ACTION (header action), where getSchemaComponent() is null, so
+                // resolving the `$get`/`$set` schema utility fatals with
+                // "Call to a member function makeGetUtility() on null". `$get` is
+                // only safe INSIDE the schema component closures (uploadSchema()),
+                // not on the action's own modal-label. Keep this label static.
+                ->modalSubmitActionLabel('Upload / schedule')
                 ->schema($this->uploadSchema())
                 ->action(fn (array $data) => $this->handleUpload($data)),
         ];
