@@ -192,6 +192,126 @@ class MetricoolClient
     }
 
     /**
+     * GET /stats/timeline/{metric} — ACCOUNT-LEVEL timeseries for one metric
+     * over a date window. This is the data behind Metricool's "Account" growth
+     * view (followers over time, impressions over time, per network) — distinct
+     * from the per-post analytics in postAnalytics().
+     *
+     * Verified against Metricool's Swagger (app.metricool.com/api/swagger.json,
+     * 2026-05-31):
+     *   - ONE metric per call (the metric is the path segment, not a list).
+     *   - Window params are `start` + `end` in compact `YYYYMMDD` form (NOT the
+     *     `from`/`to` ISO-datetime the /v2/analytics/posts endpoints want — the
+     *     two analytics families use different param conventions).
+     *   - Response is an array of [timestamp, value] string pairs.
+     *   - userId + blogId still required as query params (multi-tenant scoping).
+     *
+     * Metric identifiers used by SMT (per network) — only the ones with a real
+     * Metricool timeseries; TikTok and Threads have NO timeline metric, so the
+     * caller renders those as "no API data" rather than fabricating a series:
+     *   instagram → igFollowers / igimpressions
+     *   facebook  → fbFollows   / pageImpressions
+     *   linkedin  → inFollowers / inCompanyImpressions
+     *   twitter   → twitterFollowers   (no impressions timeline)
+     *   youtube   → ytsubscribers / ytviews
+     *
+     * Returns a discriminated result so callers never have to guess shape:
+     *   ['found'=>true,  'points'=>[['date'=>'YYYY-MM-DD','value'=>int|float], …]]
+     *   ['found'=>false, 'status'=>int]   (404 = metric/network not available)
+     *
+     * @return array{found:bool, status:int, points:array<int,array{date:string,value:int|float}>}
+     */
+    public function getAccountTimeline(int $blogId, string $metric, string $startYmd, string $endYmd): array
+    {
+        $query = array_merge($this->baseQuery($blogId), [
+            'start' => $startYmd,
+            'end' => $endYmd,
+        ]);
+
+        $response = $this->client()->get('/stats/timeline/' . urlencode($metric), $query);
+
+        if ($response->status() === 404) {
+            return ['found' => false, 'status' => 404, 'points' => []];
+        }
+        $this->throwIfError($response, "getAccountTimeline({$metric})");
+
+        return [
+            'found' => true,
+            'status' => $response->status(),
+            'points' => $this->parseTimelinePoints($response->json()),
+        ];
+    }
+
+    /**
+     * Coerce Metricool's loosely-typed timeline body into [{date,value}] points.
+     * The documented shape is an array of [timestamp, value] string pairs, but
+     * Metricool has historically also returned {values:[…]} / {data:[…]} and
+     * objects with date/value keys — accept all of them rather than break on a
+     * version drift. Non-numeric values are dropped (never coerced to 0, per the
+     * Truthfulness Contract: a missing reading is missing, not zero).
+     *
+     * @return array<int,array{date:string,value:int|float}>
+     */
+    private function parseTimelinePoints(mixed $body): array
+    {
+        // Unwrap a common envelope if present.
+        if (is_array($body) && ! array_is_list($body)) {
+            foreach (['values', 'data', 'timeline', 'points', 'series'] as $key) {
+                if (isset($body[$key]) && is_array($body[$key])) {
+                    $body = $body[$key];
+                    break;
+                }
+            }
+        }
+
+        if (! is_array($body)) {
+            return [];
+        }
+
+        $points = [];
+        foreach ($body as $row) {
+            [$rawDate, $rawValue] = $this->extractDateValue($row);
+            if ($rawDate === null || ! is_numeric($rawValue)) {
+                continue;
+            }
+            $value = $rawValue + 0; // int|float, preserving type
+            $points[] = ['date' => $this->normaliseDate($rawDate), 'value' => $value];
+        }
+
+        return $points;
+    }
+
+    /**
+     * Pull (date, value) out of one timeline row, whether it arrived as a
+     * positional [ts, value] pair or as an object with named keys.
+     *
+     * @return array{0:mixed,1:mixed}
+     */
+    private function extractDateValue(mixed $row): array
+    {
+        if (is_array($row) && array_is_list($row)) {
+            return [$row[0] ?? null, $row[1] ?? null];
+        }
+        if (is_array($row)) {
+            $date = $row['dateTime'] ?? $row['date'] ?? $row['timestamp'] ?? $row['x'] ?? null;
+            $value = $row['value'] ?? $row['count'] ?? $row['y'] ?? null;
+            return [$date, $value];
+        }
+        return [null, null];
+    }
+
+    /** Normalise a Metricool timestamp ("20260515", "2026-05-15", ISO) → YYYY-MM-DD. */
+    private function normaliseDate(mixed $raw): string
+    {
+        $s = trim((string) $raw);
+        if (preg_match('/^\d{8}$/', $s)) {
+            return substr($s, 0, 4) . '-' . substr($s, 4, 2) . '-' . substr($s, 6, 2);
+        }
+        // ISO date/datetime — keep the date portion.
+        return substr($s, 0, 10);
+    }
+
+    /**
      * GET /actions/normalize/image/url — Metricool requires media URLs to be
      * normalised (re-hosted) before scheduling, exactly like Blotato's
      * /v2/media. Returns the normalised reference (mediaId or hosted URL).

@@ -199,4 +199,86 @@ class MetricoolClientTest extends TestCase
         $this->expectExceptionMessageMatches('/Metricool listBrands failed: HTTP 500/');
         $this->client()->listBrands();
     }
+
+    // ── Account timeline (GET /stats/timeline/{metric}) — the growth dashboard ──
+
+    public function test_account_timeline_scopes_to_blog_id_and_uses_start_end_ymd(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/stats/timeline/igFollowers*' => Http::response([
+                ['20260501', '100'],
+                ['20260502', '105'],
+            ], 200),
+        ]);
+
+        $result = $this->client()->getAccountTimeline(222, 'igFollowers', '20260501', '20260530');
+
+        $this->assertTrue($result['found']);
+        $this->assertCount(2, $result['points']);
+        // Compact YMD timestamp normalised to ISO date; value typed numeric.
+        $this->assertSame('2026-05-01', $result['points'][0]['date']);
+        $this->assertSame(100, $result['points'][0]['value']);
+
+        // Isolation + the start/end (NOT from/to) param convention this endpoint wants.
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/stats/timeline/igFollowers')
+                && $request->hasHeader('X-Mc-Auth', 'mc_test_token')
+                && str_contains($request->url(), 'userId=4242')
+                && str_contains($request->url(), 'blogId=222')
+                && str_contains($request->url(), 'start=20260501')
+                && str_contains($request->url(), 'end=20260530');
+        });
+    }
+
+    public function test_account_timeline_treats_404_as_not_found(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/stats/timeline/*' => Http::response(['message' => 'no metric'], 404),
+        ]);
+
+        $result = $this->client()->getAccountTimeline(123, 'inFollowers', '20260501', '20260530');
+
+        $this->assertFalse($result['found']);
+        $this->assertSame(404, $result['status']);
+        $this->assertSame([], $result['points']);
+    }
+
+    public function test_account_timeline_accepts_object_envelope_and_named_keys(): void
+    {
+        // Version drift: enveloped {values:[{date,value}, …]} instead of pairs.
+        Http::fake([
+            'app.metricool.com/api/stats/timeline/pageImpressions*' => Http::response([
+                'values' => [
+                    ['date' => '2026-05-01', 'value' => 1200],
+                    ['date' => '2026-05-02', 'value' => 1350],
+                ],
+            ], 200),
+        ]);
+
+        $result = $this->client()->getAccountTimeline(222, 'pageImpressions', '20260501', '20260530');
+
+        $this->assertTrue($result['found']);
+        $this->assertCount(2, $result['points']);
+        $this->assertSame('2026-05-02', $result['points'][1]['date']);
+        $this->assertSame(1350, $result['points'][1]['value']);
+    }
+
+    public function test_account_timeline_drops_non_numeric_values_never_zeroes_them(): void
+    {
+        // Truthfulness Contract: a null/blank reading is omitted, not coerced to 0.
+        Http::fake([
+            'app.metricool.com/api/stats/timeline/twitterFollowers*' => Http::response([
+                ['20260501', '500'],
+                ['20260502', null],
+                ['20260503', ''],
+                ['20260504', '512'],
+            ], 200),
+        ]);
+
+        $result = $this->client()->getAccountTimeline(222, 'twitterFollowers', '20260501', '20260530');
+
+        $this->assertCount(2, $result['points']); // the null + blank rows dropped
+        $this->assertSame(500, $result['points'][0]['value']);
+        $this->assertSame(512, $result['points'][1]['value']);
+    }
 }
