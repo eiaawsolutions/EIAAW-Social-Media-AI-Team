@@ -376,11 +376,20 @@ class SetupReadiness
 
     private function stage8_postScheduled(Brand $brand): ReadinessStage
     {
-        $hasApprovedDraft = Draft::where('brand_id', $brand->id)
-            ->whereIn('status', ['approved', 'scheduled', 'published'])
+        // Prerequisite = "a draft has passed Compliance", which must match
+        // stage 7's OWN definition of passed (awaiting_approval / approved /
+        // scheduled / published — see stage7_complianceApprovedDraft). On the
+        // amber/red lanes a passed draft sits at 'awaiting_approval' and NEVER
+        // reaches 'approved' until THIS stage approves it — so gating on
+        // ['approved', …] alone made stage 8 report blockedBy='first_draft_passed'
+        // ("finish stage 7 first") even with stage 7 visibly green, a dead-end
+        // the customer couldn't action. runFirstSchedule() already approves an
+        // awaiting_approval draft, so the gate must accept it too.
+        $hasPassedDraft = Draft::where('brand_id', $brand->id)
+            ->whereIn('status', ['awaiting_approval', 'approved', 'scheduled', 'published'])
             ->exists();
 
-        $blockedBy = ! $hasApprovedDraft ? 'first_draft_passed' : null;
+        $blockedBy = ! $hasPassedDraft ? 'first_draft_passed' : null;
 
         $scheduled = ScheduledPost::where('brand_id', $brand->id)
             ->whereIn('status', ['queued', 'submitted', 'submitting', 'published'])
