@@ -37,10 +37,30 @@
             .perf-empty { font-size: 13.5px; color: var(--eiaaw-mute); text-align: center; padding: 28px 12px; background: white; border: 1px dashed var(--eiaaw-line); border-radius: 12px; }
             .perf-cost-row { display: flex; gap: 18px; align-items: baseline; padding-top: 18px; border-top: 1px solid var(--eiaaw-line-soft); margin-top: 18px; font-family: var(--eiaaw-mono); font-size: 11.5px; color: var(--eiaaw-mute); letter-spacing: .04em; }
             .perf-cost-row strong { color: var(--eiaaw-ink-2); font-weight: 600; }
+
+            /* Account growth section (followers + impressions over time, per network) */
+            .perf-growth { margin-bottom: 26px; }
+            .perf-growth-block { margin-bottom: 18px; }
+            .perf-growth-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+            .perf-growth-head h4 { margin: 0; font-size: 13px; font-weight: 700; color: var(--eiaaw-ink); }
+            .perf-growth-total { margin-left: auto; text-align: right; }
+            .perf-growth-total .n { font-size: 22px; font-weight: 700; color: var(--eiaaw-ink); line-height: 1; font-variant-numeric: tabular-nums; }
+            .perf-growth-total .l { font-family: var(--eiaaw-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--eiaaw-mute); }
+            .perf-net-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-bottom: 12px; }
+            .perf-net { border-radius: 10px; padding: 10px 12px; color: #fff; min-height: 64px; display: flex; flex-direction: column; gap: 2px; }
+            .perf-net .num { font-size: 20px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+            .perf-net .net { font-size: 11px; font-weight: 600; opacity: .92; }
+            .perf-net .chg { font-size: 10px; font-weight: 700; opacity: .95; }
+            .perf-net-na { color: var(--eiaaw-mute); background: white; border: 1px dashed var(--eiaaw-line); }
+            .perf-net-na .net { opacity: 1; color: var(--eiaaw-ink-2); }
+            .perf-net-na .na { font-size: 9.5px; line-height: 1.25; opacity: .85; margin-top: 2px; }
+            .perf-chart-box { position: relative; height: 240px; background: white; border: 1px solid var(--eiaaw-line); border-radius: 12px; padding: 10px; }
+            .perf-growth-note { font-family: var(--eiaaw-mono); font-size: 10.5px; letter-spacing: .04em; color: var(--eiaaw-mute); margin-top: 8px; }
         </style>
     @endpush
 
     @php
+        $g = $this->growth();
         $s = $this->summary();
         $platforms = $this->perPlatform();
         $top = $this->topPosts();
@@ -53,6 +73,74 @@
             <button type="button" wire:click="setWindow(30)" class="{{ $this->window === 30 ? 'active' : '' }}">30 days</button>
             <button type="button" wire:click="setWindow(90)" class="{{ $this->window === 90 ? 'active' : '' }}">90 days</button>
         </div>
+
+        {{-- ── Account growth (followers + impressions over time, per network) ── --}}
+        @if ($g['brand'] !== null && $g['data'] !== null)
+            <div class="perf-growth">
+                <div class="perf-section-title">Account growth · live from Metricool</div>
+
+                @foreach (['followers', 'impressions'] as $dimKey)
+                    @php($dim = $g['data'][$dimKey])
+                    <div class="perf-growth-block">
+                        <div class="perf-growth-head">
+                            <h4>{{ $dim['title'] }}</h4>
+                            <div class="perf-growth-total">
+                                <div class="n">{{ number_format($dim['total']) }}</div>
+                                <div class="l">{{ $dimKey === 'followers' ? 'followers across networks' : 'impressions, last ' . $g['data']['window_days'] . ' days' }}</div>
+                            </div>
+                        </div>
+
+                        <div class="perf-net-tiles">
+                            @foreach ($dim['networks'] as $net)
+                                @if ($net['status'] === 'ok')
+                                    <div class="perf-net" style="background: {{ $net['color'] }};">
+                                        <span class="num">{{ number_format($net['headline']) }}</span>
+                                        <span class="net">{{ $net['label'] }}</span>
+                                        @if ($net['change'] !== null)
+                                            <span class="chg">{{ $net['change'] >= 0 ? '▲ +' : '▼ ' }}{{ number_format($net['change']) }}</span>
+                                        @endif
+                                    </div>
+                                @else
+                                    <div class="perf-net perf-net-na">
+                                        <span class="net">{{ $net['label'] }}</span>
+                                        <span class="na">
+                                            @switch($net['status'])
+                                                @case('not_available') Not connected / not on plan @break
+                                                @case('error') Couldn’t reach Metricool @break
+                                                @default No data in this window
+                                            @endswitch
+                                        </span>
+                                    </div>
+                                @endif
+                            @endforeach
+                        </div>
+
+                        @if ($dim['has_data'])
+                            <div class="perf-chart-box" wire:ignore wire:key="perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}">
+                                <canvas
+                                    id="perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}"
+                                    x-data
+                                    x-init="window.eiaawRenderGrowthChart(
+                                        'perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}',
+                                        @js($dim['axis']),
+                                        @js(collect($dim['networks'])->where('status','ok')->map(fn($n)=>['label'=>$n['label'],'color'=>$n['color'],'data'=>$n['series']])->values()),
+                                        '{{ $dimKey === 'followers' ? 'line' : 'area' }}'
+                                    )"
+                                ></canvas>
+                            </div>
+                        @endif
+                    </div>
+                @endforeach
+
+                <div class="perf-growth-note">
+                    {{ $g['brand']['name'] }} · blogId {{ $g['brand']['blog_id'] }} · followers from Metricool account timeline, impressions summed from per-post analytics · cached ~5&nbsp;min (use “Refresh growth”) · real readings only, networks we can’t read are marked plainly
+                </div>
+            </div>
+        @elseif (! $g['configured'])
+            {{-- Metricool not wired in this env — quiet, no scary banner on the customer page --}}
+        @endif
+
+        <div class="perf-section-title">Posts — last {{ $this->window }} days</div>
 
         <div class="perf-grid">
             <div class="perf-tile">
@@ -159,4 +247,60 @@
             <span style="margin-left: auto;">every number sourced from post_metrics · no fabricated data</span>
         </div>
     </div>
+
+    {{-- Chart.js + the growth-chart render helper (shared shape: nulls = honest gaps).
+         wire:ignore on each canvas box keeps Livewire from wiping it on update; the
+         wire:key carries the window so a window change rebuilds the chart. --}}
+    @once
+        @push('scripts')
+            <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+            <script>
+                window.__eiaawGrowthCharts = window.__eiaawGrowthCharts || {};
+                window.eiaawRenderGrowthChart = function (canvasId, axis, series, mode) {
+                    var el = document.getElementById(canvasId);
+                    if (!el || typeof Chart === 'undefined') return;
+                    if (window.__eiaawGrowthCharts[canvasId]) {
+                        window.__eiaawGrowthCharts[canvasId].destroy();
+                    }
+                    var datasets = series.map(function (s) {
+                        return {
+                            label: s.label,
+                            data: s.data,
+                            borderColor: s.color,
+                            backgroundColor: mode === 'area' ? (s.color + '22') : s.color,
+                            fill: mode === 'area',
+                            tension: 0.35,
+                            spanGaps: true,
+                            pointRadius: 2,
+                            pointHoverRadius: 4,
+                            borderWidth: 2,
+                        };
+                    });
+                    window.__eiaawGrowthCharts[canvasId] = new Chart(el.getContext('2d'), {
+                        type: 'line',
+                        data: { labels: axis, datasets: datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: {
+                                legend: { display: true, position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } },
+                                tooltip: { callbacks: {
+                                    label: function (c) {
+                                        var v = c.parsed.y;
+                                        return c.dataset.label + ': ' + (v == null ? '—' : v.toLocaleString());
+                                    }
+                                } }
+                            },
+                            scales: {
+                                x: { grid: { display: false }, ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+                                y: { beginAtZero: false, ticks: { font: { size: 10 },
+                                    callback: function (v) { return Number(v).toLocaleString(); } } }
+                            }
+                        }
+                    });
+                };
+            </script>
+        @endpush
+    @endonce
 </x-filament-panels::page>
