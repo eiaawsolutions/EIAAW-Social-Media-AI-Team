@@ -133,7 +133,7 @@
                 @endforeach
 
                 <div class="perf-growth-note">
-                    {{ $g['brand']['name'] }} · blogId {{ $g['brand']['blog_id'] }} · followers from Metricool account timeline, impressions summed from per-post analytics · cached ~5&nbsp;min (use “Refresh growth”) · real readings only, networks we can’t read are marked plainly
+                    {{ $g['brand']['name'] }} · blogId {{ $g['brand']['blog_id'] }} · impressions summed from per-post analytics · cached ~5&nbsp;min (use “Refresh growth”) · real readings only, networks we can’t read are marked plainly
                 </div>
             </div>
         @elseif (! $g['configured'])
