@@ -114,6 +114,20 @@ return Application::configure(basePath: dirname(__DIR__))
             ->dailyAt('09:00')
             ->withoutOverlapping(30)
             ->runInBackground();
+
+        // Signup reconcile backstop: daily at 08:30 UTC, sweep the last 48h of
+        // Stripe Checkout Sessions for PAID signups with no matching account —
+        // the slow net under the real-time webhook safety net ([[signup_hardening]]).
+        // REPORT-ONLY by design: an unattended run must never auto-create
+        // accounts or send credential emails without a human in the loop. It
+        // lists stranded sessions and emails HQ if any are found; the operator
+        // then runs `php artisan signup:reconcile` (no flag) to provision. The
+        // 48h window comfortably overlaps Stripe's 3-day webhook retry, so this
+        // only ever surfaces sessions BOTH the webhook and success() missed.
+        $schedule->command('signup:reconcile --report-only')
+            ->dailyAt('08:30')
+            ->withoutOverlapping(30)
+            ->runInBackground();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(
