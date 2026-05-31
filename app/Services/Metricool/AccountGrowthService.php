@@ -375,11 +375,26 @@ class AccountGrowthService
         return null;
     }
 
-    /** Publish date (YYYY-MM-DD) of a post, from whichever date field it carries. */
+    /**
+     * Publish date (YYYY-MM-DD) of a post. Metricool's date field varies by
+     * network (verified live): TikTok `createTime` (string), Threads
+     * `publishedDate` (string), Instagram `publishedAt` (an OBJECT
+     * {dateTime, timezone} — must dig in, not cast to string). Falls back across
+     * all known shapes; 'unknown' only if none present.
+     */
     private function postDate(array $post): string
     {
-        $raw = $post['dateTime'] ?? $post['createTime'] ?? $post['date'] ?? $post['publishedAt'] ?? '';
-        return substr((string) $raw, 0, 10) ?: 'unknown';
+        foreach (['dateTime', 'createTime', 'publishedDate', 'date', 'publishedAt'] as $field) {
+            $raw = $post[$field] ?? null;
+            // Instagram's publishedAt is {dateTime: "...", timezone: "..."}.
+            if (is_array($raw)) {
+                $raw = $raw['dateTime'] ?? $raw['date'] ?? null;
+            }
+            if (is_string($raw) && $raw !== '') {
+                return substr($raw, 0, 10);
+            }
+        }
+        return 'unknown';
     }
 
     /**

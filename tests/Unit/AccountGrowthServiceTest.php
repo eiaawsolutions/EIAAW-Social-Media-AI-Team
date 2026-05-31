@@ -143,6 +143,31 @@ class AccountGrowthServiceTest extends TestCase
         $this->assertSame([800, 700], array_values(array_filter($ig['series'], fn ($v) => $v !== null)));
     }
 
+    public function test_instagram_publishedAt_object_date_buckets_correctly(): void
+    {
+        // Instagram's date is publishedAt = {dateTime, timezone} (an OBJECT, not a
+        // string). The bucketing must dig into .dateTime, not cast the array to a
+        // string (which silently lumped everything onto one bogus bucket + warned).
+        Http::fake([
+            'app.metricool.com/api/v2/analytics/posts/instagram*' => Http::response([
+                'data' => [
+                    ['publishedAt' => ['dateTime' => '2026-05-10T06:00:00', 'timezone' => 'Europe/Madrid'], 'impressionsTotal' => 400],
+                    ['publishedAt' => ['dateTime' => '2026-05-12T09:00:00', 'timezone' => 'Europe/Madrid'], 'impressionsTotal' => 600],
+                ],
+            ], 200),
+            'app.metricool.com/api/v2/analytics/posts/*' => Http::response(['data' => []], 200),
+        ]);
+
+        $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
+        $ig = collect($out['impressions']['networks'])->firstWhere('network', 'instagram');
+
+        $this->assertSame('ok', $ig['status']);
+        $this->assertSame(1000, $ig['headline']);
+        // Two distinct publish dates on the axis (not one 'unknown' bucket).
+        $this->assertContains('2026-05-10', $out['impressions']['axis']);
+        $this->assertContains('2026-05-12', $out['impressions']['axis']);
+    }
+
     public function test_linkedin_impressions_are_not_available_not_fabricated(): void
     {
         // LinkedIn has impression_fields=null (post-analytics doesn't expose
