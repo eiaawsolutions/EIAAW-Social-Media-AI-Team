@@ -11,7 +11,9 @@ use Illuminate\Support\Facades\Log;
  * AccountGrowthService — the data brain behind the account-growth dashboard
  * (followers + impressions over time, per network). This is the "Account" view
  * Metricool shows, NOT per-post analytics: it reads the account-level
- * timeseries via MetricoolClient::getAccountTimeline() (GET /stats/timeline/…).
+ * timeseries via MetricoolClient::getAccountTimeline() (GET /v2/analytics/timelines,
+ * subject=account). Verified live 2026-05-31 — the follower counts returned match
+ * the Metricool UI exactly (LinkedIn 12, Instagram 7, TikTok 3, YouTube 1).
  *
  * One brand at a time (a Metricool blogId). The HQ page passes EIAAW's own
  * internal brand; the customer rollout will pass each customer's brand — the
@@ -19,11 +21,9 @@ use Illuminate\Support\Facades\Log;
  * standard Metricool discipline: every call is scoped by the brand's blogId.
  *
  * Truthfulness Contract: we ONLY plot real readings returned by Metricool.
- *   - Networks Metricool has NO timeline metric for (TikTok, Threads) are
- *     returned with status='no_api_data' and an empty series — the UI greys
- *     them out and explains the gap; it never fabricates a flat/zero line.
- *   - A network whose endpoint 404s (not connected / not on plan) is
- *     status='not_available'.
+ *   - A network whose timeline 404s/400s (not connected, or no metric for it)
+ *     is status='not_available'.
+ *   - A network with the metric but no readings in the window is status='no_data'.
  *   - A missing data point is omitted, never coerced to 0.
  *
  * Live cache: results are cached briefly (default 5 min) so the page feels
@@ -33,32 +33,41 @@ use Illuminate\Support\Facades\Log;
 class AccountGrowthService
 {
     /**
-     * Per-network metric identifiers, verified against Metricool's Swagger
-     * (app.metricool.com/api/swagger.json, 2026-05-31). `followers` and
-     * `impressions` are the metric path-segments /stats/timeline/{metric} wants.
+     * Per-network metric identifiers for the account-growth timelines, VERIFIED
+     * LIVE against prod blogId 6322515 on 2026-05-31 via GET /v2/analytics/timelines
+     * (subject=account). Metric names are network-specific and CASE-SENSITIVE —
+     * Metricool's API surfaced each network's valid enum on an invalid value, and
+     * the follower numbers returned matched the Metricool UI exactly (LinkedIn 12,
+     * Instagram 7, TikTok 3, YouTube 1).
      *
-     * A null value = Metricool exposes no timeline metric for that
-     * (network, dimension) pair → rendered as "no API data", never invented.
+     * `network` is the slug passed to the API (X uses 'twitter'). A null
+     * dimension = that network exposes no metric for it → that tile is omitted
+     * for that dimension, never invented (Truthfulness Contract).
      *
-     * Networks intentionally ABSENT (tiktok, threads): Metricool has NO account
-     * timeline endpoint for them at all — they're added by networksWithoutApi()
-     * so the UI can show them honestly as unsupported.
+     * NOTE: TikTok and Threads ARE covered — the earlier "no API data" belief was
+     * an artifact of the WRONG legacy endpoint (/stats/timeline). The correct
+     * /v2/analytics/timelines endpoint returns real follower counts for both.
      *
-     * @var array<string, array{label:string, color:string, followers:?string, impressions:?string}>
+     * @var array<string, array{label:string, color:string, network:string, followers:?string, impressions:?string}>
      */
     public const NETWORKS = [
-        'instagram' => ['label' => 'Instagram', 'color' => '#E1306C', 'followers' => 'igFollowers', 'impressions' => 'igimpressions'],
-        'facebook' => ['label' => 'Facebook', 'color' => '#1877F2', 'followers' => 'fbFollows', 'impressions' => 'pageImpressions'],
-        'linkedin' => ['label' => 'LinkedIn', 'color' => '#0A66C2', 'followers' => 'inFollowers', 'impressions' => 'inCompanyImpressions'],
-        'twitter' => ['label' => 'X (Twitter)', 'color' => '#111827', 'followers' => 'twitterFollowers', 'impressions' => null],
-        'youtube' => ['label' => 'YouTube', 'color' => '#FF0000', 'followers' => 'ytsubscribers', 'impressions' => 'ytviews'],
+        'instagram' => ['label' => 'Instagram', 'color' => '#E1306C', 'network' => 'instagram', 'followers' => 'Followers', 'impressions' => 'impressions'],
+        'facebook' => ['label' => 'Facebook', 'color' => '#1877F2', 'network' => 'facebook', 'followers' => 'Follows', 'impressions' => 'pageImpressions'],
+        'linkedin' => ['label' => 'LinkedIn', 'color' => '#0A66C2', 'network' => 'linkedin', 'followers' => 'Followers', 'impressions' => null],
+        'tiktok' => ['label' => 'TikTok', 'color' => '#000000', 'network' => 'tiktok', 'followers' => 'followers_count', 'impressions' => 'video_views'],
+        'youtube' => ['label' => 'YouTube', 'color' => '#FF0000', 'network' => 'youtube', 'followers' => 'totalSubscribers', 'impressions' => 'views'],
+        'threads' => ['label' => 'Threads', 'color' => '#444444', 'network' => 'threads', 'followers' => 'followers_count', 'impressions' => 'views'],
+        'twitter' => ['label' => 'X (Twitter)', 'color' => '#111827', 'network' => 'twitter', 'followers' => 'Followers', 'impressions' => null],
     ];
 
-    /** Networks Metricool's API has no account-timeline for — shown honestly as unsupported. */
-    public const NETWORKS_WITHOUT_API = [
-        'tiktok' => ['label' => 'TikTok', 'color' => '#000000'],
-        'threads' => ['label' => 'Threads', 'color' => '#444444'],
-    ];
+    /**
+     * Networks the dashboard surfaces but Metricool's timelines don't cover.
+     * Empty now that /v2/analytics/timelines is wired (it covers every network we
+     * publish to). Kept as the honest seam for any future uncovered network.
+     *
+     * @var array<string, array{label:string, color:string}>
+     */
+    public const NETWORKS_WITHOUT_API = [];
 
     private const CACHE_TTL_SECONDS = 300; // 5 min — "live" without hammering Metricool
 
@@ -126,10 +135,14 @@ class AccountGrowthService
 
         $cacheKey = sprintf('metricool:growth:%d:%d', $blogId, $windowDays);
 
-        return Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($base, $blogId, $from, $to) {
+        // /v2/analytics/timelines wants ISO datetime, not the legacy YYYYMMDD.
+        $fromIso = $from->format('Y-m-d\TH:i:s');
+        $toIso = $to->format('Y-m-d\TH:i:s');
+
+        return Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($base, $blogId, $fromIso, $toIso) {
             return $base + [
-                'followers' => $this->dimensionFor('Followers', 'followers', $blogId, $from, $to),
-                'impressions' => $this->dimensionFor('Impressions', 'impressions', $blogId, $from, $to),
+                'followers' => $this->dimensionFor('Followers', 'followers', $blogId, $fromIso, $toIso),
+                'impressions' => $this->dimensionFor('Impressions', 'impressions', $blogId, $fromIso, $toIso),
             ];
         });
     }
@@ -149,11 +162,9 @@ class AccountGrowthService
      *   total:int, networks:array<int,array<string,mixed>>, has_data:bool
      * }
      */
-    private function dimensionFor(string $title, string $dimension, int $blogId, Carbon $from, Carbon $to): array
+    private function dimensionFor(string $title, string $dimension, int $blogId, string $fromIso, string $toIso): array
     {
         $isStock = $dimension === 'followers'; // stock = level; flow = summed
-        $startYmd = $from->format('Ymd');
-        $endYmd = $to->format('Ymd');
 
         $networks = [];
         $allDates = [];
@@ -163,24 +174,31 @@ class AccountGrowthService
         foreach (self::NETWORKS as $network => $meta) {
             $metric = $meta[$dimension] ?? null;
 
-            // Metricool has no metric for this (network, dimension) → honest gap.
+            // This network exposes no metric for this dimension (e.g. LinkedIn/X
+            // have no account impressions timeline) → omit its tile here rather
+            // than show a misleading empty one.
             if ($metric === null) {
-                $networks[] = $this->networkRow($network, $meta, status: 'no_api_data');
                 continue;
             }
 
             try {
-                $result = $this->client->getAccountTimeline($blogId, $metric, $startYmd, $endYmd);
+                $result = $this->client->getAccountTimeline(
+                    blogId: $blogId,
+                    metric: $metric,
+                    network: $meta['network'],
+                    fromIso: $fromIso,
+                    toIso: $toIso,
+                );
             } catch (\Throwable $e) {
                 Log::warning('AccountGrowthService: timeline fetch failed', [
-                    'blog_id' => $blogId, 'metric' => $metric, 'error' => $e->getMessage(),
+                    'blog_id' => $blogId, 'network' => $meta['network'], 'metric' => $metric, 'error' => $e->getMessage(),
                 ]);
                 $networks[] = $this->networkRow($network, $meta, status: 'error');
                 continue;
             }
 
             if (! ($result['found'] ?? false)) {
-                // 404 — network not connected / metric not on plan.
+                // 404/400/500 — network not connected, or no such metric for it.
                 $networks[] = $this->networkRow($network, $meta, status: 'not_available');
                 continue;
             }

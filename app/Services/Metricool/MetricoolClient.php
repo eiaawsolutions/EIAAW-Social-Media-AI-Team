@@ -35,6 +35,8 @@ use RuntimeException;
  * Endpoints touched (per Metricool API docs + the community metricool-cli):
  *   - GET  /admin/simpleProfiles            — list brands (blogId + networks)
  *   - GET  /v2/analytics/posts/{network}    — per-post analytics for a network
+ *   - GET  /v2/analytics/timelines          — account-level growth timeseries
+ *                                             (followers/impressions over time)
  *   - POST /v2/scheduler/posts              — schedule/publish (autoPublish flag)
  *   - GET  /actions/normalize/image/url     — normalise a media URL → mediaId
  *
@@ -192,115 +194,130 @@ class MetricoolClient
     }
 
     /**
-     * GET /stats/timeline/{metric} — ACCOUNT-LEVEL timeseries for one metric
-     * over a date window. This is the data behind Metricool's "Account" growth
-     * view (followers over time, impressions over time, per network) — distinct
-     * from the per-post analytics in postAnalytics().
+     * GET /v2/analytics/timelines — ACCOUNT-LEVEL timeseries for one metric on
+     * one network over a date window. This is the data behind Metricool's
+     * "Account" growth view (followers over time, impressions over time, per
+     * network) — distinct from the per-post analytics in postAnalytics().
      *
-     * Verified against Metricool's Swagger (app.metricool.com/api/swagger.json,
-     * 2026-05-31):
-     *   - ONE metric per call (the metric is the path segment, not a list).
-     *   - Window params are `start` + `end` in compact `YYYYMMDD` form (NOT the
-     *     `from`/`to` ISO-datetime the /v2/analytics/posts endpoints want — the
-     *     two analytics families use different param conventions).
-     *   - Response is an array of [timestamp, value] string pairs.
-     *   - userId + blogId still required as query params (multi-tenant scoping).
+     * VERIFIED LIVE against prod blogId 6322515 (2026-05-31). This REPLACES an
+     * earlier wrong attempt at `/stats/timeline/{metric}` — that is a legacy
+     * stub that returns `[["date","0"]]` for EVERY metric (even invalid ones),
+     * so it silently produced all-zeros for data that plainly exists in the UI.
+     * The real endpoint Metricool's own dashboard uses is this one.
      *
-     * Metric identifiers used by SMT (per network) — only the ones with a real
-     * Metricool timeseries; TikTok and Threads have NO timeline metric, so the
-     * caller renders those as "no API data" rather than fabricating a series:
-     *   instagram → igFollowers / igimpressions
-     *   facebook  → fbFollows   / pageImpressions
-     *   linkedin  → inFollowers / inCompanyImpressions
-     *   twitter   → twitterFollowers   (no impressions timeline)
-     *   youtube   → ytsubscribers / ytviews
+     * Contract (all confirmed by the live 400/200 responses):
+     *   - Required query params: `metric`, `network`, `subject`, `from`, `to`
+     *     (+ userId/blogId for multi-tenant scoping).
+     *   - `subject` is the timeline family — for account growth it is 'account'
+     *     (other valid subjects: reels, posts, stories, competitors).
+     *   - `from`/`to` are ISO datetime (YYYY-MM-DD'T'HH:mm:ss), same as the
+     *     /v2/analytics/posts endpoints — NOT the compact YYYYMMDD the legacy
+     *     /stats endpoint wanted.
+     *   - `metric` is network-specific and CASE-SENSITIVE. The valid enum is
+     *     surfaced by the API itself on an invalid value; AccountGrowthService
+     *     holds the verified per-network map. Examples that returned real data:
+     *       instagram followers → Followers (=7, matches UI)   impressions → impressions
+     *       facebook  followers → Follows                       impressions → pageImpressions
+     *       linkedin  followers → Followers (=12, matches UI)
+     *       tiktok    followers → followers_count (=3)          views → video_views
+     *       youtube   followers → totalSubscribers (=1)         views → views (=13, matches UI)
+     *       threads   followers → followers_count (=2)
+     *   - Response shape: {"data":[{"metric":"<name>","values":[{"dateTime":ISO,"value":float}, …]}]}.
      *
      * Returns a discriminated result so callers never have to guess shape:
      *   ['found'=>true,  'points'=>[['date'=>'YYYY-MM-DD','value'=>int|float], …]]
-     *   ['found'=>false, 'status'=>int]   (404 = metric/network not available)
+     *   ['found'=>false, 'status'=>int]   (404 not-connected / 400 bad-metric / 500)
+     *
+     * A 400 (invalid metric/missing connection) or 500 is treated as
+     * found=false rather than thrown — the caller degrades that one network to a
+     * "not available" tile instead of failing the whole dashboard.
      *
      * @return array{found:bool, status:int, points:array<int,array{date:string,value:int|float}>}
      */
-    public function getAccountTimeline(int $blogId, string $metric, string $startYmd, string $endYmd): array
-    {
+    public function getAccountTimeline(
+        int $blogId,
+        string $metric,
+        string $network,
+        string $fromIso,
+        string $toIso,
+        string $subject = 'account',
+    ): array {
         $query = array_merge($this->baseQuery($blogId), [
-            'start' => $startYmd,
-            'end' => $endYmd,
+            'metric' => $metric,
+            'network' => $network,
+            'subject' => $subject,
+            'from' => $fromIso,
+            'to' => $toIso,
         ]);
 
-        $response = $this->client()->get('/stats/timeline/' . urlencode($metric), $query);
+        $response = $this->client()->get('/v2/analytics/timelines', $query);
 
-        if ($response->status() === 404) {
-            return ['found' => false, 'status' => 404, 'points' => []];
+        // Not-connected (404), invalid metric for this network (400), or an
+        // upstream 500 → this network simply has no series; don't blow up the
+        // whole board. Only a truly unexpected status throws.
+        if (in_array($response->status(), [400, 404, 500], true)) {
+            return ['found' => false, 'status' => $response->status(), 'points' => []];
         }
-        $this->throwIfError($response, "getAccountTimeline({$metric})");
+        $this->throwIfError($response, "getAccountTimeline({$network}/{$metric})");
 
         return [
             'found' => true,
             'status' => $response->status(),
-            'points' => $this->parseTimelinePoints($response->json()),
+            'points' => $this->parseTimelinePoints($response->json(), $metric),
         ];
     }
 
     /**
-     * Coerce Metricool's loosely-typed timeline body into [{date,value}] points.
-     * The documented shape is an array of [timestamp, value] string pairs, but
-     * Metricool has historically also returned {values:[…]} / {data:[…]} and
-     * objects with date/value keys — accept all of them rather than break on a
-     * version drift. Non-numeric values are dropped (never coerced to 0, per the
-     * Truthfulness Contract: a missing reading is missing, not zero).
+     * Parse Metricool's {data:[{metric,values:[{dateTime,value}]}]} timeline body
+     * into [{date,value}] points. Picks the series matching $metric (the API
+     * returns one entry, but be defensive). Non-numeric values are dropped, never
+     * coerced to 0 (Truthfulness Contract: a missing reading is missing, not 0).
      *
      * @return array<int,array{date:string,value:int|float}>
      */
-    private function parseTimelinePoints(mixed $body): array
+    private function parseTimelinePoints(mixed $body, string $metric): array
     {
-        // Unwrap a common envelope if present.
-        if (is_array($body) && ! array_is_list($body)) {
-            foreach (['values', 'data', 'timeline', 'points', 'series'] as $key) {
-                if (isset($body[$key]) && is_array($body[$key])) {
-                    $body = $body[$key];
-                    break;
-                }
-            }
-        }
-
         if (! is_array($body)) {
             return [];
         }
 
+        $series = $body['data'] ?? null;
+        if (! is_array($series)) {
+            return [];
+        }
+
+        // Prefer the entry whose metric matches; fall back to the first.
+        $values = null;
+        foreach ($series as $entry) {
+            if (is_array($entry) && ($entry['metric'] ?? null) === $metric) {
+                $values = $entry['values'] ?? null;
+                break;
+            }
+        }
+        if ($values === null && isset($series[0]['values'])) {
+            $values = $series[0]['values'];
+        }
+        if (! is_array($values)) {
+            return [];
+        }
+
         $points = [];
-        foreach ($body as $row) {
-            [$rawDate, $rawValue] = $this->extractDateValue($row);
+        foreach ($values as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $rawDate = $row['dateTime'] ?? $row['date'] ?? null;
+            $rawValue = $row['value'] ?? null;
             if ($rawDate === null || ! is_numeric($rawValue)) {
                 continue;
             }
-            $value = $rawValue + 0; // int|float, preserving type
-            $points[] = ['date' => $this->normaliseDate($rawDate), 'value' => $value];
+            $points[] = ['date' => $this->normaliseDate($rawDate), 'value' => $rawValue + 0];
         }
 
         return $points;
     }
 
-    /**
-     * Pull (date, value) out of one timeline row, whether it arrived as a
-     * positional [ts, value] pair or as an object with named keys.
-     *
-     * @return array{0:mixed,1:mixed}
-     */
-    private function extractDateValue(mixed $row): array
-    {
-        if (is_array($row) && array_is_list($row)) {
-            return [$row[0] ?? null, $row[1] ?? null];
-        }
-        if (is_array($row)) {
-            $date = $row['dateTime'] ?? $row['date'] ?? $row['timestamp'] ?? $row['x'] ?? null;
-            $value = $row['value'] ?? $row['count'] ?? $row['y'] ?? null;
-            return [$date, $value];
-        }
-        return [null, null];
-    }
-
-    /** Normalise a Metricool timestamp ("20260515", "2026-05-15", ISO) → YYYY-MM-DD. */
+    /** Normalise a Metricool timestamp (ISO "2026-05-29T12:00:00+0200", or "20260515") → YYYY-MM-DD. */
     private function normaliseDate(mixed $raw): string
     {
         $s = trim((string) $raw);
