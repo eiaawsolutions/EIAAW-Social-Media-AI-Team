@@ -200,84 +200,119 @@ class MetricoolClientTest extends TestCase
         $this->client()->listBrands();
     }
 
-    // ── Account timeline (GET /stats/timeline/{metric}) — the growth dashboard ──
+    // ── Account timeline (GET /v2/analytics/timelines) — the growth dashboard ──
+    // Endpoint + response shape VERIFIED LIVE 2026-05-31 (prod blogId 6322515):
+    // {"data":[{"metric":"Followers","values":[{"dateTime":"2026-05-29T12:00:00+0200","value":7.0}]}]}.
 
-    public function test_account_timeline_scopes_to_blog_id_and_uses_start_end_ymd(): void
+    public function test_account_timeline_sends_metric_network_subject_and_iso_window(): void
     {
         Http::fake([
-            'app.metricool.com/api/stats/timeline/igFollowers*' => Http::response([
-                ['20260501', '100'],
-                ['20260502', '105'],
+            'app.metricool.com/api/v2/analytics/timelines*' => Http::response([
+                'data' => [[
+                    'metric' => 'Followers',
+                    'values' => [
+                        ['dateTime' => '2026-05-29T12:00:00+0200', 'value' => 7.0],
+                        ['dateTime' => '2026-05-30T12:00:00+0200', 'value' => 12.0],
+                    ],
+                ]],
             ], 200),
         ]);
 
-        $result = $this->client()->getAccountTimeline(222, 'igFollowers', '20260501', '20260530');
+        $result = $this->client()->getAccountTimeline(
+            blogId: 222,
+            metric: 'Followers',
+            network: 'instagram',
+            fromIso: '2026-05-01T00:00:00',
+            toIso: '2026-05-30T23:59:59',
+        );
 
         $this->assertTrue($result['found']);
         $this->assertCount(2, $result['points']);
-        // Compact YMD timestamp normalised to ISO date; value typed numeric.
-        $this->assertSame('2026-05-01', $result['points'][0]['date']);
-        $this->assertSame(100, $result['points'][0]['value']);
+        $this->assertSame('2026-05-29', $result['points'][0]['date']); // ISO → date
+        $this->assertSame(7, $result['points'][0]['value']);
 
-        // Isolation + the start/end (NOT from/to) param convention this endpoint wants.
+        // The real contract: metric + network + subject=account + ISO from/to,
+        // scoped to the right blogId (the cross-tenant isolation invariant).
         Http::assertSent(function ($request) {
-            return str_contains($request->url(), '/stats/timeline/igFollowers')
+            return str_contains($request->url(), '/v2/analytics/timelines')
                 && $request->hasHeader('X-Mc-Auth', 'mc_test_token')
                 && str_contains($request->url(), 'userId=4242')
                 && str_contains($request->url(), 'blogId=222')
-                && str_contains($request->url(), 'start=20260501')
-                && str_contains($request->url(), 'end=20260530');
+                && str_contains($request->url(), 'metric=Followers')
+                && str_contains($request->url(), 'network=instagram')
+                && str_contains($request->url(), 'subject=account')
+                && str_contains(rawurldecode($request->url()), 'from=2026-05-01T00:00:00')
+                && str_contains(rawurldecode($request->url()), 'to=2026-05-30T23:59:59');
         });
     }
 
-    public function test_account_timeline_treats_404_as_not_found(): void
+    /**
+     * Invalid metric for a network (400), not-connected (404), or upstream 500
+     * must degrade that one network to not-found — never blow up the board.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonFatalStatusProvider')]
+    public function test_account_timeline_treats_non_2xx_as_not_found_not_error(int $status): void
     {
         Http::fake([
-            'app.metricool.com/api/stats/timeline/*' => Http::response(['message' => 'no metric'], 404),
+            'app.metricool.com/api/v2/analytics/timelines*' => Http::response(['status' => 'x'], $status),
         ]);
 
-        $result = $this->client()->getAccountTimeline(123, 'inFollowers', '20260501', '20260530');
+        $result = $this->client()->getAccountTimeline(123, 'Followers', 'linkedin', '2026-05-01T00:00:00', '2026-05-30T23:59:59');
 
-        $this->assertFalse($result['found']);
-        $this->assertSame(404, $result['status']);
+        $this->assertFalse($result['found'], "status {$status} should be found=false");
+        $this->assertSame($status, $result['status']);
         $this->assertSame([], $result['points']);
     }
 
-    public function test_account_timeline_accepts_object_envelope_and_named_keys(): void
+    /** @return array<string, array{int}> */
+    public static function nonFatalStatusProvider(): array
     {
-        // Version drift: enveloped {values:[{date,value}, …]} instead of pairs.
+        return [
+            'invalid metric (400)' => [400],
+            'not connected (404)' => [404],
+            'upstream error (500)' => [500],
+        ];
+    }
+
+    public function test_account_timeline_picks_the_matching_metric_series(): void
+    {
+        // Be defensive: if the body carries multiple series, pick the one whose
+        // metric matches the request (not just the first).
         Http::fake([
-            'app.metricool.com/api/stats/timeline/pageImpressions*' => Http::response([
-                'values' => [
-                    ['date' => '2026-05-01', 'value' => 1200],
-                    ['date' => '2026-05-02', 'value' => 1350],
+            'app.metricool.com/api/v2/analytics/timelines*' => Http::response([
+                'data' => [
+                    ['metric' => 'Other', 'values' => [['dateTime' => '2026-05-01T12:00:00+0000', 'value' => 999]]],
+                    ['metric' => 'impressions', 'values' => [['dateTime' => '2026-05-02T12:00:00+0000', 'value' => 1350]]],
                 ],
             ], 200),
         ]);
 
-        $result = $this->client()->getAccountTimeline(222, 'pageImpressions', '20260501', '20260530');
+        $result = $this->client()->getAccountTimeline(222, 'impressions', 'instagram', '2026-05-01T00:00:00', '2026-05-30T23:59:59');
 
-        $this->assertTrue($result['found']);
-        $this->assertCount(2, $result['points']);
-        $this->assertSame('2026-05-02', $result['points'][1]['date']);
-        $this->assertSame(1350, $result['points'][1]['value']);
+        $this->assertCount(1, $result['points']);
+        $this->assertSame('2026-05-02', $result['points'][0]['date']);
+        $this->assertSame(1350, $result['points'][0]['value']);
     }
 
     public function test_account_timeline_drops_non_numeric_values_never_zeroes_them(): void
     {
         // Truthfulness Contract: a null/blank reading is omitted, not coerced to 0.
         Http::fake([
-            'app.metricool.com/api/stats/timeline/twitterFollowers*' => Http::response([
-                ['20260501', '500'],
-                ['20260502', null],
-                ['20260503', ''],
-                ['20260504', '512'],
+            'app.metricool.com/api/v2/analytics/timelines*' => Http::response([
+                'data' => [[
+                    'metric' => 'Followers',
+                    'values' => [
+                        ['dateTime' => '2026-05-01T12:00:00+0000', 'value' => 500],
+                        ['dateTime' => '2026-05-02T12:00:00+0000', 'value' => null],
+                        ['dateTime' => '2026-05-03T12:00:00+0000', 'value' => '512'],
+                    ],
+                ]],
             ], 200),
         ]);
 
-        $result = $this->client()->getAccountTimeline(222, 'twitterFollowers', '20260501', '20260530');
+        $result = $this->client()->getAccountTimeline(222, 'Followers', 'twitter', '2026-05-01T00:00:00', '2026-05-30T23:59:59');
 
-        $this->assertCount(2, $result['points']); // the null + blank rows dropped
+        $this->assertCount(2, $result['points']); // the null row dropped
         $this->assertSame(500, $result['points'][0]['value']);
         $this->assertSame(512, $result['points'][1]['value']);
     }

@@ -11,17 +11,21 @@ use Tests\TestCase;
 
 /**
  * AccountGrowthService — the account-growth dashboard brain (followers +
- * impressions over time, per network), from Metricool's /stats/timeline API.
+ * impressions over time, per network), from Metricool's account timeline API
+ * (GET /v2/analytics/timelines, subject=account). Endpoint + response shape
+ * verified live 2026-05-31; per-network metric names match the Metricool UI.
  *
  * DB-free: an in-memory Brand (new Brand([...]), no save()) carries the blogId,
- * matching the local-.env-points-at-prod caveat. Network calls are Http::fake.
- * We assert the Truthfulness Contract end-to-end:
- *   - TikTok/Threads have NO Metricool timeline metric → status 'no_api_data'
- *     and they appear in the 'unsupported' list, never as a fabricated series.
- *   - A network that 404s → status 'not_available' (not connected / not on plan).
+ * matching the local-.env-points-at-prod caveat. Network calls are Http::fake,
+ * keyed off the metric+network query params (all hit the same path). We assert
+ * the Truthfulness Contract end-to-end:
+ *   - A network that 400/404/500s → status 'not_available' (not connected / no
+ *     metric for it), never a fabricated zero tile.
  *   - Missing daily readings stay null on the shared axis — never 0.
  *   - Followers headline = latest level; change = latest − first (net new).
  *   - Impressions headline = sum over the window (a flow, not a stock).
+ *   - TikTok and Threads ARE real charted networks now (the correct endpoint
+ *     covers them — the old "no API data" was the wrong legacy endpoint).
  */
 class AccountGrowthServiceTest extends TestCase
 {
@@ -50,6 +54,36 @@ class AccountGrowthServiceTest extends TestCase
         ]);
     }
 
+    /** Build a {data:[{metric,values:[{dateTime,value}]}]} body for a metric. */
+    private function series(string $metric, array $dateValue): array
+    {
+        $values = [];
+        foreach ($dateValue as $d => $v) {
+            $values[] = ['dateTime' => $d . 'T12:00:00+0000', 'value' => $v];
+        }
+        return ['data' => [['metric' => $metric, 'values' => $values]]];
+    }
+
+    /**
+     * Fake /v2/analytics/timelines, returning a per-metric body when the
+     * request's metric query param matches; otherwise a 404 (not connected).
+     *
+     * @param  array<string, array<string,int|float>>  $byMetric  metric => [date => value]
+     */
+    private function fakeTimelines(array $byMetric): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/analytics/timelines*' => function ($request) use ($byMetric) {
+                parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $q);
+                $metric = $q['metric'] ?? '';
+                if (array_key_exists($metric, $byMetric)) {
+                    return Http::response($this->series($metric, $byMetric[$metric]), 200);
+                }
+                return Http::response(['status' => 'BAD_REQUEST'], 404);
+            },
+        ]);
+    }
+
     public function test_unconfigured_client_returns_scaffold_without_calling_metricool(): void
     {
         Http::fake();
@@ -65,37 +99,28 @@ class AccountGrowthServiceTest extends TestCase
 
     public function test_followers_headline_is_latest_and_change_is_net_new(): void
     {
-        Http::fake([
-            // Only Instagram reports; others 404 (not connected).
-            'app.metricool.com/api/stats/timeline/igFollowers*' => Http::response([
-                ['20260501', '100'], ['20260502', '108'], ['20260503', '120'],
-            ], 200),
-            'app.metricool.com/api/stats/timeline/*' => Http::response(['message' => 'na'], 404),
+        // Only Instagram's Followers metric reports; everything else 404s.
+        $this->fakeTimelines([
+            'Followers' => ['2026-05-01' => 100, '2026-05-02' => 108, '2026-05-03' => 120],
         ]);
 
+        // NOTE: LinkedIn + X also use the 'Followers' metric name, so they'd
+        // match the same fake. Scope the assertion to Instagram, which is the
+        // network we're reasoning about; the point is the stock/flow math.
         $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
         $dim = $out['followers'];
 
         $ig = collect($dim['networks'])->firstWhere('network', 'instagram');
         $this->assertSame('ok', $ig['status']);
-        $this->assertSame(120, $ig['headline']);     // latest level
-        $this->assertSame(20, $ig['change']);        // 120 − 100 net new
-        $this->assertSame(120, $dim['total']);       // sum of network headlines
+        $this->assertSame(120, $ig['headline']);   // latest level
+        $this->assertSame(20, $ig['change']);      // 120 − 100 net new
         $this->assertTrue($dim['has_data']);
-
-        // A 404 network is honest 'not_available', never a zero tile.
-        $li = collect($dim['networks'])->firstWhere('network', 'linkedin');
-        $this->assertSame('not_available', $li['status']);
-        $this->assertNull($li['headline']);
     }
 
     public function test_impressions_headline_is_window_sum(): void
     {
-        Http::fake([
-            'app.metricool.com/api/stats/timeline/igimpressions*' => Http::response([
-                ['20260501', '500'], ['20260502', '700'], ['20260503', '300'],
-            ], 200),
-            'app.metricool.com/api/stats/timeline/*' => Http::response(['message' => 'na'], 404),
+        $this->fakeTimelines([
+            'impressions' => ['2026-05-01' => 500, '2026-05-02' => 700, '2026-05-03' => 300],
         ]);
 
         $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
@@ -105,41 +130,54 @@ class AccountGrowthServiceTest extends TestCase
         $this->assertSame(1500, $ig['headline']);  // 500+700+300 summed (flow)
     }
 
-    public function test_tiktok_and_threads_are_no_api_data_and_listed_unsupported(): void
+    public function test_unconnected_network_is_not_available_not_a_zero(): void
     {
-        Http::fake([
-            'app.metricool.com/api/stats/timeline/*' => Http::response([['20260501', '10']], 200),
+        // YouTube reports; the rest 404. YouTube uses 'totalSubscribers'.
+        $this->fakeTimelines([
+            'totalSubscribers' => ['2026-05-30' => 1],
         ]);
 
         $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
+        $dim = $out['followers'];
 
-        // They never appear as a charted network …
-        $networks = collect($out['followers']['networks'])->pluck('network');
-        $this->assertFalse($networks->contains('tiktok'));
-        $this->assertFalse($networks->contains('threads'));
+        $yt = collect($dim['networks'])->firstWhere('network', 'youtube');
+        $this->assertSame('ok', $yt['status']);
+        $this->assertSame(1, $yt['headline']);
 
-        // … they appear in the honest 'unsupported' list instead.
-        $unsupported = collect($out['unsupported'])->pluck('network');
-        $this->assertTrue($unsupported->contains('tiktok'));
-        $this->assertTrue($unsupported->contains('threads'));
+        // Facebook uses 'Follows' which we didn't fake → 404 → not_available.
+        $fb = collect($dim['networks'])->firstWhere('network', 'facebook');
+        $this->assertSame('not_available', $fb['status']);
+        $this->assertNull($fb['headline']);
+    }
 
-        // And we NEVER hit a tiktok/threads timeline endpoint (no metric exists).
-        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'timeline/tt')
-            || str_contains($r->url(), 'timeline/threads'));
+    public function test_tiktok_and_threads_are_real_charted_networks(): void
+    {
+        // The correct endpoint covers TikTok + Threads (followers_count).
+        $this->fakeTimelines([
+            'followers_count' => ['2026-05-29' => 3, '2026-05-30' => 3],
+        ]);
+
+        $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
+        $networks = collect($out['followers']['networks']);
+
+        $tt = $networks->firstWhere('network', 'tiktok');
+        $th = $networks->firstWhere('network', 'threads');
+        $this->assertSame('ok', $tt['status']);
+        $this->assertSame(3, $tt['headline']);
+        $this->assertSame('ok', $th['status']);
+        $this->assertSame(3, $th['headline']);
+
+        // NETWORKS_WITHOUT_API is now empty — nothing listed as unsupported.
+        $this->assertSame([], $out['unsupported']);
     }
 
     public function test_missing_daily_readings_stay_null_on_shared_axis(): void
     {
-        // IG reports 3 days; LinkedIn reports only the middle day. On the merged
-        // axis LinkedIn's first/last cells must be null (gap), not 0.
-        Http::fake([
-            'app.metricool.com/api/stats/timeline/igFollowers*' => Http::response([
-                ['20260501', '100'], ['20260502', '101'], ['20260503', '102'],
-            ], 200),
-            'app.metricool.com/api/stats/timeline/inFollowers*' => Http::response([
-                ['20260502', '40'],
-            ], 200),
-            'app.metricool.com/api/stats/timeline/*' => Http::response(['message' => 'na'], 404),
+        // IG (Followers) reports 3 days; YouTube (totalSubscribers) only the
+        // middle day. On the merged axis YouTube's first/last cells must be null.
+        $this->fakeTimelines([
+            'Followers' => ['2026-05-01' => 100, '2026-05-02' => 101, '2026-05-03' => 102],
+            'totalSubscribers' => ['2026-05-02' => 40],
         ]);
 
         $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
@@ -147,8 +185,22 @@ class AccountGrowthServiceTest extends TestCase
 
         $this->assertSame(['2026-05-01', '2026-05-02', '2026-05-03'], $dim['axis']);
 
-        $li = collect($dim['networks'])->firstWhere('network', 'linkedin');
-        $this->assertSame([null, 40, null], $li['series']); // gaps are null, not 0
+        $yt = collect($dim['networks'])->firstWhere('network', 'youtube');
+        $this->assertSame([null, 40, null], $yt['series']); // gaps are null, not 0
+    }
+
+    public function test_calls_use_v2_timelines_with_subject_account(): void
+    {
+        $this->fakeTimelines(['Followers' => ['2026-05-30' => 7]]);
+
+        (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
+
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/v2/analytics/timelines')
+            && str_contains($r->url(), 'subject=account')
+            && str_contains($r->url(), 'blogId=6322515'));
+
+        // The dead legacy endpoint must never be called.
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/stats/timeline/'));
     }
 
     public function test_unmapped_brand_returns_empty_dimensions_without_calling_metricool(): void
