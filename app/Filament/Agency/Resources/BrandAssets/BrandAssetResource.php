@@ -3,6 +3,8 @@
 namespace App\Filament\Agency\Resources\BrandAssets;
 
 use App\Filament\Agency\Resources\BrandAssets\Pages\ManageBrandAssets;
+use App\Filament\Agency\Resources\Brands;
+use App\Models\Brand;
 use App\Models\BrandAsset;
 use BackedEnum;
 use Filament\Resources\Resource;
@@ -177,7 +179,15 @@ class BrandAssetResource extends Resource
                 ]),
             ])
             ->emptyStateHeading('No assets yet')
-            ->emptyStateDescription('Click "Upload assets" to add brand-approved images and videos. The Designer + Video agents will pick from these before falling back to AI generation.')
+            ->emptyStateDescription(fn () => self::workspaceHasBrand()
+                ? 'Click "Upload assets" to add brand-approved images and videos. The Designer + Video agents will pick from these before falling back to AI generation.'
+                : 'Create a brand first — assets attach to a brand. Then upload brand-approved images and videos for the Designer + Video agents to pick from.')
+            ->emptyStateActions(self::workspaceHasBrand() ? [] : [
+                \Filament\Actions\Action::make('createBrand')
+                    ->label('Create a brand')
+                    ->icon('heroicon-o-plus')
+                    ->url(Brands\BrandResource::getUrl('index', panel: 'agency')),
+            ])
             ->emptyStateIcon(Heroicon::OutlinedPhoto);
     }
 
@@ -209,6 +219,34 @@ class BrandAssetResource extends Resource
         return [
             'index' => ManageBrandAssets::route('/'),
         ];
+    }
+
+    /**
+     * Does the current operator's workspace have at least one non-archived
+     * brand? Drives the empty-state copy + action so a brand-less workspace is
+     * pointed at the Brands page instead of an upload form it can never submit
+     * (the upload modal's brand picker is required + empty when no brands exist).
+     *
+     * Deliberately workspace-scoped with NO super-admin bypass: it must agree
+     * with the upload modal's brand picker, which is strictly scoped to the
+     * current workspace (see ManageBrandAssets::brandOptions). A super admin on
+     * a workspace with zero brands still gets the "create a brand" signpost,
+     * because that's the only thing the upload form could offer them here.
+     */
+    protected static function workspaceHasBrand(): bool
+    {
+        $user = auth()->user();
+
+        $workspaceId = $user?->current_workspace_id
+            ?? $user?->ownedWorkspaces()->value('id');
+
+        if (! $workspaceId) {
+            return false;
+        }
+
+        return Brand::where('workspace_id', $workspaceId)
+            ->whereNull('archived_at')
+            ->exists();
     }
 
     /**

@@ -35,6 +35,22 @@ class ManageBrandAssets extends ManageRecords
 
     protected function getHeaderActions(): array
     {
+        // A brand asset MUST belong to a brand (the upload modal's first field
+        // is a required brand picker). On a fresh workspace with zero brands the
+        // picker is empty, so the modal can never submit — which reads to the
+        // operator as "the upload button is broken". Detect that here and turn
+        // the action into a signpost to the Brands page instead of a dead-end form.
+        if (! $this->hasBrands()) {
+            return [
+                Action::make('createBrandFirst')
+                    ->label('Create a brand first')
+                    ->icon('heroicon-o-plus')
+                    ->color('primary')
+                    ->tooltip('Brand assets attach to a brand. Add your first brand, then come back to upload.')
+                    ->url(\App\Filament\Agency\Resources\Brands\BrandResource::getUrl('index', panel: 'agency')),
+            ];
+        }
+
         return [
             Action::make('upload')
                 ->label('Upload assets')
@@ -48,6 +64,19 @@ class ManageBrandAssets extends ManageRecords
                 ->schema($this->uploadSchema())
                 ->action(fn (array $data) => $this->handleUpload($data)),
         ];
+    }
+
+    /** Does the operator's workspace have at least one (non-archived) brand? */
+    private function hasBrands(): bool
+    {
+        $ws = $this->workspace();
+        if (! $ws) {
+            return false;
+        }
+
+        return Brand::where('workspace_id', $ws->id)
+            ->whereNull('archived_at')
+            ->exists();
     }
 
     /** @return array<int, \Filament\Schemas\Components\Component|\Filament\Forms\Components\Field> */
@@ -76,19 +105,24 @@ class ManageBrandAssets extends ManageRecords
                 ->live(),
 
             // ---- Files ----
+            // Upload straight from the user's computer: drag-drop OR click to
+            // open the OS file picker. ->openable lets them re-open a picked
+            // file; ->downloadable is off (these are inbound, not exports).
             FileUpload::make('files')
                 ->label(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED
-                    ? 'File (one asset for this post)'
-                    : 'Files (drag-drop, multiple allowed)')
+                    ? 'File from your computer (one asset for this post)'
+                    : 'Files from your computer (drag-drop or browse — multiple allowed)')
+                ->placeholder('Drag images / videos here, or click to choose from your computer')
                 ->multiple(fn (callable $get) => $get('usage_intent') !== BrandAsset::INTENT_CUSTOMISED)
                 ->maxFiles(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED ? 1 : null)
                 ->disk($this->preferredDisk())
                 ->directory(fn (callable $get) => 'brand-assets/' . ($get('brand_id') ?: 'unsorted'))
                 ->visibility('public')
                 ->preserveFilenames()
+                ->openable()
                 ->acceptedFileTypes(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/quicktime', 'video/webm'])
-                ->maxSize(50 * 1024) // 50 MB per file
-                ->helperText('Automatically tagged on save (~3s each) so the agents can find them.')
+                ->maxSize(50 * 1024) // 50 MB per file — kept in lockstep with livewire.temporary_file_upload rules (max:51200)
+                ->helperText('JPG, PNG, WEBP, GIF, MP4, MOV or WEBM · up to 50 MB each. Automatically tagged on save (~3s each) so the agents can find them.')
                 ->required(),
 
             // ---- Customised-post fields (revealed only for that intent) ----
