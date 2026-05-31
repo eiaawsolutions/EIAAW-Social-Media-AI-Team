@@ -125,7 +125,14 @@ class MetricoolSetup extends Page
         }
 
         try {
-            $operatorEmail = (string) (config('mail.cap_warning.from_address') ?: 'eiaawsolutions@gmail.com');
+            // Pin to the Resend-backed support_enquiry mailer (same rationale
+            // as cap_warning): this HQ notification is the trigger for the whole
+            // connect-link provisioning chain — if it silently lands in `log`
+            // (a per-env MAIL_MAILER override) the customer waits forever. Pin
+            // the transport + recipient so it's immune to the default mailer.
+            $hqMailer = (string) config('mail.support_enquiry.mailer', 'resend');
+            $hqTo = (string) (config('mail.support_enquiry.to') ?: 'eiaawsolutions@gmail.com');
+            $operatorEmail = (string) (config('mail.support_enquiry.from_address') ?: 'noreply@eiaawsolutions.com');
             $ws = $this->workspace;
             $body = sprintf(
                 "Brand #%d (%s) in workspace #%d (%s) requested Metricool setup.\n\n"
@@ -145,8 +152,8 @@ class MetricoolSetup extends Page
                 $brand->id,
                 $brand->id,
             );
-            Mail::raw($body, function ($m) use ($operatorEmail, $brand) {
-                $m->to('eiaawsolutions@gmail.com')
+            Mail::mailer($hqMailer)->raw($body, function ($m) use ($operatorEmail, $hqTo, $brand) {
+                $m->to($hqTo)
                   ->subject(sprintf('[SMT ops] Metricool setup request — brand#%d %s', $brand->id, $brand->name))
                   ->from($operatorEmail, 'EIAAW SMT — Provisioning bot');
             });

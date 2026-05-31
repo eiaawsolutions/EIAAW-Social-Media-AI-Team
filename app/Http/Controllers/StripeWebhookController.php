@@ -5,9 +5,11 @@ namespace App\Http\Controllers;
 use App\Mail\TrialEndingSoon;
 use App\Models\SubscriptionEvent;
 use App\Models\Workspace;
+use App\Services\Billing\SignupProvisioner;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Laravel\Cashier\Cashier;
 use Laravel\Cashier\Http\Controllers\WebhookController as CashierWebhookController;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -30,6 +32,11 @@ use Symfony\Component\HttpFoundation\Response;
  */
 class StripeWebhookController extends CashierWebhookController
 {
+    public function __construct(private readonly SignupProvisioner $provisioner)
+    {
+        parent::__construct();
+    }
+
     public function handleWebhook(Request $request): Response
     {
         $payload = json_decode($request->getContent(), true);
@@ -69,6 +76,24 @@ class StripeWebhookController extends CashierWebhookController
         ]);
 
         try {
+            // SIGNUP SAFETY NET — must run BEFORE the workspace-found gate.
+            // On checkout.session.completed for a signup, the workspace does
+            // not exist yet if BillingController::success() never ran (tab
+            // closed, network drop, redirect 500 after the charge). This is
+            // the ONLY recovery path for a customer who paid but was never
+            // provisioned ([[signup_provisioning_gap]]). Idempotent: if
+            // success() already provisioned, SignupProvisioner no-ops on the
+            // email-exists guard.
+            if ($eventType === 'checkout.session.completed' && ! $workspaceId) {
+                $this->provisionSignupIfNeeded($payload);
+                // Re-resolve — provisioning just created the workspace, so the
+                // standard side-effect sync below can now find it.
+                $workspaceId = $this->resolveWorkspaceFromPayload($payload);
+                if ($workspaceId && ! $event->workspace_id) {
+                    $event->update(['workspace_id' => $workspaceId]);
+                }
+            }
+
             // Let Cashier do its standard subscription-table updates first.
             parent::handleWebhook($request);
 
@@ -91,6 +116,51 @@ class StripeWebhookController extends CashierWebhookController
             // Return 500 so Stripe retries; idempotency above prevents
             // double-processing once we recover.
             return new Response('Processing error', 500);
+        }
+    }
+
+    /**
+     * Recover a paid-but-unprovisioned signup. Retrieves the full Checkout
+     * Session from Stripe (the webhook payload omits expanded subscription +
+     * customer) and runs the SAME idempotent provisioner success() uses, so
+     * the result is identical whichever path wins. Best-effort: a failure here
+     * is logged and bubbles up to force a Stripe retry (the parent handler's
+     * try/catch turns a throw into a 500). Only acts on signup sessions; the
+     * provisioner itself skips non-signup intents.
+     */
+    private function provisionSignupIfNeeded(array $payload): void
+    {
+        $sessionId = $payload['data']['object']['id'] ?? null;
+        $intent = $payload['data']['object']['metadata']['intent'] ?? null;
+        $paymentStatus = $payload['data']['object']['payment_status'] ?? null;
+
+        // Only signup sessions provision here. Skip upgrades / unknown intents.
+        if ($intent !== 'signup') {
+            return;
+        }
+
+        if (! $sessionId) {
+            Log::warning('Stripe webhook: signup checkout.session.completed with no session id — cannot recover.');
+            return;
+        }
+
+        // 'unpaid' here would mean a $0/async flow; v1 charges on completion so
+        // we expect 'paid' (or 'no_payment_required' under a 100%-off coupon).
+        if ($paymentStatus !== null && ! in_array($paymentStatus, ['paid', 'no_payment_required'], true)) {
+            Log::info("Stripe webhook: signup session {$sessionId} payment_status={$paymentStatus} — not provisioning yet.");
+            return;
+        }
+
+        $session = Cashier::stripe()->checkout->sessions->retrieve($sessionId, [
+            'expand' => ['subscription', 'customer'],
+        ]);
+
+        $result = $this->provisioner->provisionFromSession($session, sendWelcomeEmail: true);
+
+        if ($result->wasProvisioned()) {
+            Log::warning("Stripe webhook: RECOVERED stranded signup — provisioned account for session {$sessionId} that success() never finished.", [
+                'workspace_id' => $result->workspace?->id,
+            ]);
         }
     }
 
@@ -150,11 +220,7 @@ class StripeWebhookController extends CashierWebhookController
                 break;
 
             case 'checkout.session.completed':
-                // No-op for the signup flow — BillingController::success has
-                // already provisioned the account synchronously by the time
-                // the webhook lands. Reserved for future panel-side upgrade
-                // flows that set metadata.intent='upgrade' and pass the
-                // target plan; idempotency keeps it safe to re-process.
+                // Upgrade flow (existing workspace changing plan).
                 $session = $payload['data']['object'] ?? [];
                 $intent = $session['metadata']['intent'] ?? null;
                 $newPlan = $session['metadata']['plan'] ?? null;
