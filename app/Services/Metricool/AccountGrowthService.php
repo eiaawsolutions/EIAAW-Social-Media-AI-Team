@@ -3,6 +3,7 @@
 namespace App\Services\Metricool;
 
 use App\Models\Brand;
+use App\Models\Workspace;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -97,6 +98,24 @@ class AccountGrowthService
             ->whereNull('archived_at')
             ->whereNotNull('metricool_blog_id')
             ->whereHas('workspace', fn ($q) => $q->where('plan', 'eiaaw_internal'))
+            ->orderBy('id')
+            ->first();
+    }
+
+    /**
+     * Resolve the brand to show growth for within ONE workspace — the
+     * per-workspace analogue of hqBrand(), used by the customer-facing
+     * Performance page. Picks the workspace's first non-archived brand that has
+     * a Metricool blogId mapped (Metricool is brand-scoped; growth is per blogId).
+     * Returns null when the workspace has no mapped brand yet → the UI prompts
+     * setup instead of showing a wrong/empty account.
+     */
+    public function brandForWorkspace(Workspace $workspace): ?Brand
+    {
+        return Brand::query()
+            ->where('workspace_id', $workspace->id)
+            ->whereNull('archived_at')
+            ->whereNotNull('metricool_blog_id')
             ->orderBy('id')
             ->first();
     }

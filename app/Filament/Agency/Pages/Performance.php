@@ -7,6 +7,7 @@ use App\Models\Brand;
 use App\Models\PostMetric;
 use App\Models\ScheduledPost;
 use App\Models\Workspace;
+use App\Services\Metricool\AccountGrowthService;
 use App\Services\Metrics\MetricsCsvImporter;
 use Filament\Actions\Action;
 use Filament\Forms\Components\FileUpload;
@@ -67,6 +68,24 @@ class Performance extends Page
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('refreshGrowth')
+                ->label('Refresh growth')
+                ->icon('heroicon-o-arrow-path')
+                ->color('gray')
+                ->action(function (): void {
+                    $svc = app(AccountGrowthService::class);
+                    $ws = $this->workspace();
+                    $brand = $ws ? $svc->brandForWorkspace($ws) : null;
+                    if ($brand && $brand->metricool_blog_id) {
+                        $svc->forget((int) $brand->metricool_blog_id, $this->window);
+                    }
+                    Notification::make()
+                        ->title('Growth refreshed')
+                        ->body('Pulled the latest account followers + impressions from Metricool.')
+                        ->success()
+                        ->send();
+                }),
+
             Action::make('downloadTemplate')
                 ->label('Download CSV template')
                 ->icon('heroicon-o-arrow-down-tray')
@@ -186,6 +205,38 @@ class Performance extends Page
             ->orderBy('id')
             ->first();
         return $brand?->timezone ?: 'UTC';
+    }
+
+    /**
+     * Account growth (followers + impressions over time, per network) for THIS
+     * workspace's brand — the section that used to live on the HQ-only
+     * /admin/account-growth page, now folded into Performance so every workspace
+     * (EIAAW HQ + each customer) sees its own account growth above its per-post
+     * metrics. Live from Metricool via AccountGrowthService, scoped to the
+     * workspace's mapped brand. Returns ['brand'=>null,…] when no brand is
+     * mapped yet so the view shows a connect-prompt instead of a wrong account.
+     *
+     * @return array<string,mixed>
+     */
+    public function growth(): array
+    {
+        $svc = app(AccountGrowthService::class);
+        $ws = $this->workspace();
+        $brand = $ws ? $svc->brandForWorkspace($ws) : null;
+
+        if ($brand === null) {
+            return [
+                'configured' => \App\Services\Metricool\MetricoolClient::fromConfig() !== null,
+                'brand' => null,
+                'data' => null,
+            ];
+        }
+
+        return [
+            'configured' => \App\Services\Metricool\MetricoolClient::fromConfig() !== null,
+            'brand' => ['id' => $brand->id, 'name' => $brand->name, 'blog_id' => $brand->metricool_blog_id],
+            'data' => $svc->forBrand($brand, $this->window),
+        ];
     }
 
     /** @return array<string,mixed> */
