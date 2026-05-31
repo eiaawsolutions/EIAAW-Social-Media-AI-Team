@@ -48,16 +48,27 @@ class AccountGrowthService
      * an artifact of the WRONG legacy endpoint (/stats/timeline). The correct
      * /v2/analytics/timelines endpoint returns real follower counts for both.
      *
-     * @var array<string, array{label:string, color:string, network:string, followers:?string, impressions:?string}>
+     * `followers` is the account-timeline metric (GET /v2/analytics/timelines).
+     * `impressions` is the per-post analytics field summed across the window
+     * (GET /v2/analytics/posts/{network}) — Metricool's own "Impressions" card
+     * is that same per-post sum, NOT an account-level series (the account
+     * timeline returns empty/500 for impressions). Verified live 2026-05-31:
+     * summing TikTok viewCount = 717 and Facebook impressions = 8 matched the
+     * Metricool UI exactly; IG impressionsTotal = 1,270 (UI 1,061 — the small
+     * gap is Metricool's card excluding some post types/boundary, our number is
+     * the defensible sum of all real posts). LinkedIn post-impressions aren't
+     * exposed for this brand (page-impressions API 500s) → null = "not available".
+     *
+     * @var array<string, array{label:string, color:string, network:string, followers:?string, impression_fields:?array<int,string>}>
      */
     public const NETWORKS = [
-        'instagram' => ['label' => 'Instagram', 'color' => '#E1306C', 'network' => 'instagram', 'followers' => 'Followers', 'impressions' => 'impressions'],
-        'facebook' => ['label' => 'Facebook', 'color' => '#1877F2', 'network' => 'facebook', 'followers' => 'Follows', 'impressions' => 'pageImpressions'],
-        'linkedin' => ['label' => 'LinkedIn', 'color' => '#0A66C2', 'network' => 'linkedin', 'followers' => 'Followers', 'impressions' => null],
-        'tiktok' => ['label' => 'TikTok', 'color' => '#000000', 'network' => 'tiktok', 'followers' => 'followers_count', 'impressions' => 'video_views'],
-        'youtube' => ['label' => 'YouTube', 'color' => '#FF0000', 'network' => 'youtube', 'followers' => 'totalSubscribers', 'impressions' => 'views'],
-        'threads' => ['label' => 'Threads', 'color' => '#444444', 'network' => 'threads', 'followers' => 'followers_count', 'impressions' => 'views'],
-        'twitter' => ['label' => 'X (Twitter)', 'color' => '#111827', 'network' => 'twitter', 'followers' => 'Followers', 'impressions' => null],
+        'instagram' => ['label' => 'Instagram', 'color' => '#E1306C', 'network' => 'instagram', 'followers' => 'Followers', 'impression_fields' => ['impressionsTotal']],
+        'facebook' => ['label' => 'Facebook', 'color' => '#1877F2', 'network' => 'facebook', 'followers' => 'Follows', 'impression_fields' => ['impressions', 'impressionsTotal']],
+        'linkedin' => ['label' => 'LinkedIn', 'color' => '#0A66C2', 'network' => 'linkedin', 'followers' => 'Followers', 'impression_fields' => null],
+        'tiktok' => ['label' => 'TikTok', 'color' => '#000000', 'network' => 'tiktok', 'followers' => 'followers_count', 'impression_fields' => ['viewCount', 'views']],
+        'youtube' => ['label' => 'YouTube', 'color' => '#FF0000', 'network' => 'youtube', 'followers' => 'totalSubscribers', 'impression_fields' => ['views', 'impressions']],
+        'threads' => ['label' => 'Threads', 'color' => '#444444', 'network' => 'threads', 'followers' => 'followers_count', 'impression_fields' => ['impressions', 'views']],
+        'twitter' => ['label' => 'X (Twitter)', 'color' => '#111827', 'network' => 'twitter', 'followers' => 'Followers', 'impression_fields' => ['impressions', 'impressionsTotal']],
     ];
 
     /**
@@ -135,48 +146,37 @@ class AccountGrowthService
 
         $cacheKey = sprintf('metricool:growth:%d:%d', $blogId, $windowDays);
 
-        // /v2/analytics/timelines wants ISO datetime, not the legacy YYYYMMDD.
+        // Both Metricool analytics families want ISO datetime.
         $fromIso = $from->format('Y-m-d\TH:i:s');
         $toIso = $to->format('Y-m-d\TH:i:s');
 
         return Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($base, $blogId, $fromIso, $toIso) {
             return $base + [
-                'followers' => $this->dimensionFor('Followers', 'followers', $blogId, $fromIso, $toIso),
-                'impressions' => $this->dimensionFor('Impressions', 'impressions', $blogId, $fromIso, $toIso),
+                // Followers = account-level stock from the timelines endpoint.
+                'followers' => $this->followersDimension($blogId, $fromIso, $toIso),
+                // Impressions = summed per-post analytics (what the UI card shows).
+                'impressions' => $this->impressionsDimension($blogId, $fromIso, $toIso),
             ];
         });
     }
 
     /**
-     * Build one dimension (Followers or Impressions): the per-network series,
-     * each network's headline number + change, the cross-network total, and a
-     * merged date axis for the combined chart.
+     * Followers dimension — account-level STOCK from GET /v2/analytics/timelines
+     * (subject=account). Headline = LATEST follower count; change = latest−first
+     * over the window (net new). Per the Truthfulness Contract: a network that
+     * 400/404/500s → 'not_available'; no readings → 'no_data'; gaps stay null.
      *
-     * For Followers, the headline is the LATEST follower count and "change" is
-     * latest−first over the window (net new followers). For Impressions, the
-     * headline is the SUM over the window (impressions are a flow, not a stock),
-     * and we keep the daily series for the area chart.
-     *
-     * @return array{
-     *   title:string, dimension:string, axis:array<int,string>,
-     *   total:int, networks:array<int,array<string,mixed>>, has_data:bool
-     * }
+     * @return array<string,mixed>
      */
-    private function dimensionFor(string $title, string $dimension, int $blogId, string $fromIso, string $toIso): array
+    private function followersDimension(int $blogId, string $fromIso, string $toIso): array
     {
-        $isStock = $dimension === 'followers'; // stock = level; flow = summed
-
         $networks = [];
         $allDates = [];
         $total = 0;
         $hasData = false;
 
         foreach (self::NETWORKS as $network => $meta) {
-            $metric = $meta[$dimension] ?? null;
-
-            // This network exposes no metric for this dimension (e.g. LinkedIn/X
-            // have no account impressions timeline) → omit its tile here rather
-            // than show a misleading empty one.
+            $metric = $meta['followers'] ?? null;
             if ($metric === null) {
                 continue;
             }
@@ -190,7 +190,7 @@ class AccountGrowthService
                     toIso: $toIso,
                 );
             } catch (\Throwable $e) {
-                Log::warning('AccountGrowthService: timeline fetch failed', [
+                Log::warning('AccountGrowthService: followers timeline failed', [
                     'blog_id' => $blogId, 'network' => $meta['network'], 'metric' => $metric, 'error' => $e->getMessage(),
                 ]);
                 $networks[] = $this->networkRow($network, $meta, status: 'error');
@@ -198,7 +198,6 @@ class AccountGrowthService
             }
 
             if (! ($result['found'] ?? false)) {
-                // 404/400/500 — network not connected, or no such metric for it.
                 $networks[] = $this->networkRow($network, $meta, status: 'not_available');
                 continue;
             }
@@ -215,23 +214,114 @@ class AccountGrowthService
             }
 
             $values = array_map(static fn ($p) => $p['value'], $points);
-            $headline = $isStock ? (int) end($values) : (int) array_sum($values);
-            $first = (int) reset($values);
-            $change = $isStock ? ($headline - $first) : (int) array_sum($values);
-
+            $headline = (int) end($values);              // latest level (stock)
+            $change = $headline - (int) reset($values);  // net new over window
             $total += $headline;
 
             $networks[] = $this->networkRow($network, $meta, status: 'ok', headline: $headline, change: $change, points: $points);
         }
 
+        return $this->finaliseDimension('Followers', 'followers', $networks, $allDates, $total, $hasData);
+    }
+
+    /**
+     * Impressions dimension — the SUM of per-post impressions across the window,
+     * via GET /v2/analytics/posts/{network}. This is what Metricool's own
+     * "Impressions" card shows (the account-timeline endpoint returns empty/500
+     * for impressions). Each post contributes its impression field (per-network,
+     * verified in memory metricool-field-map) on its publish date, so we still
+     * get a daily series for the chart. Headline = window sum (a flow).
+     *
+     * LinkedIn has impression_fields=null: its post-analytics doesn't expose
+     * impressions for this brand and the page-impressions API 500s, so we render
+     * 'not_available' rather than invent a number (Truthfulness Contract).
+     *
+     * @return array<string,mixed>
+     */
+    private function impressionsDimension(int $blogId, string $fromIso, string $toIso): array
+    {
+        $networks = [];
+        $allDates = [];
+        $total = 0;
+        $hasData = false;
+
+        foreach (self::NETWORKS as $network => $meta) {
+            $fields = $meta['impression_fields'] ?? null;
+            if ($fields === null) {
+                // Impressions genuinely not exposed to us for this network.
+                $networks[] = $this->networkRow($network, $meta, status: 'not_available');
+                continue;
+            }
+
+            try {
+                $result = $this->client->postAnalytics($blogId, $fromIso, $toIso, $meta['network']);
+            } catch (\Throwable $e) {
+                Log::warning('AccountGrowthService: post analytics failed', [
+                    'blog_id' => $blogId, 'network' => $meta['network'], 'error' => $e->getMessage(),
+                ]);
+                $networks[] = $this->networkRow($network, $meta, status: 'error');
+                continue;
+            }
+
+            if (! ($result['found'] ?? false)) {
+                $networks[] = $this->networkRow($network, $meta, status: 'not_available');
+                continue;
+            }
+
+            // Bucket each post's impressions onto its publish date.
+            $byDate = [];
+            foreach ($this->extractPostList($result['body'] ?? null) as $post) {
+                if (! is_array($post)) {
+                    continue;
+                }
+                $value = $this->firstNumeric($post, $fields);
+                if ($value === null) {
+                    continue;
+                }
+                $date = $this->postDate($post);
+                $byDate[$date] = ($byDate[$date] ?? 0) + $value;
+            }
+
+            if (count($byDate) === 0) {
+                $networks[] = $this->networkRow($network, $meta, status: 'no_data');
+                continue;
+            }
+
+            $hasData = true;
+            $points = [];
+            foreach ($byDate as $date => $value) {
+                $allDates[$date] = true;
+                $points[] = ['date' => $date, 'value' => $value];
+            }
+            usort($points, static fn ($a, $b) => strcmp($a['date'], $b['date']));
+
+            $headline = (int) array_sum(array_column($points, 'value')); // flow = sum
+            $total += $headline;
+
+            $networks[] = $this->networkRow($network, $meta, status: 'ok', headline: $headline, change: $headline, points: $points);
+        }
+
+        return $this->finaliseDimension('Impressions', 'impressions', $networks, $allDates, $total, $hasData);
+    }
+
+    /**
+     * Shared tail for both dimensions: sort the merged date axis, re-index each
+     * ok network's series onto it (gaps null, never 0 — Chart.js spanGaps), and
+     * shape the dimension payload.
+     *
+     * @param  array<int,array<string,mixed>>  $networks
+     * @param  array<string,bool>  $allDates
+     * @return array<string,mixed>
+     */
+    private function finaliseDimension(string $title, string $dimension, array $networks, array $allDates, int $total, bool $hasData): array
+    {
         ksort($allDates);
         $axis = array_keys($allDates);
 
-        // Re-index each ok network's series onto the shared axis (gaps stay null,
-        // not 0 — Chart.js draws spanGaps; the contract forbids fabricated zeros).
         foreach ($networks as &$row) {
             if ($row['status'] !== 'ok') {
                 $row['series'] = [];
+                unset($row['_points']);
                 continue;
             }
             $byDate = [];
@@ -251,6 +341,45 @@ class AccountGrowthService
             'has_data' => $hasData,
             'networks' => $networks,
         ];
+    }
+
+    /**
+     * Metricool's per-post analytics body is sometimes a bare list, sometimes
+     * enveloped under data/posts/items. Return the list of post objects.
+     *
+     * @return array<int,mixed>
+     */
+    private function extractPostList(mixed $body): array
+    {
+        if (is_array($body) && array_is_list($body)) {
+            return $body;
+        }
+        if (is_array($body)) {
+            foreach (['data', 'posts', 'items', 'results'] as $key) {
+                if (isset($body[$key]) && is_array($body[$key]) && array_is_list($body[$key])) {
+                    return $body[$key];
+                }
+            }
+        }
+        return [];
+    }
+
+    /** First numeric value among the candidate field names; null if none present. */
+    private function firstNumeric(array $bag, array $fields): ?int
+    {
+        foreach ($fields as $f) {
+            if (isset($bag[$f]) && is_numeric($bag[$f])) {
+                return (int) $bag[$f];
+            }
+        }
+        return null;
+    }
+
+    /** Publish date (YYYY-MM-DD) of a post, from whichever date field it carries. */
+    private function postDate(array $post): string
+    {
+        $raw = $post['dateTime'] ?? $post['createTime'] ?? $post['date'] ?? $post['publishedAt'] ?? '';
+        return substr((string) $raw, 0, 10) ?: 'unknown';
     }
 
     /**

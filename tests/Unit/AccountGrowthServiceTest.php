@@ -117,17 +117,46 @@ class AccountGrowthServiceTest extends TestCase
         $this->assertTrue($dim['has_data']);
     }
 
-    public function test_impressions_headline_is_window_sum(): void
+    public function test_impressions_sum_per_post_analytics_not_timelines(): void
     {
-        $this->fakeTimelines([
-            'impressions' => ['2026-05-01' => 500, '2026-05-02' => 700, '2026-05-03' => 300],
+        // Impressions come from GET /v2/analytics/posts/{network}, summed per post
+        // on its publish date — NOT the account timelines endpoint. Instagram's
+        // impression field is impressionsTotal (verified in metricool-field-map).
+        Http::fake([
+            'app.metricool.com/api/v2/analytics/posts/instagram*' => Http::response([
+                'data' => [
+                    ['dateTime' => '2026-05-01T10:00:00+0000', 'impressionsTotal' => 500],
+                    ['dateTime' => '2026-05-01T18:00:00+0000', 'impressionsTotal' => 300],
+                    ['dateTime' => '2026-05-03T09:00:00+0000', 'impressionsTotal' => 700],
+                ],
+            ], 200),
+            // every other network's post analytics → empty
+            'app.metricool.com/api/v2/analytics/posts/*' => Http::response(['data' => []], 200),
         ]);
 
         $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
         $ig = collect($out['impressions']['networks'])->firstWhere('network', 'instagram');
 
         $this->assertSame('ok', $ig['status']);
-        $this->assertSame(1500, $ig['headline']);  // 500+700+300 summed (flow)
+        $this->assertSame(1500, $ig['headline']);          // 500+300+700 summed (flow)
+        // Two posts on 2026-05-01 bucket onto the same day = 800.
+        $this->assertSame([800, 700], array_values(array_filter($ig['series'], fn ($v) => $v !== null)));
+    }
+
+    public function test_linkedin_impressions_are_not_available_not_fabricated(): void
+    {
+        // LinkedIn has impression_fields=null (post-analytics doesn't expose
+        // impressions for this brand; page-impressions API 500s). Per the
+        // Truthfulness Contract it must read 'not_available', never a number.
+        Http::fake([
+            'app.metricool.com/api/v2/analytics/posts/*' => Http::response(['data' => []], 200),
+        ]);
+
+        $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
+        $li = collect($out['impressions']['networks'])->firstWhere('network', 'linkedin');
+
+        $this->assertSame('not_available', $li['status']);
+        $this->assertNull($li['headline']);
     }
 
     public function test_unconnected_network_is_not_available_not_a_zero(): void
