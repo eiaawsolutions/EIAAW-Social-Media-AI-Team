@@ -2,7 +2,10 @@
 
 namespace App\Services\Billing;
 
+use App\Exceptions\BrandCreationRefused;
+use App\Models\Brand;
 use App\Models\Workspace;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Plan caps — single source of truth for "what is this workspace allowed
@@ -66,11 +69,76 @@ class PlanCaps
      * True when the workspace can add another brand. Counts non-archived
      * brands only — archived brands don't count toward the cap, so a
      * customer who archives an old brand frees up the slot.
+     *
+     * NOTE: this is a cheap, race-prone READ used for UX (hide the create
+     * button, show an upgrade nudge). It MUST NOT be the only thing standing
+     * between a customer and an over-cap insert — two rapid creates can both
+     * read "under cap" and both insert. The authoritative, atomic enforcement
+     * is createBrandOrFail() below.
      */
     public function canAddBrand(Workspace $workspace): bool
     {
         $caps = $this->capsFor($workspace);
         return $workspace->activeBrandsCount() < $caps['max_brands'];
+    }
+
+    /**
+     * Atomically create a brand for the workspace, or throw BrandCreationRefused.
+     *
+     * This is the SINGLE authoritative brand-create path. It exists because the
+     * read-then-write canAddBrand() check leaked under a stale-relation /
+     * double-submit race and let a solo workspace (max_brands=1) end up with TWO
+     * brands, splitting onboarding work across them (the brand voice landed on
+     * one record, the Metricool connections on the other — see
+     * [[onboarding-split-brain-brands]]).
+     *
+     * The fix is to make the count-check and the insert happen INSIDE one
+     * transaction, behind a row-level lock on the workspace, so two concurrent
+     * creates serialise: the first commits the brand, the second re-reads the
+     * now-incremented count under the lock and is refused. Same lock also guards
+     * the duplicate-name check, so two identical names can't both slip through.
+     *
+     * Archived brands don't count toward the cap and don't block a name reuse —
+     * consistent with activeBrandsCount() and the archive-frees-a-slot model.
+     *
+     * @param  array<string,mixed>  $attributes  validated brand attributes (name, slug, …);
+     *                                            workspace_id is forced to $workspace->id.
+     * @throws BrandCreationRefused  when at cap or a same-named active brand exists.
+     */
+    public function createBrandOrFail(Workspace $workspace, array $attributes): Brand
+    {
+        $caps = $this->capsFor($workspace);
+        $max = $caps['max_brands'];
+        $plan = (string) ($workspace->plan ?? 'solo');
+        $name = trim((string) ($attributes['name'] ?? ''));
+
+        return DB::transaction(function () use ($workspace, $attributes, $max, $plan, $name) {
+            // Serialise concurrent creates for this workspace. Locking the
+            // workspace row (not the brands) gives a single, deadlock-free
+            // gate that every create for this tenant must pass through.
+            Workspace::whereKey($workspace->id)->lockForUpdate()->first();
+
+            // Re-read counts/names UNDER the lock — this is the authoritative
+            // state, immune to the relation cache the UI check may have read.
+            $activeBrands = Brand::query()
+                ->where('workspace_id', $workspace->id)
+                ->whereNull('archived_at');
+
+            if ((clone $activeBrands)->count() >= $max) {
+                throw BrandCreationRefused::capReached($max, $plan);
+            }
+
+            if ($name !== '' && (clone $activeBrands)
+                ->whereRaw('LOWER(name) = ?', [mb_strtolower($name)])
+                ->exists()
+            ) {
+                throw BrandCreationRefused::duplicateName($name);
+            }
+
+            $attributes['workspace_id'] = $workspace->id;
+
+            return Brand::create($attributes);
+        });
     }
 
     /**

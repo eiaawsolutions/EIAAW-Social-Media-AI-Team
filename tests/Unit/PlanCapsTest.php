@@ -328,4 +328,37 @@ class PlanCapsTest extends TestCase
 
         $this->assertFalse((new PlanCaps())->canAddBrand($ws));
     }
+
+    // ── Atomic createBrandOrFail() — the authoritative gate ─────────────────
+    //
+    // The locked-transaction behaviour itself needs a real DB (covered by the
+    // source-inspection guard in BrandCreateAtomicityTest, since the suite runs
+    // against prod). Here we lock the exception contract that the UI depends on.
+
+    public function test_brand_creation_refused_cap_reached_carries_reason_and_plan(): void
+    {
+        $e = \App\Exceptions\BrandCreationRefused::capReached(1, 'solo');
+
+        $this->assertTrue($e->isCapReached());
+        $this->assertFalse($e->isDuplicateName());
+        $this->assertStringContainsStringIgnoringCase('Solo', $e->getMessage());
+        $this->assertStringContainsString('1 brand', $e->getMessage());
+        // Singular when max is 1 — no stray "1 brands".
+        $this->assertStringNotContainsString('1 brands', $e->getMessage());
+    }
+
+    public function test_brand_creation_refused_cap_reached_pluralises_above_one(): void
+    {
+        $e = \App\Exceptions\BrandCreationRefused::capReached(3, 'studio');
+        $this->assertStringContainsString('3 brands', $e->getMessage());
+    }
+
+    public function test_brand_creation_refused_duplicate_name_carries_reason_and_name(): void
+    {
+        $e = \App\Exceptions\BrandCreationRefused::duplicateName('The Bear Hug Cafe');
+
+        $this->assertTrue($e->isDuplicateName());
+        $this->assertFalse($e->isCapReached());
+        $this->assertStringContainsString('The Bear Hug Cafe', $e->getMessage());
+    }
 }
