@@ -19,14 +19,22 @@ use Illuminate\Support\Str;
  * Status is derived, not stored. The hierarchy below is intentional —
  * we surface the worst-known state first:
  *
- *   stuck    > failing > active > healthy > idle
+ *   stuck    > failing > capped > active > healthy > idle
  *
  *   - stuck:   a pipeline_run for this agent's workflow is in 'running'
  *              but hasn't progressed within STUCK_PIPELINE_MIN, OR no
  *              audit_log completion within last STUCK_RUN_MIN despite a
  *              recent start. Worst — needs operator attention now.
  *   - failing: ≥ FAIL_RATIO of the last LOOKBACK_RUNS finished with
- *              outcome=failed. The agent runs, but produces failures.
+ *              outcome=failed FOR A REAL FAULT. The agent runs, but
+ *              produces failures that need investigation.
+ *   - capped:  the agent is running fine but its recent "failed" audit rows
+ *              are BENIGN cap/policy refusals — a plan budget/allowance was
+ *              hit, or it correctly skipped a platform that doesn't take the
+ *              media. The agent is working AS DESIGNED; the remedy is wait
+ *              for the reset or upgrade, never "read the stack trace". These
+ *              rows are excluded from the failure ratio so a workspace that
+ *              legitimately hits its cap can't flip the agent to red failing.
  *   - active:  a completed/failed audit_log row within last ACTIVE_MIN.
  *              Agent is alive and ticking.
  *   - healthy: ran successfully in last LOOKBACK_HOURS, all recent runs
@@ -47,6 +55,29 @@ class AgentTelemetry
     private const STUCK_RUN_MIN = 15;
     private const STUCK_PIPELINE_MIN = 10;
     private const FAIL_RATIO = 0.5;
+
+    /**
+     * Substrings that mark a "failed" audit row as a BENIGN cap/policy refusal
+     * rather than a real fault. When an agent returns AgentResult::fail() because
+     * a plan budget/allowance was hit (DesignerAgent "Daily image budget reached",
+     * VideoAgent "Daily video budget reached", PlanCaps "monthly AI-video
+     * allowance reached") or because it correctly skipped a platform that doesn't
+     * accept the media, the agent is working EXACTLY as designed — it refused to
+     * overspend or do a no-op. These outcomes self-resolve (reset at midnight UTC
+     * / on the 1st) or are simply not-applicable, so they must NOT count toward
+     * the failure ratio and must NOT be surfaced as "needs investigation". Match
+     * is case-insensitive on the error text stored in the audit row's context.
+     *
+     * Keep this list tight: only outcomes that are genuinely "the agent behaved
+     * correctly" belong here. A provider running out of balance is NOT here — that
+     * is a real operational event with its own top-up remedy (see nextActionFor).
+     */
+    private const BENIGN_CAP_NEEDLES = [
+        'daily video budget reached',
+        'daily image budget reached',
+        'ai-video allowance reached',
+        'does not accept short-form video',
+    ];
 
     /**
      * Sequence the operator expects to see top-to-bottom — mirrors the
@@ -278,11 +309,28 @@ class AgentTelemetry
     {
         $now = now();
         $lastRun = $audit->first();
-        $lastFailure = $audit->firstWhere('outcome', 'failed');
         $lastSuccess = $audit->firstWhere('outcome', 'completed');
         $totalRuns = $audit->count();
-        $failedRuns = $audit->where('outcome', 'failed')->count();
-        $failRatio = $totalRuns > 0 ? $failedRuns / $totalRuns : 0.0;
+
+        // Split "failed" rows into REAL faults vs BENIGN cap/policy refusals.
+        // A budget/allowance cap firing (or a correct platform skip) is the agent
+        // working as designed, not breakage — it must not drive the failure ratio
+        // nor surface as "needs investigation". The failure ratio is computed off
+        // real faults only; benign refusals are reported separately as 'capped'.
+        $allFailures = $audit->where('outcome', 'failed')->values();
+        $benignFailures = $allFailures->filter(fn (array $r) => $this->isBenignCapOrPolicy($r['error'] ?? null))->values();
+        $realFailures = $allFailures->reject(fn (array $r) => $this->isBenignCapOrPolicy($r['error'] ?? null))->values();
+
+        $failedRuns = $realFailures->count();
+        // Denominator excludes benign refusals so caps can't dilute or inflate the
+        // ratio: a workspace that hits its cap 5× shouldn't read as 5/6 failing.
+        $ratioDenominator = $totalRuns - $benignFailures->count();
+        $failRatio = $ratioDenominator > 0 ? $failedRuns / $ratioDenominator : 0.0;
+
+        // For the surfaced reason: the most recent REAL fault drives 'failing';
+        // the most recent BENIGN refusal drives 'capped'.
+        $lastFailure = $realFailures->first();
+        $lastBenign = $benignFailures->first();
 
         $blockedPipelines = $pipelines->whereIn('state', ['failed', 'blocked'])->values();
         $longRunningPipelines = $pipelines->filter(function (array $p) use ($now) {
@@ -292,10 +340,11 @@ class AgentTelemetry
         })->values();
 
         $status = $this->deriveStatus(
-            audit: $audit,
             failRatio: $failRatio,
             totalRuns: $totalRuns,
+            ratioDenominator: $ratioDenominator,
             lastRun: $lastRun,
+            lastBenign: $lastBenign,
             blockedPipelines: $blockedPipelines,
             longRunningPipelines: $longRunningPipelines,
             now: $now,
@@ -304,6 +353,7 @@ class AgentTelemetry
         $reason = $this->reasonForStatus(
             status: $status,
             lastFailure: $lastFailure,
+            lastBenign: $lastBenign,
             blockedPipelines: $blockedPipelines,
             longRunningPipelines: $longRunningPipelines,
         );
@@ -324,7 +374,11 @@ class AgentTelemetry
             'error_text' => $reason['error_text'],
             'next_action' => $nextAction,
             'runs_24h' => $totalRuns,
+            // failed_24h counts REAL faults only — benign cap/policy refusals are
+            // reported separately as capped_24h so the operator sees "5 capped"
+            // (expected, self-resolving) instead of "5 failed" (alarming).
             'failed_24h' => $failedRuns,
+            'capped_24h' => $benignFailures->count(),
             'last_success_at' => $lastSuccess['occurred_at'] ?? null,
             'last_failure_at' => $lastFailure['occurred_at'] ?? null,
             'last_run_at' => $lastRun['occurred_at'] ?? null,
@@ -338,10 +392,11 @@ class AgentTelemetry
     }
 
     private function deriveStatus(
-        \Illuminate\Support\Collection $audit,
         float $failRatio,
         int $totalRuns,
+        int $ratioDenominator,
         ?array $lastRun,
+        ?array $lastBenign,
         \Illuminate\Support\Collection $blockedPipelines,
         \Illuminate\Support\Collection $longRunningPipelines,
         Carbon $now,
@@ -357,8 +412,22 @@ class AgentTelemetry
             return 'stuck';
         }
 
-        if ($totalRuns >= 3 && $failRatio >= self::FAIL_RATIO) {
+        // Real-fault failing: ratio is computed off non-benign runs only, so a
+        // workspace hammering its cap can't tip this. Needs ≥3 non-benign runs
+        // to avoid flapping on a single early fault.
+        if ($ratioDenominator >= 3 && $failRatio >= self::FAIL_RATIO) {
             return 'failing';
+        }
+
+        // Benign cap/policy refusal is the most recent thing this agent did, and
+        // there's no real-fault failing above it. Surface it as 'capped' — the
+        // agent is working as designed (it refused to overspend / correctly
+        // skipped), so this reads amber-neutral, not red, with a wait/upgrade
+        // remedy rather than "investigate". Recent enough to be the live state.
+        if ($lastRun && $lastBenign
+            && $lastRun['outcome'] === 'failed'
+            && $this->isBenignCapOrPolicy($lastRun['error'] ?? null)) {
+            return 'capped';
         }
 
         if ($lastRun && $lastRun['occurred_at']->diffInMinutes($now) <= self::ACTIVE_MIN) {
@@ -373,11 +442,31 @@ class AgentTelemetry
     }
 
     /**
+     * True when a "failed" audit row is a benign cap/policy refusal (plan budget
+     * or allowance reached, or a correct platform skip) rather than a real fault.
+     * These don't count toward the failure ratio and get a wait/upgrade remedy.
+     */
+    private function isBenignCapOrPolicy(?string $error): bool
+    {
+        if ($error === null || $error === '') {
+            return false;
+        }
+        $haystack = strtolower($error);
+        foreach (self::BENIGN_CAP_NEEDLES as $needle) {
+            if (str_contains($haystack, $needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * @return array{headline: string, detail: string, error_text: ?string}
      */
     private function reasonForStatus(
         string $status,
         ?array $lastFailure,
+        ?array $lastBenign,
         \Illuminate\Support\Collection $blockedPipelines,
         \Illuminate\Support\Collection $longRunningPipelines,
     ): array {
@@ -400,6 +489,17 @@ class AgentTelemetry
             return [
                 'headline' => 'Recent runs keep failing — needs investigation.',
                 'detail' => $err ? "Most recent failure: {$err}" : 'Failure recorded but no error text was captured.',
+                'error_text' => $err,
+            ];
+        }
+
+        if ($status === 'capped') {
+            $err = $lastBenign['error'] ?? null;
+            return [
+                'headline' => 'At a plan limit — working as designed, no action needed.',
+                'detail' => $err
+                    ? "Most recent: {$err}"
+                    : 'A plan budget or allowance was reached. This self-resolves at the reset.',
                 'error_text' => $err,
             ];
         }
@@ -439,6 +539,21 @@ class AgentTelemetry
         }
 
         $error = strtolower((string) $errorText);
+
+        // Benign cap/policy refusal — the agent is working as designed. Give the
+        // wait/upgrade remedy straight away; NEVER fall through to "read the stack
+        // trace" (there is no stack — it's an intentional AgentResult::fail()).
+        // Matched first so it wins regardless of the derived status.
+        if ($this->isBenignCapOrPolicy($errorText)) {
+            if (str_contains($error, 'does not accept short-form video')) {
+                return 'No action needed. This platform is text/image-only — the Video agent correctly skipped it. The post still ships with its image.';
+            }
+            if (str_contains($error, 'ai-video allowance reached')) {
+                return 'Expected — the monthly AI-video allowance is used up. It resets on the 1st. To make more videos this cycle, upgrade the plan at /agency/billing; affected drafts can ship with a still image now.';
+            }
+
+            return 'Expected — the daily AI-media budget cap fired (the agent refused to overspend). It resets at midnight UTC. For a higher daily ceiling now, upgrade the plan at /agency/billing; affected drafts can ship with a still image in the meantime.';
+        }
 
         if ($error === '') {
             return 'Open the audit log for this agent: tail -f storage/logs/laravel.log | grep ' . $role . '. Then re-run the failing draft from the Drafts page.';

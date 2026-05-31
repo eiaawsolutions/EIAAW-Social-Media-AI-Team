@@ -17,6 +17,8 @@
                 --status-stuck-tint: #F8E2DC;
                 --status-failing: #C68B00;
                 --status-failing-tint: #FAF1DC;
+                --status-capped: #7A6A3C;
+                --status-capped-tint: #F1ECE1;
                 --status-active: #11766A;
                 --status-active-tint: #E5F4F1;
                 --status-healthy: #2A3438;
@@ -82,6 +84,7 @@
             }
             .agent-row[data-status=stuck]   { border-left-color: var(--status-stuck); }
             .agent-row[data-status=failing] { border-left-color: var(--status-failing); }
+            .agent-row[data-status=capped]  { border-left-color: var(--status-capped); }
             .agent-row[data-status=active]  { border-left-color: var(--status-active); }
             .agent-row[data-status=healthy] { border-left-color: var(--status-healthy); }
             .agent-row[data-status=idle]    { border-left-color: var(--status-idle); }
@@ -159,6 +162,7 @@
             }
             .status-pill[data-status=stuck]   { color: var(--status-stuck);   background: var(--status-stuck-tint); }
             .status-pill[data-status=failing] { color: var(--status-failing); background: var(--status-failing-tint); }
+            .status-pill[data-status=capped]  { color: var(--status-capped);  background: var(--status-capped-tint); }
             .status-pill[data-status=active]  { color: var(--status-active);  background: var(--status-active-tint); }
             .status-pill[data-status=healthy] { color: var(--status-healthy); background: var(--status-healthy-tint); }
             .status-pill[data-status=idle]    { color: var(--status-idle);    background: var(--status-idle-tint); }
@@ -232,6 +236,9 @@
                                 <span class="stat"><strong>{{ $row['runs_24h'] }}</strong> runs / 24h</span>
                                 @if ($row['failed_24h'] > 0)
                                     <span class="stat"><strong>{{ $row['failed_24h'] }}</strong> failed</span>
+                                @endif
+                                @if (! empty($row['capped_24h']))
+                                    <span class="stat" title="Benign plan-cap / policy refusals — not faults"><strong>{{ $row['capped_24h'] }}</strong> capped</span>
                                 @endif
                                 @if (! is_null($row['p50_latency_ms']))
                                     <span class="stat"><strong>{{ number_format($row['p50_latency_ms']) }}ms</strong> p50</span>
