@@ -2,23 +2,18 @@
 
 namespace App\Http\Controllers;
 
-use App\Mail\WelcomeWithCredentials;
 use App\Models\User;
-use App\Models\Workspace;
-use App\Models\WorkspaceMember;
+use App\Services\Billing\SignupProvisioner;
+use App\Services\Billing\SignupProvisionResult;
 use App\Services\StripePriceCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\Crypt;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Laravel\Cashier\Cashier;
 
@@ -33,7 +28,10 @@ use Laravel\Cashier\Cashier;
  */
 class BillingController extends Controller
 {
-    public function __construct(private readonly StripePriceCache $priceCache) {}
+    public function __construct(
+        private readonly StripePriceCache $priceCache,
+        private readonly SignupProvisioner $provisioner,
+    ) {}
 
     /**
      * Step 3: user submitted name+email+workspace from /signup/{plan}.
@@ -251,116 +249,36 @@ class BillingController extends Controller
                 ));
         }
 
-        // Stripe metadata arrives as a \Stripe\StripeObject. PHP's (array)
-        // cast on a StripeObject exposes private properties with mangled
-        // keys instead of the actual metadata values — even though Stripe
-        // stores everything correctly. Use ->toArray() (Stripe's helper)
-        // so the keys are the real metadata field names.
-        $rawMetadata = $session->metadata ?? null;
-        $metadata = $rawMetadata && method_exists($rawMetadata, 'toArray')
-            ? $rawMetadata->toArray()
-            : (is_array($rawMetadata) ? $rawMetadata : []);
-        $email = strtolower($metadata['email'] ?? ($session->customer_email ?? ''));
-        $name  = $metadata['name'] ?? null;
-        $workspaceName = $metadata['workspace_name'] ?? null;
-        $plan = $metadata['plan'] ?? 'solo';
+        // Provision via the shared, idempotent SignupProvisioner — the SAME
+        // path the Stripe webhook safety net uses ([[signup_provisioning_gap]]).
+        // We pass sendWelcomeEmail=false: the redirect path owns the temp
+        // password (needed for auto-login + the welcome cookie) and sends its
+        // own credential email below. The webhook path passes true.
+        $result = $this->provisioner->provisionFromSession($session, sendWelcomeEmail: false);
 
-        if (! $email || ! $name || ! $workspaceName) {
-            Log::error('billing.success: missing checkout metadata', [
-                'session_id' => $sessionId,
-                'metadata'   => $metadata,
-            ]);
-            return redirect()->route('signup.picker')
-                ->with('error', 'Checkout metadata incomplete. Please contact support.');
-        }
-
-        // Idempotency — if this email already has a user (e.g. retry after
-        // partial provisioning), short-circuit to login.
-        if (User::where('email', $email)->exists()) {
+        // Idempotency — if the account already existed (webhook won the race,
+        // or this is a retried redirect), short-circuit to login.
+        if ($result->status === SignupProvisionResult::ALREADY_PROVISIONED) {
             return redirect()->route('agency.login.alias', ['signup' => 'exists']);
         }
 
-        $tempPassword = Str::password(12, symbols: false);
-
-        try {
-            [$user, $workspace] = DB::transaction(function () use ($email, $name, $workspaceName, $plan, $tempPassword, $session, $subscription) {
-                $user = User::create([
-                    'name'     => $name,
-                    'email'    => $email,
-                    'password' => Hash::make($tempPassword),
-                ]);
-
-                $slug = Str::slug($workspaceName);
-                if (Workspace::where('slug', $slug)->exists()) {
-                    $slug = $slug.'-'.Str::lower(Str::random(6));
-                }
-
-                $stripeCustomerId = is_string($session->customer)
-                    ? $session->customer
-                    : ($session->customer->id ?? null);
-
-                // Status + trial mirror the Stripe subscription. With
-                // trial_days=0 (v1) Stripe returns status='active' and
-                // trial_end=null — Workspace::hasActiveAccess() reads
-                // 'active' as live entitlement. We preserve the trialing
-                // path so flipping trial_days back on in config still
-                // works without re-editing this provision step.
-                $stripeStatus = $subscription->status ?? 'active';
-                $workspaceStatus = $stripeStatus === 'trialing' ? 'trialing' : 'active';
-                $trialEndsAt = ($subscription && ! empty($subscription->trial_end))
-                    ? Carbon::createFromTimestamp($subscription->trial_end)
-                    : null;
-
-                $workspace = Workspace::create([
-                    'slug'                 => $slug,
-                    'name'                 => $workspaceName,
-                    'owner_id'             => $user->id,
-                    'type'                 => $plan === 'solo' ? 'solo' : 'agency',
-                    'plan'                 => $plan,
-                    'subscription_status'  => $workspaceStatus,
-                    'trial_ends_at'        => $trialEndsAt,
-                    'stripe_customer_id'   => $stripeCustomerId,
-                ]);
-
-                WorkspaceMember::create([
-                    'workspace_id' => $workspace->id,
-                    'user_id'      => $user->id,
-                    'role'         => 'owner',
-                    'invited_at'   => now(),
-                    'accepted_at'  => now(),
-                ]);
-
-                $user->forceFill(['current_workspace_id' => $workspace->id])->save();
-
-                // Mirror the Stripe subscription into Cashier's subscriptions
-                // table so $workspace->subscribed('default') returns true
-                // immediately. Cashier's webhook handler will dedupe later
-                // arrivals via the unique constraint on stripe_id.
-                if ($subscription) {
-                    $priceId = $subscription->items->data[0]->price->id ?? null;
-
-                    $workspace->subscriptions()->create([
-                        'type'           => 'default',
-                        'stripe_id'      => $subscription->id,
-                        'stripe_status'  => $subscription->status,
-                        'stripe_price'   => $priceId,
-                        'quantity'       => 1,
-                        'trial_ends_at'  => $trialEndsAt,
-                        'ends_at'        => null,
-                    ]);
-                }
-
-                return [$user, $workspace];
-            });
-        } catch (\Throwable $e) {
-            Log::error('billing.success: provisioning transaction failed', [
-                'session_id' => $sessionId,
-                'email'      => $email,
-                'error'      => $e->getMessage(),
-            ]);
+        if ($result->status === SignupProvisionResult::FAILED) {
+            // Distinguish bad metadata (unrecoverable) from a transient
+            // transaction failure, but both surface a support contact line.
             return redirect()->route('signup.picker')
-                ->with('error', 'We could not finish setting up your account. Please contact support — your card was charged for a trial.');
+                ->with('error', 'We could not finish setting up your account. Please contact support — your card was charged.');
         }
+
+        if (! $result->wasProvisioned() || ! $result->user || ! $result->workspace) {
+            // SKIPPED (non-signup intent) should never reach a signup success
+            // URL; treat defensively.
+            return redirect()->route('signup.picker')
+                ->with('error', 'Checkout could not be completed as a signup. Please contact support.');
+        }
+
+        $user = $result->user;
+        $workspace = $result->workspace;
+        $tempPassword = $result->tempPassword;
 
         // Auto-login via Laravel session.
         Auth::guard('web')->login($user, true);
@@ -382,20 +300,11 @@ class BillingController extends Controller
             'lax'     // samesite
         );
 
-        // Welcome email — non-fatal, queued.
-        try {
-            Mail::to($user->email)->queue(new WelcomeWithCredentials(
-                user: $user,
-                workspace: $workspace,
-                tempPassword: $tempPassword,
-                loginUrl: url('/agency/login'),
-            ));
-        } catch (\Throwable $e) {
-            Log::error('billing.success: welcome email queue failed', [
-                'user_id' => $user->id,
-                'error'   => $e->getMessage(),
-            ]);
-        }
+        // Welcome email — non-fatal, queued on the PINNED deliverable transport
+        // (shared with the webhook safety-net path so credentials are sent
+        // exactly one way). $tempPassword is null only for the already-existed
+        // branch, which returned above, so it's a string here.
+        SignupProvisioner::queueWelcome($user, $workspace, (string) $tempPassword);
 
         return redirect('/agency?welcome=1');
     }
