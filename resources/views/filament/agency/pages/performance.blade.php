@@ -116,6 +116,7 @@
                         </div>
 
                         @if ($dim['has_data'])
+                            @php($historyDays = count($dim['axis']))
                             <div class="perf-chart-box" wire:ignore wire:key="perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}">
                                 <canvas
                                     id="perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}"
@@ -124,10 +125,21 @@
                                         'perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}',
                                         @js($dim['axis']),
                                         @js(collect($dim['networks'])->where('status','ok')->map(fn($n)=>['label'=>$n['label'],'color'=>$n['color'],'data'=>$n['series']])->values()),
-                                        '{{ $dimKey === 'followers' ? 'line' : 'area' }}'
+                                        '{{ $dimKey === 'followers' ? 'line' : 'area' }}',
+                                        {{ $historyDays <= 2 ? 'true' : 'false' }}
                                     )"
                                 ></canvas>
                             </div>
+
+                            {{-- Sparse-history note: a follower line needs several daily readings to
+                                 show a trend. Metricool only starts recording follower counts from the
+                                 day the account is connected, so a freshly-connected brand has 1–2
+                                 points and the line is truthfully flat. Explain it rather than fake a slope. --}}
+                            @if ($dimKey === 'followers' && $historyDays <= 2)
+                                <div class="perf-growth-note" style="margin-top:8px;">
+                                    Follower history builds one reading per day from when each account was connected — Metricool has {{ $historyDays }} day{{ $historyDays === 1 ? '' : 's' }} so far, so each network shows as a point, not yet a trend line. The curve fills in as the days accrue.
+                                </div>
+                            @endif
                         @endif
                     </div>
                 @endforeach
@@ -256,12 +268,15 @@
             <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
             <script>
                 window.__eiaawGrowthCharts = window.__eiaawGrowthCharts || {};
-                window.eiaawRenderGrowthChart = function (canvasId, axis, series, mode) {
+                window.eiaawRenderGrowthChart = function (canvasId, axis, series, mode, forceMarkers) {
                     var el = document.getElementById(canvasId);
                     if (!el || typeof Chart === 'undefined') return;
                     if (window.__eiaawGrowthCharts[canvasId]) {
                         window.__eiaawGrowthCharts[canvasId].destroy();
                     }
+                    // With only 1–2 readings a line has nothing to slope between; make the
+                    // real points clearly visible as dots instead of a misleading flat line.
+                    var pointR = forceMarkers ? 5 : 2;
                     var datasets = series.map(function (s) {
                         return {
                             label: s.label,
@@ -271,8 +286,8 @@
                             fill: mode === 'area',
                             tension: 0.35,
                             spanGaps: true,
-                            pointRadius: 2,
-                            pointHoverRadius: 4,
+                            pointRadius: pointR,
+                            pointHoverRadius: pointR + 2,
                             borderWidth: 2,
                         };
                     });
