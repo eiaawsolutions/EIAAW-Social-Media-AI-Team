@@ -133,7 +133,7 @@
             <div class="ps-brandcard">
                 <p class="ps-lead">No brands yet. Create a brand in the setup wizard first, then come back here to connect its social accounts.</p>
                 <div class="ps-actions">
-                    <a href="{{ url('/agency/setup-wizard') }}" class="ps-cta">Go to setup wizard <span aria-hidden="true">&rarr;</span></a>
+                    <a href="{{ \App\Filament\Agency\Pages\SetupWizard::getUrl() }}" class="ps-cta">Go to setup wizard <span aria-hidden="true">&rarr;</span></a>
                 </div>
             </div>
         @endforelse

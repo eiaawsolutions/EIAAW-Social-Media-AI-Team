@@ -49,12 +49,21 @@ class EnforceTrialOrSubscription
      * a setup page (Metricool connect wizard OR the legacy Blotato one) to
      * advance, and may still want billing / password change. Both setup pages
      * are listed so the gate works under either PUBLISH_PROVIDER.
+     *
+     * The Setup Wizard is allow-listed too: a fresh workspace has NO brands,
+     * so hasAnyMetricoolConnectedBrand() is false and the gate is closed — yet
+     * the Setup Wizard is the ONLY place to create that first brand. Without it
+     * here, the metricool-setup page's "Go to setup wizard" CTA bounces the
+     * customer straight back to metricool-setup (redirect-to-self loop → the
+     * button appears to do nothing). Active-access is already verified before
+     * this gate runs, so exposing the wizard to paying customers is safe.
      */
     private const SETUP_ALLOWED_ROUTE_PATTERNS = [
         'filament.agency.auth.*',
         'filament.agency.pages.billing',
         'filament.agency.pages.metricool-setup',
         'filament.agency.pages.platform-setup',
+        'filament.agency.pages.setup-wizard',
         'filament.agency.resources.profile.*',
         'filament.agency.profile',
     ];
