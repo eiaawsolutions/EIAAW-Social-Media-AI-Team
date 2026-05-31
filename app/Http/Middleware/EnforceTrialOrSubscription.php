@@ -50,13 +50,24 @@ class EnforceTrialOrSubscription
      * advance, and may still want billing / password change. Both setup pages
      * are listed so the gate works under either PUBLISH_PROVIDER.
      *
-     * The Setup Wizard is allow-listed too: a fresh workspace has NO brands,
-     * so hasAnyMetricoolConnectedBrand() is false and the gate is closed — yet
-     * the Setup Wizard is the ONLY place to create that first brand. Without it
-     * here, the metricool-setup page's "Go to setup wizard" CTA bounces the
-     * customer straight back to metricool-setup (redirect-to-self loop → the
-     * button appears to do nothing). Active-access is already verified before
-     * this gate runs, so exposing the wizard to paying customers is safe.
+     * The documented onboarding chain (HQ "Client onboarding journey" deck,
+     * stages 0→1) is: land on metricool-setup → create the first brand in the
+     * Setup Wizard → THEN "Request setup" on metricool-setup. A fresh workspace
+     * has NO brands, so hasAnyMetricoolConnectedBrand() is false and this gate
+     * is closed. Every step that PRECEDES a connected brand must therefore be
+     * allow-listed, or the chain collapses into a redirect loop back to
+     * metricool-setup (the CTA appears dead):
+     *
+     *   - pages.setup-wizard      — the readiness ladder; its empty state's
+     *                               "Add your first brand" CTA forwards to →
+     *   - resources.brands.*      — the canonical brand-CREATE surface
+     *                               (ManageBrands CreateAction). This is the
+     *                               load-bearing step: without it the customer
+     *                               can never create the brand the gate is
+     *                               waiting for.
+     *
+     * Active-access (hasActiveAccess) is verified BEFORE this gate runs, so
+     * exposing these pre-connection setup surfaces to paying customers is safe.
      */
     private const SETUP_ALLOWED_ROUTE_PATTERNS = [
         'filament.agency.auth.*',
@@ -64,6 +75,7 @@ class EnforceTrialOrSubscription
         'filament.agency.pages.metricool-setup',
         'filament.agency.pages.platform-setup',
         'filament.agency.pages.setup-wizard',
+        'filament.agency.resources.brands.*',
         'filament.agency.resources.profile.*',
         'filament.agency.profile',
     ];

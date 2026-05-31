@@ -105,4 +105,32 @@ class MetricoolSetupLinksTest extends TestCase
             'The setup-wizard route must be allow-listed so a no-brand workspace can reach it to create its first brand (otherwise: redirect loop).'
         );
     }
+
+    /**
+     * Regression: the FULL documented onboarding chain (HQ "Client onboarding
+     * journey", stages 0→1) is metricool-setup → setup-wizard → brands create.
+     * The Brands resource is the canonical brand-CREATE surface that the wizard
+     * and every empty-state CTA forward to (/agency/brands?action=create). It is
+     * the load-bearing step — a no-brand workspace can never satisfy the
+     * connected-brand gate without it, so it MUST be allow-listed too.
+     */
+    public function test_brands_resource_is_allow_listed_in_the_setup_gate(): void
+    {
+        $reflection = new \ReflectionClass(\App\Http\Middleware\EnforceTrialOrSubscription::class);
+        $patterns = $reflection->getConstant('SETUP_ALLOWED_ROUTE_PATTERNS');
+
+        $this->assertContains(
+            'filament.agency.resources.brands.*',
+            $patterns,
+            'The Brands resource must be allow-listed — it is the only place to create the first brand the gate is waiting for (otherwise: redirect loop one step deeper).'
+        );
+    }
+
+    public function test_brands_create_route_is_registered(): void
+    {
+        $this->assertNotNull(
+            app('router')->getRoutes()->getByName('filament.agency.resources.brands.index'),
+            'The brands index route must be registered for the "Add your first brand" deeplink to resolve.'
+        );
+    }
 }
