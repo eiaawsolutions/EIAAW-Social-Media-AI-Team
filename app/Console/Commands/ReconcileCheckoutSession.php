@@ -3,28 +3,28 @@
 namespace App\Console\Commands;
 
 use App\Models\User;
-use App\Models\Workspace;
-use App\Models\WorkspaceMember;
+use App\Services\Billing\SignupProvisioner;
+use App\Services\Billing\SignupProvisionResult;
 use Illuminate\Console\Command;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 use Laravel\Cashier\Cashier;
 
 /**
- * billing:reconcile-session — replay BillingController::success against an
- * existing Stripe Checkout Session ID. Provisions User + Workspace +
- * WorkspaceMember + Cashier subscription row, exactly as the success URL
- * would, but without re-typing the form.
+ * billing:reconcile-session — replay account provisioning against ONE existing
+ * Stripe Checkout Session ID (the single-session counterpart to the
+ * signup:reconcile sweep). Provisions User + Workspace + WorkspaceMember +
+ * Cashier subscription, exactly as the success URL would, without re-typing
+ * the form.
  *
  * Used when:
- *   - A bug in the success handler aborted before provisioning (the
- *     "Checkout metadata incomplete" cast bug, fixed in adf4eaf).
+ *   - A bug in the success handler aborted before provisioning.
  *   - A network blip dropped the success-URL redirect mid-provision.
- *   - A future incident leaves orphan Stripe sessions/subs that need to
- *     be reconciled into the DB.
+ *   - A future incident leaves an orphan Stripe session/sub to reconcile.
+ *
+ * As of [[signup_hardening]] this DELEGATES to the shared, idempotent
+ * App\Services\Billing\SignupProvisioner — the SAME path the success() redirect,
+ * the webhook safety net, and signup:reconcile all use. There is no longer a
+ * private copy of the provisioning transaction here (it used to be a 3rd
+ * duplicate that drifted out of sync and carried a method_exists($array) bug).
  *
  * Idempotent. If the user already exists, short-circuits without re-creating.
  *
@@ -40,9 +40,9 @@ class ReconcileCheckoutSession extends Command
         {--session= : Stripe Checkout Session ID (cs_live_... or cs_test_...)}
         {--apply : Actually provision (default is dry-run)}';
 
-    protected $description = 'Replay BillingController::success provisioning against an existing Stripe Checkout Session.';
+    protected $description = 'Replay account provisioning against an existing Stripe Checkout Session (delegates to SignupProvisioner).';
 
-    public function handle(): int
+    public function handle(SignupProvisioner $provisioner): int
     {
         $sessionId = trim((string) $this->option('session'));
         $apply = (bool) $this->option('apply');
@@ -64,19 +64,14 @@ class ReconcileCheckoutSession extends Command
         $subscription = $session->subscription ?? null;
         $paymentStatus = $session->payment_status ?? null;
         $subStatus = $subscription->status ?? null;
-        $paid = $paymentStatus === 'paid';
+        $paid = $paymentStatus === 'paid' || $paymentStatus === 'no_payment_required';
         $trialing = $subStatus === 'trialing';
 
-        $rawMetadata = $session->metadata ?? null;
-        $metadata = $rawMetadata && method_exists($rawMetadata, 'toArray')
-            ? $rawMetadata->toArray()
-            : (is_array($rawMetadata) ? $rawMetadata : []);
-
-        $email = strtolower($metadata['email'] ?? ($session->customer_email ?? ''));
-        $name = $metadata['name'] ?? null;
-        $workspaceName = $metadata['workspace_name'] ?? null;
-        $plan = $metadata['plan'] ?? 'solo';
-
+        $meta = $this->metadataOf($session);
+        $email = strtolower($meta['email'] ?? ($session->customer_email ?? ''));
+        $name = $meta['name'] ?? null;
+        $workspaceName = $meta['workspace_name'] ?? null;
+        $plan = $meta['plan'] ?? 'solo';
         $stripeCustomerId = is_string($session->customer ?? null)
             ? $session->customer
             : ($session->customer->id ?? null);
@@ -111,93 +106,56 @@ class ReconcileCheckoutSession extends Command
         }
 
         if (! $apply) {
-            $this->comment('DRY-RUN. Would create:');
+            $priceId = $subscription->items->data[0]->price->id ?? null;
+            $this->comment('DRY-RUN. Would provision via SignupProvisioner:');
             $this->line('  User       — name="' . $name . '" email="' . $email . '"');
             $this->line('  Workspace  — name="' . $workspaceName . '" plan="' . $plan . '" stripe_customer_id="' . $stripeCustomerId . '"');
             $this->line('  Member     — role=owner, accepted_at=now');
             if ($subscription) {
-                $priceId = $subscription->items->data[0]->price->id ?? null;
                 $this->line('  Subscription — stripe_id="' . $subscription->id . '" status="' . $subStatus . '" price="' . $priceId . '"');
             }
+            $this->line('  Welcome email — credential email queued on the pinned Resend transport.');
             $this->comment('Re-run with --apply to commit.');
             return self::SUCCESS;
         }
 
-        $tempPassword = Str::password(12, symbols: false);
+        // Provision via the SHARED idempotent service. sendWelcomeEmail=true:
+        // this is an out-of-band reconcile with no browser session, so the
+        // credential email IS the customer's way in (the old command generated
+        // a temp password but never emailed it — a real gap, now fixed).
+        $result = $provisioner->provisionFromSession($session, sendWelcomeEmail: true);
 
-        try {
-            [$user, $workspace] = DB::transaction(function () use ($email, $name, $workspaceName, $plan, $tempPassword, $session, $subscription, $stripeCustomerId) {
-                $user = User::create([
-                    'name' => $name,
-                    'email' => $email,
-                    'password' => Hash::make($tempPassword),
-                ]);
+        if ($result->status === SignupProvisionResult::ALREADY_PROVISIONED) {
+            $this->warn('Already provisioned (raced) — nothing to do.');
+            return self::SUCCESS;
+        }
 
-                $slug = Str::slug($workspaceName);
-                if (Workspace::where('slug', $slug)->exists()) {
-                    $slug = $slug . '-' . Str::lower(Str::random(6));
-                }
-
-                $trialEndsAt = ($subscription && ! empty($subscription->trial_end))
-                    ? Carbon::createFromTimestamp($subscription->trial_end)
-                    : now()->addDays(config("billing.plans.{$plan}.trial_days", 14));
-
-                $workspace = Workspace::create([
-                    'slug' => $slug,
-                    'name' => $workspaceName,
-                    'owner_id' => $user->id,
-                    'type' => $plan === 'solo' ? 'solo' : 'agency',
-                    'plan' => $plan,
-                    'subscription_status' => 'trialing',
-                    'trial_ends_at' => $trialEndsAt,
-                    'stripe_customer_id' => $stripeCustomerId,
-                ]);
-
-                WorkspaceMember::create([
-                    'workspace_id' => $workspace->id,
-                    'user_id' => $user->id,
-                    'role' => 'owner',
-                    'invited_at' => now(),
-                    'accepted_at' => now(),
-                ]);
-
-                $user->forceFill(['current_workspace_id' => $workspace->id])->save();
-
-                if ($subscription) {
-                    $priceId = $subscription->items->data[0]->price->id ?? null;
-                    $workspace->subscriptions()->create([
-                        'type' => 'default',
-                        'stripe_id' => $subscription->id,
-                        'stripe_status' => $subscription->status,
-                        'stripe_price' => $priceId,
-                        'quantity' => 1,
-                        'trial_ends_at' => $trialEndsAt,
-                        'ends_at' => null,
-                    ]);
-                }
-
-                return [$user, $workspace];
-            });
-        } catch (\Throwable $e) {
-            Log::error('billing:reconcile-session provisioning failed', [
-                'session_id' => $sessionId,
-                'email' => $email,
-                'error' => $e->getMessage(),
-            ]);
-            $this->error('Provisioning failed: ' . $e->getMessage());
+        if (! $result->wasProvisioned()) {
+            $this->error("Provisioning did not complete: {$result->status} ({$result->reason})");
             return self::FAILURE;
         }
 
         $this->newLine();
         $this->info('Reconciled.');
-        $this->line('  user id:       ' . $user->id);
-        $this->line('  workspace id:  ' . $workspace->id . ' (slug=' . $workspace->slug . ')');
+        $this->line('  user id:       ' . $result->user?->id);
+        $this->line('  workspace id:  ' . $result->workspace?->id . ' (slug=' . $result->workspace?->slug . ')');
         $this->newLine();
-        $this->warn('IMPORTANT: temp password was generated but NOT emailed (this is a one-shot reconcile, not the public flow).');
-        $this->warn('Use "Forgot password" at /agency/login to set a new password — or run:');
-        $this->line('  php artisan tinker --execute=' . "'\\App\\Models\\User::find({$user->id})->sendPasswordResetNotification(...)'");
-        $this->warn('OR just have the user reset via /agency/forgot-password.');
+        $this->info('A welcome email with login credentials was queued on the pinned Resend transport.');
+        $this->line('If it does not arrive, the customer can reset via /agency/password-reset/request.');
 
         return self::SUCCESS;
+    }
+
+    /** Normalise Stripe metadata (StripeObject or array) to a plain array. */
+    private function metadataOf(object $session): array
+    {
+        $raw = $session->metadata ?? null;
+        if (is_array($raw)) {
+            return $raw;
+        }
+        if (is_object($raw) && method_exists($raw, 'toArray')) {
+            return $raw->toArray();
+        }
+        return [];
     }
 }
