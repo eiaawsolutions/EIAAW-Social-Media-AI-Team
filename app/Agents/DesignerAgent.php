@@ -291,22 +291,20 @@ class DesignerAgent extends BaseAgent
             }
         }
 
-        // Re-host on Blotato (this workspace's account) unless explicitly skipped.
-        $finalUrl = $urlForBlotato;
+        // Persist a publish-ready media URL. Provider-aware (see rehostMedia):
+        //   metricool → store the public source URL as-is; MetricoolPublisher
+        //               re-hosts it via /actions/normalize at publish time using
+        //               the ONE shared agency token (no per-workspace key).
+        //   blotato   → re-host now through THIS workspace's Blotato account.
+        // skip_blotato_upload forces the raw URL through untouched (dev/testing).
         if (empty($input['skip_blotato_upload'])) {
-            try {
-                $blotato = BlotatoClient::forWorkspace($brand->workspace);
-                $finalUrl = $blotato->uploadMediaFromUrl($urlForBlotato);
-            } catch (\Throwable $e) {
-                Log::error('DesignerAgent: Blotato media upload failed', [
-                    'draft_id' => $draft->id,
-                    'workspace_id' => $brand->workspace_id,
-                    'fal_url' => $falUrl,
-                    'error' => $e->getMessage(),
-                ]);
-
-                return AgentResult::fail('Image generated but Blotato upload failed: '.substr($e->getMessage(), 0, 200));
+            $rehost = $this->rehostMedia($brand, $urlForBlotato, $draft->id);
+            if (! $rehost['ok']) {
+                return AgentResult::fail('Image generated but media re-host failed: '.substr($rehost['error'], 0, 200));
             }
+            $finalUrl = $rehost['url'];
+        } else {
+            $finalUrl = $urlForBlotato;
         }
 
         $draft->update([
@@ -357,37 +355,39 @@ class DesignerAgent extends BaseAgent
         /** @var BrandAsset $asset */
         $asset = $picked['asset'];
 
-        // Re-host through THIS WORKSPACE'S Blotato account so /v2/posts accepts
-        // it. The media URL returned by Blotato is scoped to the uploading
-        // account — if HQ uploads it, a customer's createPost() call gets 403
-        // because the account doesn't own that media. Always upload via the
-        // brand's workspace's key.
-        try {
-            $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
-                ->uploadMediaFromUrl($asset->public_url);
-        } catch (\Throwable $e) {
-            Log::warning('DesignerAgent: library asset Blotato upload failed', [
+        // Make the asset publish-ready. Provider-aware (see rehostMedia):
+        //   metricool → store the asset's public_url as-is; the publisher
+        //               normalises it at publish time with the shared token.
+        //   blotato   → re-host through THIS WORKSPACE'S Blotato account so
+        //               /v2/posts accepts it (the media URL Blotato returns is
+        //               scoped to the uploading account — HQ-uploaded media 403s
+        //               a customer's createPost; always upload via the brand's
+        //               own workspace key).
+        $rehost = $this->rehostMedia($brand, $asset->public_url, $draft->id);
+        if (! $rehost['ok']) {
+            Log::warning('DesignerAgent: library asset re-host failed', [
                 'asset_id' => $asset->id,
                 'workspace_id' => $brand->workspace_id,
                 'source' => $source,
-                'error' => $e->getMessage(),
+                'error' => $rehost['error'],
             ]);
 
             return null;
         }
+        $publishUrl = $rehost['url'];
 
         $draft->update([
-            'asset_url' => $blotatoUrl,
+            'asset_url' => $publishUrl,
             'asset_urls' => array_values(array_unique(array_merge(
                 is_array($draft->asset_urls) ? $draft->asset_urls : [],
-                [$blotatoUrl, $asset->public_url],
+                [$publishUrl, $asset->public_url],
             ))),
         ]);
         $asset->recordUse();
 
         return AgentResult::ok([
             'draft_id' => $draft->id,
-            'asset_url' => $blotatoUrl,
+            'asset_url' => $publishUrl,
             'library_asset_id' => $asset->id,
             'library_asset_label' => $asset->original_filename,
             'platform' => $draft->platform,
@@ -398,6 +398,57 @@ class DesignerAgent extends BaseAgent
             'source' => $source,
             'cost_usd' => 0.0,
         ]);
+    }
+
+    /**
+     * Make a source media URL publish-ready, the way the active publishing
+     * provider needs it. This is the seam that unbroke image generation after
+     * the Blotato→Metricool switch: the Designer used to ALWAYS re-host through
+     * per-workspace Blotato, which throws for any Metricool-onboarded workspace
+     * (those have no Blotato key) — leaving every draft image-less and failing
+     * Compliance's platform_publishability check.
+     *
+     *   metricool → no-op: return the public source URL unchanged. The image
+     *               stays at its public origin (fal.media or the brand asset's
+     *               public_url); MetricoolPublisher::submit() re-hosts it via
+     *               /actions/normalize/image/url at publish time using the ONE
+     *               shared agency token. The Publisher contract explicitly owns
+     *               provider-side media normalisation — the Designer must not
+     *               pre-empt it with a provider-specific re-host.
+     *   blotato   → re-host now through THIS workspace's Blotato account (the
+     *               legacy rollback path; Blotato rejects external mediaUrls and
+     *               scopes hosted media to the uploading account).
+     *
+     * Returns a uniform result so both call sites (FAL output + library asset)
+     * branch identically.
+     *
+     * @return array{ok:bool, url:string, error:string}
+     */
+    private function rehostMedia(Brand $brand, string $sourceUrl, int $draftId): array
+    {
+        $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+
+        if ($provider !== 'blotato') {
+            // Metricool (and any future publisher that normalises at submit):
+            // the public source URL is already what the publisher consumes.
+            return ['ok' => true, 'url' => $sourceUrl, 'error' => ''];
+        }
+
+        try {
+            $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
+                ->uploadMediaFromUrl($sourceUrl);
+
+            return ['ok' => true, 'url' => $blotatoUrl, 'error' => ''];
+        } catch (\Throwable $e) {
+            Log::error('DesignerAgent: Blotato media re-host failed', [
+                'draft_id' => $draftId,
+                'workspace_id' => $brand->workspace_id,
+                'source_url' => $sourceUrl,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['ok' => false, 'url' => '', 'error' => $e->getMessage()];
+        }
     }
 
     /**
