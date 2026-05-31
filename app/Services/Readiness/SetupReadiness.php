@@ -242,14 +242,33 @@ class SetupReadiness
             ? $active->map(fn ($c) => ucfirst($c->platform).' (@'.($c->display_handle ?: 'unknown').')')->implode(', ')
             : null;
 
-        // Workspace must have a verified Blotato account before any brand
-        // can connect platforms — the Sync action calls Blotato's API to
-        // pull in handles. Without a connected workspace key, connections
-        // either fail or silently leak HQ's handles (see
-        // [[blotato-per-workspace-isolation]]).
-        $blockedBy = (! $done && ! $brand->workspace?->hasBlotatoConnected())
-            ? 'blotato_account'
-            : null;
+        // The prerequisite for connecting platforms is provider-specific, and
+        // getting it wrong strands the customer on a blocker that can never
+        // clear. Mirror the same provider switch stage 0 uses.
+        //
+        //   metricool → the brand needs its own Metricool space (a
+        //               metricool_blog_id) before the connect-link exists and
+        //               /admin/profile can be read back. Blotato is OFF, so the
+        //               legacy hasBlotatoConnected() gate is always false here
+        //               and was wrongly stamping every Metricool brand
+        //               "Complete Blotato Account first" (the bug that hid a
+        //               brand whose socials were already live in Metricool).
+        //   blotato   → legacy rollback: the workspace must have a verified
+        //               Blotato account first — the Sync action calls Blotato's
+        //               API to pull handles; without a connected workspace key
+        //               connections fail or leak HQ's handles (see
+        //               [[blotato_per_workspace_isolation]]).
+        $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+
+        if ($provider === 'metricool') {
+            $blockedBy = (! $done && empty($brand->metricool_blog_id))
+                ? 'publishing_account'
+                : null;
+        } else {
+            $blockedBy = (! $done && ! $brand->workspace?->hasBlotatoConnected())
+                ? 'publishing_account'
+                : null;
+        }
 
         return new ReadinessStage(
             id: 'platform_connected',

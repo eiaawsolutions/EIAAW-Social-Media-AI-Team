@@ -4,6 +4,7 @@ namespace App\Services\Metricool;
 
 use App\Models\Brand;
 use App\Models\PlatformConnection;
+use App\Services\Readiness\SetupReadiness;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -170,6 +171,17 @@ class MetricoolConnectionService
             ->where('status', 'active')
             ->when($seen !== [], fn ($q) => $q->whereNotIn('platform', $seen))
             ->update(['status' => 'revoked']);
+
+        // Connection state just changed — bust the 30s readiness cache so the
+        // Setup Wizard's Stage 4 ("At least one platform connected") flips
+        // immediately on the same request that ran the sync, instead of lagging
+        // up to 30s behind. Every other state-changing surface (agents,
+        // BrandCorpusSeed, AutonomyLane, CustomisedPostScheduler) invalidates
+        // after a write; this is the connection seam all four sync callers
+        // (ManagePlatformConnections, MetricoolSetup, MetricoolOnboarding,
+        // BrandSetMetricoolBlog) funnel through, so invalidating here covers
+        // them all at once. See [[account_growth_dashboard]] sibling fix.
+        app(SetupReadiness::class)->invalidate($brand);
 
         return ['synced' => $synced, 'revoked' => $revoked, 'networks' => array_keys($result['networks'])];
     }
