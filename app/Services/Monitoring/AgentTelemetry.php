@@ -57,6 +57,20 @@ class AgentTelemetry
     private const FAIL_RATIO = 0.5;
 
     /**
+     * Window over which a 'failing' verdict is judged — deliberately SHORTER
+     * than LOOKBACK_HOURS. The 24h window still drives the visible history
+     * (runs_24h, last_success_at) so an operator can see the full day, but the
+     * red FAILING pill is computed only over failures in the last
+     * FAILING_WINDOW_HOURS. Without this split a burst that already recovered
+     * (e.g. a FAL balance lockout that was topped up) kept the agent red for a
+     * full 24h even though every run since had succeeded — the badge lied about
+     * the live state. Now a recovered burst ages out of 'failing' within hours
+     * and the agent drops back to healthy/active as soon as the recent window
+     * is clean.
+     */
+    private const FAILING_WINDOW_HOURS = 6;
+
+    /**
      * Substrings that mark a "failed" audit row as a BENIGN cap/policy refusal
      * rather than a real fault. When an agent returns AgentResult::fail() because
      * a plan budget/allowance was hit (DesignerAgent "Daily image budget reached",
@@ -71,10 +85,17 @@ class AgentTelemetry
      * Keep this list tight: only outcomes that are genuinely "the agent behaved
      * correctly" belong here. A provider running out of balance is NOT here — that
      * is a real operational event with its own top-up remedy (see nextActionFor).
+     *
+     * LEGACY (2026-06-01): the per-day USD FAL caps that emitted "Daily image/video
+     * budget reached" were REMOVED — no live agent path produces those strings
+     * anymore. The two needles are retained ONLY so historical audit rows written
+     * before the removal still classify as benign (dropping them would retro-flip a
+     * long-recovered agent to red). The live cap is now the monthly allowance
+     * ("ai-video allowance reached"). See [[no-daily-fal-cap]].
      */
     private const BENIGN_CAP_NEEDLES = [
-        'daily video budget reached',
-        'daily image budget reached',
+        'daily video budget reached',  // legacy — historical rows only (cap removed 2026-06-01)
+        'daily image budget reached',  // legacy — historical rows only (cap removed 2026-06-01)
         'ai-video allowance reached',
         'does not accept short-form video',
     ];
@@ -321,10 +342,22 @@ class AgentTelemetry
         $benignFailures = $allFailures->filter(fn (array $r) => $this->isBenignCapOrPolicy($r['error'] ?? null))->values();
         $realFailures = $allFailures->reject(fn (array $r) => $this->isBenignCapOrPolicy($r['error'] ?? null))->values();
 
-        $failedRuns = $realFailures->count();
+        // The 'failing' verdict is judged over the RECENT window only, not the
+        // whole 24h lookback — a burst that already recovered (e.g. a topped-up
+        // FAL lockout) must not hold the agent red all day. Both numerator and
+        // denominator are scoped to the same window so the ratio stays honest:
+        // recent real faults over recent non-benign runs.
+        $failWindowStart = $now->copy()->subHours(self::FAILING_WINDOW_HOURS);
+        $recent = $audit->filter(fn (array $r) => $r['occurred_at'] >= $failWindowStart)->values();
+        $recentBenign = $recent->where('outcome', 'failed')
+            ->filter(fn (array $r) => $this->isBenignCapOrPolicy($r['error'] ?? null))->values();
+        $recentReal = $recent->where('outcome', 'failed')
+            ->reject(fn (array $r) => $this->isBenignCapOrPolicy($r['error'] ?? null))->values();
+
+        $failedRuns = $recentReal->count();
         // Denominator excludes benign refusals so caps can't dilute or inflate the
         // ratio: a workspace that hits its cap 5× shouldn't read as 5/6 failing.
-        $ratioDenominator = $totalRuns - $benignFailures->count();
+        $ratioDenominator = $recent->count() - $recentBenign->count();
         $failRatio = $ratioDenominator > 0 ? $failedRuns / $ratioDenominator : 0.0;
 
         // For the surfaced reason: the most recent REAL fault drives 'failing';

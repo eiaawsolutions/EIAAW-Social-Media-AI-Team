@@ -165,6 +165,41 @@ class AgentTelemetryCapClassificationTest extends TestCase
         $this->assertStringNotContainsStringIgnoringCase('storage/logs/laravel.log', $action);
     }
 
+    // ── recovered-burst window (2026-06-01) ───────────────────────────────────
+
+    public function test_recovered_real_fault_burst_outside_failing_window_is_not_failing(): void
+    {
+        // The FAL-lockout shape: a heavy real-fault burst that ended >6h ago, with
+        // no runs since. It must NOT hold the agent red — the burst is outside the
+        // FAILING_WINDOW. buildRow() scopes the ratio to the recent window, so this
+        // drops to healthy (it had runs in the 24h lookback, none recent).
+        $audit = $this->audit([
+            ['failed', self::REAL_FAULT, 7 * 60],   // 7h ago
+            ['failed', self::REAL_FAULT, 7 * 60 + 1],
+            ['failed', self::REAL_FAULT, 7 * 60 + 2],
+            ['failed', self::REAL_FAULT, 7 * 60 + 3],
+            ['completed', null, 8 * 60],            // last success 8h ago
+        ]);
+
+        $status = $this->buildRowStatus($audit);
+        $this->assertNotSame('failing', $status, 'A burst that ended >6h ago must not read failing.');
+        $this->assertSame('healthy', $status);
+    }
+
+    public function test_real_fault_burst_inside_failing_window_still_reads_failing(): void
+    {
+        // The same burst, but RECENT (within the last 6h) — this is a live problem
+        // and must still go red.
+        $audit = $this->audit([
+            ['failed', self::REAL_FAULT, 5],
+            ['failed', self::REAL_FAULT, 6],
+            ['failed', self::REAL_FAULT, 7],
+            ['completed', null, 60],
+        ]);
+
+        $this->assertSame('failing', $this->buildRowStatus($audit));
+    }
+
     // ── reflection helpers ───────────────────────────────────────────────────
 
     /**
@@ -182,6 +217,28 @@ class AgentTelemetryCapClassificationTest extends TestCase
             'workspace_id' => 1,
             'brand_id' => 1,
         ]);
+    }
+
+    /**
+     * Drive the REAL buildRow() path (not the hand-rolled ratio in
+     * deriveFromAudit) so the FAILING_WINDOW scoping is exercised end-to-end.
+     * Returns the derived status string. Pipelines + horizon are empty so the
+     * status is driven purely by the audit window.
+     */
+    private function buildRowStatus(Collection $audit): string
+    {
+        $m = new ReflectionMethod(AgentTelemetry::class, 'buildRow');
+        $m->setAccessible(true);
+
+        $row = $m->invoke(
+            new AgentTelemetry(),
+            ['class' => 'App\\Agents\\VideoAgent', 'role' => 'video', 'label' => 'Video'],
+            $audit,
+            collect(),
+            ['available' => false, 'queues' => [], 'error' => null],
+        );
+
+        return (string) $row['status'];
     }
 
     private function deriveFromAudit(Collection $audit): string

@@ -52,8 +52,8 @@ use InvalidArgumentException;
  *
  * Cost: Veo 3 Fast base is $0.10/sec (audio off) / $0.15/sec (audio on);
  * each Veo 3.1 extend step is $0.20/sec / $0.40/sec. A 6s audio-on clip ≈
- * \$0.90; a 15s audio-on clip (8s base + 7s extend) ≈ \$4.00. Separate daily
- * cap (services.fal.video_daily_cap_usd).
+ * \$0.90; a 15s audio-on clip (8s base + 7s extend) ≈ \$4.00. Bound ONLY by the
+ * monthly video allowance (no per-day USD cap) — see [[no-daily-fal-cap]].
  *
  * Required input:
  *   - draft_id (int)
@@ -67,10 +67,6 @@ use InvalidArgumentException;
 class VideoAgent extends BaseAgent
 {
     protected array $requiredStages = ['brand_style'];
-
-    /** $5/workspace/day cap — ~5 Veo 3 Fast clips at 6s audio-on ($0.90 each).
-     *  Operator lifts via services.fal.video_daily_cap_usd (Infisical). */
-    private const DEFAULT_DAILY_CAP_USD = 5.00;
 
     /** Veo 3 Fast per-second pricing (FAL, 2026-05). Audio-on clips cost more
      *  because the model also generates the synced voice/ambience. Actual clip
@@ -220,26 +216,14 @@ class VideoAgent extends BaseAgent
             }
         }
 
-        // Cost circuit breaker — a USD backstop on top of the count caps, so a
-        // runaway-loop bug can't outspend the tier in a day even within the
-        // count limits. PER-TIER: read the workspace's fal_video_daily_cap_usd
-        // from PlanCaps (Solo $4 / Studio $12 / Agency $44), falling back to the
-        // global services.fal.* only for workspace-less / internal calls. Filter
-        // by provider so a future non-FAL video provider doesn't double-count.
-        $cap = $brand->workspace
-            ? (float) app(PlanCaps::class)->capsFor($brand->workspace)['fal_video_daily_cap_usd']
-            : (float) config('services.fal.video_daily_cap_usd', self::DEFAULT_DAILY_CAP_USD);
-        $spentToday = (float) AiCost::where('workspace_id', $brand->workspace_id)
-            ->where('agent_role', $this->role())
-            ->where('provider', 'fal')
-            ->whereDate('called_at', now()->toDateString())
-            ->sum('cost_usd');
-        if ($spentToday >= $cap) {
-            return AgentResult::fail(sprintf(
-                'Daily video budget reached: $%.2f / $%.2f on the %s plan. Resets at midnight UTC. Upgrade at /agency/billing for a higher daily ceiling.',
-                $spentToday, $cap, ucfirst((string) ($brand->workspace->plan ?? 'solo')),
-            ));
-        }
+        // NO daily USD breaker (removed 2026-06-01). Video generation is bound
+        // ONLY by the MONTHLY allowance (videoCapStatus gate above) — the
+        // customer self-paces within the month and may spend the whole video
+        // allowance in a single day. The previous per-tier $/day breaker acted as
+        // a hidden daily usage cap (Solo $4/day = exactly ONE 15s Veo clip vs a
+        // 5-clip monthly allowance) and stranded reels mid-month; see
+        // [[no-daily-fal-cap]]. Cost is still recorded to the AiCost ledger below
+        // for the HQ cost-monitor P&L and the monthly count.
 
         $aspect = $this->resolveAspectRatio($draft, $input);
         // TARGET length the operator/draft wants. Veo Fast caps a single call at

@@ -53,10 +53,9 @@ return [
         // AI providers
         'services.anthropic.api_key',
         'services.fal.api_key',
-        // Daily caps are configured via Infisical so an operator can
-        // raise them without a deploy. Numeric handles (cast in services.fal).
-        'services.fal.daily_cap_usd',
-        'services.fal.video_daily_cap_usd',
+        // (Removed 2026-06-01) No per-day USD FAL breaker — generation is bound
+        // only by the monthly volume caps in config/billing.php, so there are no
+        // daily_cap_usd handles to resolve. See [[no-daily-fal-cap]].
         'services.voyage.api_key',
 
         // Publishing

@@ -33,9 +33,15 @@ class PlanCaps
      *   max_ai_image_posts_per_month:int,
      *   max_published_posts_per_month:int,
      *   max_ai_videos_per_month:int,
-     *   fal_image_daily_cap_usd:float,
-     *   fal_video_daily_cap_usd:float,
      * }
+     *
+     * NOTE (2026-06-01): there is NO per-day USD FAL breaker here by design.
+     * Generation is bound ONLY by the monthly volume caps above — a customer may
+     * spend their whole monthly allowance in one day. The old
+     * fal_*_daily_cap_usd keys were removed because they acted as a hidden daily
+     * usage cap (Solo $4/day = one 15s Veo clip), not a runaway backstop. Do not
+     * reintroduce a daily/weekly throttle. Guarded by
+     * PlanCapsTest::test_no_daily_usd_fal_breaker_in_config_or_caps.
      */
     public function capsFor(Workspace $workspace): array
     {
@@ -53,15 +59,12 @@ class PlanCaps
         // instead of throwing on an undefined index.
         $solo = config('billing.plans.solo.caps', []);
         $val = static fn (string $k, $default) => (int) ($caps[$k] ?? $solo[$k] ?? $default);
-        $valF = static fn (string $k, $default) => (float) ($caps[$k] ?? $solo[$k] ?? $default);
 
         return [
             'max_brands' => $val('max_brands', 1),
             'max_ai_image_posts_per_month' => $val('max_ai_image_posts_per_month', 60),
             'max_published_posts_per_month' => $val('max_published_posts_per_month', 65),
             'max_ai_videos_per_month' => $val('max_ai_videos_per_month', 5),
-            'fal_image_daily_cap_usd' => $valF('fal_image_daily_cap_usd', 1.50),
-            'fal_video_daily_cap_usd' => $valF('fal_video_daily_cap_usd', 4.00),
         ];
     }
 

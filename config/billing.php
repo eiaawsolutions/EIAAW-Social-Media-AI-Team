@@ -50,12 +50,12 @@
  * (RM 94/282/1128 of video against RM 688/1688/6888 prices). Realistic blended
  * gross margin ~66-73%.
  *
- * Per-tier `fal_*_daily_cap_usd` are ACTUALLY enforced (DesignerAgent and
- * VideoAgent read them via PlanCaps; previously they read the global
- * services.fal.* and these per-tier numbers were dead config). This USD breaker
- * is a runaway-loop BACKSTOP, not a usage cap — it only trips on a generation
- * bug, never in normal monthly-paced use. The global services.fal.* values
- * remain the fallback for workspace-less / internal calls.
+ * There is intentionally NO per-day USD FAL breaker (removed 2026-06-01).
+ * Image/video generation is bound ONLY by the monthly volume caps below — the
+ * customer self-paces within the month and may spend the whole allowance in one
+ * day. The old per-tier `fal_*_daily_cap_usd` keys acted as a hidden daily usage
+ * cap (Solo $4/day = one 15s Veo clip) and were removed; do not reintroduce.
+ * See [[no-daily-fal-cap]].
  */
 return [
     'plans' => [
@@ -84,15 +84,13 @@ return [
                 // AI video generations (each a 15s Veo clip ≈ RM 18.80) —
                 // a single MONTHLY allowance; the customer self-paces within the
                 // month (no weekly/daily throttle). Hard fail past the month cap
-                // (no defer — video cost is at generation, not publish). The
-                // per-tier USD breaker below is a separate runaway-loop backstop,
-                // NOT a usage cap.
+                // (no defer — video cost is at generation, not publish).
+                // NOTE (2026-06-01): there is intentionally NO per-day USD FAL
+                // breaker — image/video are bound ONLY by these monthly volume
+                // caps. The old fal_*_daily_cap_usd keys were a hidden daily usage
+                // cap and were removed; do not reintroduce. See [[no-daily-fal-cap]]
+                // and PlanCapsTest::test_no_daily_usd_fal_breaker_in_config_or_caps.
                 'max_ai_videos_per_month' => 5,
-                // Per-tier daily FAL spend breakers (USD). ENFORCED via PlanCaps
-                // by DesignerAgent/VideoAgent (a hard backstop against a
-                // runaway-loop bug, independent of the count caps above).
-                'fal_image_daily_cap_usd' => 1.50,
-                'fal_video_daily_cap_usd' => 4.00,
             ],
         ],
         'studio' => [
@@ -107,8 +105,6 @@ return [
                 'max_ai_image_posts_per_month' => 180,
                 'max_published_posts_per_month' => 195, // 180 image + 15 video
                 'max_ai_videos_per_month' => 15,
-                'fal_image_daily_cap_usd' => 4.50,
-                'fal_video_daily_cap_usd' => 8.00,
             ],
         ],
         'agency' => [
@@ -123,8 +119,6 @@ return [
                 'max_ai_image_posts_per_month' => 720,
                 'max_published_posts_per_month' => 780, // 720 image + 60 video
                 'max_ai_videos_per_month' => 60,
-                'fal_image_daily_cap_usd' => 6.00,
-                'fal_video_daily_cap_usd' => 28.00,
             ],
         ],
         // EIAAW internal workspace — no caps, no billing, no Stripe.
@@ -141,8 +135,6 @@ return [
                 'max_ai_image_posts_per_month' => PHP_INT_MAX,
                 'max_published_posts_per_month' => PHP_INT_MAX,
                 'max_ai_videos_per_month' => PHP_INT_MAX,
-                'fal_image_daily_cap_usd' => 50.00,
-                'fal_video_daily_cap_usd' => 100.00,
             ],
         ],
     ],

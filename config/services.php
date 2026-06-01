@@ -82,18 +82,11 @@ return [
         'video_duration_seconds' => (int) env('FAL_VIDEO_DURATION_SECONDS', 15),
         'request_timeout' => (int) env('FAL_REQUEST_TIMEOUT', 180),
         'video_request_timeout' => (int) env('FAL_VIDEO_REQUEST_TIMEOUT', 360),
-        // Per-workspace daily caps. Video is 10x image so kept separate
-        // and operator can lift either independently via Infisical.
-        // 2026-05-05 raise: image $0.50 → $1.50, video $2.40 → $5.00.
-        // 2026-05-29 raise: video $5.00 → $15.00 — a 15s audio-on clip (8s
-        // base + 7s extend) costs ~$4, so $5 tripped on the first clip. $15 ≈
-        // 3-4 fifteen-second clips/workspace/day.
-        // The old caps tripped within hours of normal multi-brand use, leaving
-        // drafts stuck at compliance_failed because Designer kept refusing.
-        // The breaker query was also fixed to scope by agent_role+provider so
-        // Anthropic/Voice/embedding spend no longer eats the FAL budget.
-        'daily_cap_usd' => (float) env('FAL_DAILY_CAP_USD', 1.50),
-        'video_daily_cap_usd' => (float) env('FAL_VIDEO_DAILY_CAP_USD', 15.00),
+        // NO per-day USD FAL breaker (removed 2026-06-01). Image/video generation
+        // is bound ONLY by the monthly volume caps in config/billing.php — the
+        // customer self-paces within the month. The old daily_cap_usd /
+        // video_daily_cap_usd keys were a hidden daily usage cap and were removed;
+        // do not reintroduce. See [[no-daily-fal-cap]].
         // FAL TTS endpoint used for voiceovers. Kokoro-82M is the cheapest
         // FAL voice (~$0.001/1k chars, ~$0.01/clip), with PlayHT and
         // ElevenLabs-via-FAL as quality-upgrade flips. Word-level

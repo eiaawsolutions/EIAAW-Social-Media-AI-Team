@@ -256,16 +256,27 @@ class PlanCapsTest extends TestCase
         }
     }
 
-    public function test_per_tier_fal_video_breaker_widens_across_tiers(): void
+    public function test_no_daily_usd_fal_breaker_in_config_or_caps(): void
     {
-        // The breaker that DesignerAgent/VideoAgent now actually read.
+        // Decided 2026-06-01 (Amos): there is NO per-day USD FAL throttle — image
+        // and video generation are bound ONLY by the monthly volume caps; the
+        // customer may spend the whole monthly allowance in a single day. The
+        // earlier per-tier USD breakers ($1.50 image / $4 video on Solo) acted as
+        // a hidden daily usage cap (Solo $4 = exactly one 15s Veo clip), stranding
+        // reels at wizard Stage 7. Guard against BOTH the config keys and the
+        // PlanCaps return surface so a daily USD cap can't creep back in.
         $svc = new PlanCaps();
-        $solo = new Workspace(); $solo->plan = 'solo';
-        $studio = new Workspace(); $studio->plan = 'studio';
-        $agency = new Workspace(); $agency->plan = 'agency';
+        foreach (['solo', 'studio', 'agency', 'eiaaw_internal'] as $plan) {
+            $caps = config("billing.plans.{$plan}.caps");
+            $this->assertArrayNotHasKey('fal_image_daily_cap_usd', $caps, "{$plan} must not carry a daily image USD cap");
+            $this->assertArrayNotHasKey('fal_video_daily_cap_usd', $caps, "{$plan} must not carry a daily video USD cap");
 
-        $this->assertGreaterThan($svc->capsFor($solo)['fal_video_daily_cap_usd'], $svc->capsFor($studio)['fal_video_daily_cap_usd']);
-        $this->assertGreaterThan($svc->capsFor($studio)['fal_video_daily_cap_usd'], $svc->capsFor($agency)['fal_video_daily_cap_usd']);
+            $ws = new Workspace();
+            $ws->plan = $plan;
+            $resolved = $svc->capsFor($ws);
+            $this->assertArrayNotHasKey('fal_image_daily_cap_usd', $resolved, "PlanCaps must not expose a daily image USD cap ({$plan})");
+            $this->assertArrayNotHasKey('fal_video_daily_cap_usd', $resolved, "PlanCaps must not expose a daily video USD cap ({$plan})");
+        }
     }
 
     public function test_remaining_post_allowance_is_cap_minus_published(): void

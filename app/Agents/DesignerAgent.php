@@ -6,7 +6,6 @@ use App\Models\AiCost;
 use App\Models\Brand;
 use App\Models\BrandAsset;
 use App\Models\Draft;
-use App\Services\Billing\PlanCaps;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Branding\BrandImageStamper;
 use App\Services\Branding\PosterContentWriter;
@@ -50,12 +49,6 @@ use InvalidArgumentException;
 class DesignerAgent extends BaseAgent
 {
     protected array $requiredStages = ['brand_style'];
-
-    /** Default $1.50/workspace/day before circuit breaker trips. Overridable via config.
-     *  At ~$0.003/image (flux/schnell) this allows ~500 image generations per day,
-     *  comfortably above the ~35 base + 3x redraft headroom for a 5-brand workspace.
-     *  The previous $0.50 default tripped within hours of normal multi-brand use. */
-    private const DEFAULT_DAILY_CAP_USD = 1.50;
 
     /**
      * Per-image cost lookup keyed by FAL model id. Defaults to schnell
@@ -138,28 +131,13 @@ class DesignerAgent extends BaseAgent
             // Fall through to FAL if no usable library asset / Blotato re-host failed.
         }
 
-        // Cost circuit breaker — scope to FAL image spend ONLY. Pre-fix this
-        // summed every workspace AiCost row (Anthropic Writer, Voice scorer,
-        // embeddings, even Video) into the image cap, causing the breaker to
-        // trip after a normal day of LLM use even though no images had been
-        // generated. Filter by role + provider so the cap protects what it
-        // claims to protect. PER-TIER: read fal_image_daily_cap_usd from
-        // PlanCaps (Solo $1.50 / Studio $4.50 / Agency $6), falling back to the
-        // global services.fal.* only for workspace-less / internal calls.
-        $cap = $brand->workspace
-            ? (float) app(PlanCaps::class)->capsFor($brand->workspace)['fal_image_daily_cap_usd']
-            : (float) config('services.fal.daily_cap_usd', self::DEFAULT_DAILY_CAP_USD);
-        $spentToday = (float) AiCost::where('workspace_id', $brand->workspace_id)
-            ->where('agent_role', $this->role())
-            ->where('provider', 'fal')
-            ->whereDate('called_at', now()->toDateString())
-            ->sum('cost_usd');
-        if ($spentToday >= $cap) {
-            return AgentResult::fail(sprintf(
-                'Daily image budget reached: $%.2f / $%.2f on the %s plan. Resets at midnight UTC. Upgrade at /agency/billing for a higher daily ceiling.',
-                $spentToday, $cap, ucfirst((string) ($brand->workspace->plan ?? 'solo')),
-            ));
-        }
+        // NO daily USD breaker (removed 2026-06-01). Image generation is bound
+        // ONLY by the monthly volume cap (max_ai_image_posts_per_month, enforced
+        // at the publish gate via max_published_posts_per_month) — the customer
+        // self-paces within the month and may spend the whole allowance in a day.
+        // The previous per-tier $/day breaker acted as a hidden daily usage cap
+        // that stranded drafts mid-month; see [[no-daily-fal-cap]]. Cost is still
+        // recorded to the AiCost ledger below for the HQ cost-monitor P&L.
 
         // Build the FAL prompt from brand voice + entry visual direction.
         $prompt = (string) ($input['prompt_override'] ?? $this->buildPrompt($brand, $draft));
