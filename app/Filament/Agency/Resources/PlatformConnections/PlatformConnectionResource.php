@@ -3,6 +3,7 @@
 namespace App\Filament\Agency\Resources\PlatformConnections;
 
 use App\Filament\Agency\Resources\PlatformConnections\Pages\ManagePlatformConnections;
+use App\Models\Brand;
 use App\Models\PlatformConnection;
 use BackedEnum;
 use Filament\Resources\Resource;
@@ -79,6 +80,28 @@ class PlatformConnectionResource extends Resource
                     ->fontFamily('mono')
                     ->prefix('@')
                     ->placeholder('—'),
+                // HQ-only "whose account is this?" column. Customers only ever
+                // see their own single workspace's brands (getEloquentQuery
+                // scopes them), so the brand+workspace name is noise for them —
+                // but for a super admin the table stacks EVERY tenant's
+                // connections behind nothing but a cryptic numeric routing
+                // space, which is exactly the confusion this column resolves.
+                // Shows the brand name with the owning workspace as the
+                // description line. Searchable so HQ can jump to a tenant fast.
+                Tables\Columns\TextColumn::make('brand.name')
+                    ->label('Brand / Workspace')
+                    ->description(fn (PlatformConnection $r) => $r->brand?->workspace
+                        ? 'ws: ' . $r->brand->workspace->name
+                        : null)
+                    ->wrap()
+                    ->searchable(query: fn (Builder $query, string $search): Builder => $query->whereHas(
+                        'brand',
+                        fn (Builder $q) => $q
+                            ->where('name', 'like', "%{$search}%")
+                            ->orWhereHas('workspace', fn (Builder $w) => $w->where('name', 'like', "%{$search}%")),
+                    ))
+                    ->placeholder('—')
+                    ->visible(fn () => (bool) auth()->user()?->is_super_admin),
                 Tables\Columns\TextColumn::make('brand.metricool_blog_id')
                     ->label('Routing space')
                     ->fontFamily('mono')
@@ -131,6 +154,20 @@ class PlatformConnectionResource extends Resource
                     ->default(true)
                     ->visible(fn () => (bool) auth()->user()?->is_super_admin)
                     ->query(fn (Builder $query): Builder => $query->where('status', '!=', 'revoked')),
+
+                // HQ-only brand filter. Lets a super admin narrow the
+                // all-workspaces view to a single tenant's brand — pairs with
+                // the Brand/Workspace column above. Options are every
+                // non-archived brand that actually has connections, labelled
+                // "Brand (Workspace)" so two same-named brands across tenants
+                // stay distinguishable. Hidden for customers: their view is
+                // already scoped to one workspace, and they typically have a
+                // single brand, so a brand picker would be empty ceremony.
+                Tables\Filters\SelectFilter::make('brand_id')
+                    ->label('Brand')
+                    ->searchable()
+                    ->options(fn () => self::brandFilterOptions())
+                    ->visible(fn () => (bool) auth()->user()?->is_super_admin),
             ])
             ->recordActions([
                 \Filament\Actions\Action::make('targetOverrides')
@@ -191,7 +228,11 @@ class PlatformConnectionResource extends Resource
         $workspaceId = $user?->current_workspace_id
             ?? $user?->ownedWorkspaces()->value('id');
 
-        $query = parent::getEloquentQuery();
+        // Eager-load brand + its workspace: the Routing-space column reads
+        // brand.metricool_blog_id and (for super admins) the Brand/Workspace
+        // column reads brand.workspace.name. Without this, the all-workspaces
+        // HQ view N+1s one brand + one workspace query per row.
+        $query = parent::getEloquentQuery()->with('brand.workspace');
 
         // Tenant isolation: super admin bypasses workspace scoping (support);
         // anyone else without a resolvable workspace sees nothing (prevents
@@ -219,6 +260,31 @@ class PlatformConnectionResource extends Resource
         return [
             'index' => ManagePlatformConnections::route('/'),
         ];
+    }
+
+    /**
+     * Options for the super-admin "Brand" filter: every non-archived brand that
+     * actually owns at least one platform connection, labelled
+     * "Brand (Workspace)" so two same-named brands in different tenants stay
+     * distinguishable. Restricted to brands-with-connections so the picker
+     * isn't cluttered with brands that would filter the table to empty.
+     *
+     * @return array<int, string>
+     */
+    private static function brandFilterOptions(): array
+    {
+        return Brand::query()
+            ->whereNull('archived_at')
+            ->whereHas('platformConnections')
+            ->with('workspace')
+            ->orderBy('name')
+            ->get()
+            ->mapWithKeys(fn (Brand $b) => [
+                $b->id => $b->workspace
+                    ? sprintf('%s (%s)', $b->name, $b->workspace->name)
+                    : $b->name,
+            ])
+            ->all();
     }
 
     /**

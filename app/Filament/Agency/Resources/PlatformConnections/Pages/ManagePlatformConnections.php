@@ -41,6 +41,20 @@ class ManagePlatformConnections extends ManageRecords
 
     public function getSubheading(): ?string
     {
+        // Super admins (HQ) see EVERY workspace's connections here — the base
+        // query bypasses tenant scoping for support. The old "for your brand"
+        // copy was a lie in that context (it stacks all tenants' accounts
+        // behind one cryptic routing-space number). Be honest about the scope,
+        // and point them at the Brand/Workspace column + Brand filter that
+        // disambiguate it. "Refresh connections" still only re-reads ONE brand
+        // (the current workspace's), so call that out too.
+        if (auth()->user()?->is_super_admin) {
+            return 'HQ view — showing connected accounts across ALL workspaces. '
+                . 'Use the "Brand / Workspace" column and the Brand filter to find a specific tenant. '
+                . 'Note: "Refresh connections" re-reads only your own workspace\'s brand; '
+                . 'to refresh a customer, open their workspace.';
+        }
+
         if ($this->workspaceHasNoMappedBrand()) {
             return 'Your brand needs its secure space set up before social accounts can be connected. '
                 . 'Head to Platform setup to request it — our team sets it up, then sends you a secure connect-link.';

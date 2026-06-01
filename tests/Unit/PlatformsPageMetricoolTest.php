@@ -188,4 +188,121 @@ class PlatformsPageMetricoolTest extends TestCase
             'The column must still bind to the brand metricool_blog_id.'
         );
     }
+
+    /**
+     * HQ disambiguation: when a super admin views the page, the base query
+     * bypasses tenant scoping and stacks every workspace's connections behind a
+     * cryptic numeric routing space. To make that legible, the table must expose
+     * a "Brand / Workspace" column and a Brand filter, BOTH gated to super
+     * admins so the customer's single-workspace view is untouched.
+     */
+    public function test_super_admin_sees_a_brand_workspace_column_gated_to_them(): void
+    {
+        $src = $this->resourceSource();
+
+        $this->assertStringContainsString(
+            "->label('Brand / Workspace')",
+            $src,
+            'The super-admin view must carry a Brand/Workspace column so HQ can '
+            . 'tell whose accounts each row belongs to (the all-workspaces view '
+            . 'otherwise only shows a numeric routing space).'
+        );
+        // The column binds to the brand name and surfaces the workspace name.
+        $this->assertStringContainsString(
+            "make('brand.name')",
+            $src,
+            'The Brand/Workspace column must bind to the brand name.'
+        );
+        $this->assertStringContainsString(
+            'workspace->name',
+            $src,
+            'The Brand/Workspace column must surface the owning workspace name.'
+        );
+    }
+
+    public function test_brand_workspace_column_and_filter_are_super_admin_only(): void
+    {
+        $src = $this->resourceSource();
+
+        // The Brand/Workspace column's visible() closure and the Brand filter
+        // must both be gated on is_super_admin. We assert the gating literal is
+        // present for both the column and the filter by counting occurrences of
+        // the super-admin visibility guard — the file should have one for the
+        // revoked filter (pre-existing) plus one for the column plus one for the
+        // brand filter = at least three.
+        $guard = 'auth()->user()?->is_super_admin';
+        $this->assertGreaterThanOrEqual(
+            3,
+            substr_count($src, $guard),
+            'Both the Brand/Workspace column and the Brand filter must be gated to '
+            . 'super admins (alongside the pre-existing revoked filter), so the '
+            . 'customer view stays scoped and uncluttered.'
+        );
+    }
+
+    public function test_super_admin_has_a_brand_filter(): void
+    {
+        $src = $this->resourceSource();
+
+        $this->assertStringContainsString(
+            "SelectFilter::make('brand_id')",
+            $src,
+            'A Brand filter (on brand_id) must exist for super admins to narrow '
+            . 'the all-workspaces view to a single tenant.'
+        );
+        // Options must be derived from brands that actually have connections so
+        // the picker never filters the table to empty.
+        $this->assertStringContainsString(
+            'brandFilterOptions',
+            $src,
+            'The Brand filter options must come from the brandFilterOptions() '
+            . 'helper (brands-with-connections, labelled with their workspace).'
+        );
+    }
+
+    public function test_brand_and_workspace_are_eager_loaded_to_avoid_n_plus_one(): void
+    {
+        $src = $this->resourceSource();
+
+        // The Routing-space column and the Brand/Workspace column both read
+        // through brand (and its workspace). Without eager-loading, the
+        // all-workspaces HQ view N+1s a brand + workspace query per row.
+        $this->assertStringContainsString(
+            "->with('brand.workspace')",
+            $src,
+            'getEloquentQuery() must eager-load brand.workspace so the HQ view '
+            . 'does not N+1 one brand + one workspace query per connection row.'
+        );
+    }
+
+    /**
+     * The subheading must tell the truth per audience. A super admin is looking
+     * at EVERY workspace's connections, so the old "for your brand" copy was
+     * misleading in that context. The page must branch on is_super_admin and say
+     * so. The customer copy ("for your brand") must remain for non-super-admins.
+     */
+    public function test_subheading_is_honest_for_super_admins(): void
+    {
+        $src = $this->pageSource();
+
+        $this->assertStringContainsString(
+            'is_super_admin',
+            $src,
+            'getSubheading() must branch on is_super_admin so HQ gets an honest '
+            . '"all workspaces" message instead of the customer "for your brand" copy.'
+        );
+        $this->assertStringContainsStringIgnoringCase(
+            'all workspaces',
+            $src,
+            'The super-admin subheading must state that the view spans all '
+            . 'workspaces (HQ scope), not a single brand.'
+        );
+        // The customer-facing honest copy must survive for non-super-admins.
+        $this->assertStringContainsString(
+            'connected for your brand',
+            $src,
+            'The customer subheading ("connected for your brand") must remain for '
+            . 'non-super-admins — only HQ gets the all-workspaces variant.'
+        );
+    }
 }
