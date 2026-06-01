@@ -157,9 +157,16 @@ class MetricoolPublisherTest extends TestCase
                 return false;
             }
             $tt = $r['tiktokData'] ?? null;
+            // Field names per Metricool's Swagger ScheduledPostTikTokData:
+            // privacyOption + isAigc (the AI-disclosure field). The invalid
+            // brandContentToggle/brandOrganicToggle/aiGeneratedContent must NOT
+            // be sent (each triggers HTTP 400 "Unrecognized field").
             return is_array($tt)
                 && $tt['privacyOption'] === 'PUBLIC_TO_EVERYONE'
-                && $tt['aiGeneratedContent'] === true;
+                && ($tt['isAigc'] ?? null) === true
+                && ! array_key_exists('aiGeneratedContent', $tt)
+                && ! array_key_exists('brandContentToggle', $tt)
+                && ! array_key_exists('brandOrganicToggle', $tt);
         });
     }
 

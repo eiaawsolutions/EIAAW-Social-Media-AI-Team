@@ -192,23 +192,30 @@ class MetricoolPublisher implements Publisher
             : [];
 
         $block = match ($network) {
+            // TikTok field names verified against Metricool's Swagger spec
+            // (ScheduledPostTikTokData, 2026-06-01): the valid set is
+            // disableComment/Duet/Stitch, privacyOption, commercialContent*,
+            // title, autoAddMusic, photoCoverIndex, music, isAigc. The earlier
+            // brandContentToggle/brandOrganicToggle are NOT valid (HTTP 400
+            // "Unrecognized field") and the AI-disclosure field is `isAigc`,
+            // NOT aiGeneratedContent. isAigc=true keeps the truth-in-compliance
+            // AI disclosure intact.
             'tiktok' => ['tiktokData' => array_merge([
                 'privacyOption' => 'PUBLIC_TO_EVERYONE',
                 'disableComment' => false,
                 'disableDuet' => false,
                 'disableStitch' => false,
-                'brandContentToggle' => false,
-                'brandOrganicToggle' => false,
-                'aiGeneratedContent' => true, // truth in compliance — we generate with AI
+                'isAigc' => true, // truth in compliance — we generate with AI
             ], $this->renameKeys($ov, [
                 'privacyLevel' => 'privacyOption',
                 'disabledComments' => 'disableComment',
                 'disabledDuet' => 'disableDuet',
                 'disabledStitch' => 'disableStitch',
             ]))],
-            // YouTube: title + privacy are the verified-safe fields. The earlier
-            // notifySubscribers/madeForKids fields are NOT recognised by the
-            // scheduler (HTTP 400) — omitted until confirmed live.
+            // YouTube field names verified against the Swagger spec
+            // (ScheduledPostYoutubeData): title, type, privacy, tags, category,
+            // playlistId, madeForKids. notifySubscribers is NOT valid (the
+            // earlier HTTP 400). title + privacy are the safe minimum.
             'youtube' => ['youtubeData' => array_merge([
                 'title' => $this->youtubeTitle($caption),
                 'privacy' => 'public',
