@@ -169,6 +169,20 @@ class MetricoolPublisher implements Publisher
      * the connection's target_overrides plus safe defaults. Mirrors the intent
      * of BlotatoClient::defaultTargetFor but in Metricool's shape.
      *
+     * CRITICAL (the 2026-06-01 deserialization bug): Metricool's scheduler
+     * expects each `<network>Data` to be a JSON OBJECT. An empty PHP array
+     * `[]` serialises to JSON `[]` (a JSON array), which Metricool rejects with
+     * HTTP 400 "Cannot deserialize instance of …Data out of START_ARRAY". So
+     * we NEVER emit an empty block — a network with no options simply omits its
+     * `*Data` key entirely (exactly how instagram already behaves, which is why
+     * instagram posts were the only ones that survived). The trailing
+     * array_filter on the whole result enforces this for every branch.
+     *
+     * Likewise we send ONLY fields Metricool's scheduler recognises. Unverified
+     * fields (e.g. an earlier youtubeData.notifySubscribers/madeForKids guess)
+     * trigger HTTP 400 "Unrecognized field" and fail the whole post, so they are
+     * removed. Add a field back only after it is confirmed against the live API.
+     *
      * @return array<string,mixed>  e.g. ['tiktokData' => [...]] — merged into body
      */
     private function perNetworkData(string $network, ScheduledPost $post, string $caption): array
@@ -177,7 +191,7 @@ class MetricoolPublisher implements Publisher
             ? $post->platformConnection->target_overrides
             : [];
 
-        return match ($network) {
+        $block = match ($network) {
             'tiktok' => ['tiktokData' => array_merge([
                 'privacyOption' => 'PUBLIC_TO_EVERYONE',
                 'disableComment' => false,
@@ -192,16 +206,16 @@ class MetricoolPublisher implements Publisher
                 'disabledDuet' => 'disableDuet',
                 'disabledStitch' => 'disableStitch',
             ]))],
+            // YouTube: title + privacy are the verified-safe fields. The earlier
+            // notifySubscribers/madeForKids fields are NOT recognised by the
+            // scheduler (HTTP 400) — omitted until confirmed live.
             'youtube' => ['youtubeData' => array_merge([
                 'title' => $this->youtubeTitle($caption),
                 'privacy' => 'public',
-                'notifySubscribers' => true,
-                'madeForKids' => false,
-            ], $this->renameKeys($ov, [
-                'privacyStatus' => 'privacy',
-                'shouldNotifySubscribers' => 'notifySubscribers',
-                'isMadeForKids' => 'madeForKids',
-            ]))],
+            ], $this->renameKeys(
+                array_intersect_key($ov, array_flip(['privacyStatus'])),
+                ['privacyStatus' => 'privacy'],
+            ))],
             'pinterest' => ['pinterestData' => array_filter([
                 'boardId' => $ov['boardId'] ?? null,
             ], fn ($v) => $v !== null)],
@@ -218,6 +232,11 @@ class MetricoolPublisher implements Publisher
             ], fn ($v) => $v !== null)],
             default => [],
         };
+
+        // Drop any `*Data` block that is an empty array — sending `[]` (a JSON
+        // array) where Metricool expects an object is the START_ARRAY 400. An
+        // omitted key is correct; an empty block is not.
+        return array_filter($block, fn ($v) => ! (is_array($v) && $v === []));
     }
 
     private function youtubeTitle(string $text): string

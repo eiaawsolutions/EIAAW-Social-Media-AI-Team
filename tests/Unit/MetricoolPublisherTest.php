@@ -216,6 +216,70 @@ class MetricoolPublisherTest extends TestCase
             && ($r['text'] ?? null) === 'client caption');
     }
 
+    /**
+     * REGRESSION (the 2026-06-01 START_ARRAY deserialization 400): a network
+     * with no per-network overrides must OMIT its `*Data` key entirely. Sending
+     * an empty `linkedinData: []` serialises to a JSON array, which Metricool
+     * rejects with "Cannot deserialize …LinkedinData out of START_ARRAY".
+     */
+    public function test_submit_omits_empty_per_network_data_block(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['id' => 'sched-li'], 200),
+        ]);
+
+        // LinkedIn with no target overrides → linkedinData would be []; it must
+        // not be sent at all.
+        (new MetricoolPublisher($this->client()))->submit($this->makePost('linkedin'), 'li caption', []);
+
+        Http::assertSent(function ($r) {
+            if (! str_contains($r->url(), '/v2/scheduler/posts')) {
+                return false;
+            }
+            // The key must be absent — NOT present as an empty array.
+            return ! array_key_exists('linkedinData', (array) $r->data());
+        });
+    }
+
+    /**
+     * When a LinkedIn pageId override IS present, linkedinData is sent as a
+     * populated object (so Page targeting still works).
+     */
+    public function test_submit_sends_linkedin_data_when_page_id_override_present(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['id' => 'sched-li2'], 200),
+        ]);
+
+        (new MetricoolPublisher($this->client()))
+            ->submit($this->makePost('linkedin', ['pageId' => '12345']), 'li', []);
+
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/v2/scheduler/posts')
+            && ($r['linkedinData']['pageId'] ?? null) === '12345');
+    }
+
+    /**
+     * YouTube must send only the recognised fields (title + privacy) and NOT the
+     * unrecognised notifySubscribers/madeForKids that triggered HTTP 400
+     * "Unrecognized field".
+     */
+    public function test_submit_youtube_data_excludes_unrecognised_fields(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['id' => 'sched-yt'], 200),
+        ]);
+
+        (new MetricoolPublisher($this->client()))->submit($this->makePost('youtube'), 'My YouTube Title', []);
+
+        Http::assertSent(function ($r) {
+            $yt = $r['youtubeData'] ?? null;
+            return is_array($yt)
+                && isset($yt['title'], $yt['privacy'])
+                && ! array_key_exists('notifySubscribers', $yt)
+                && ! array_key_exists('madeForKids', $yt);
+        });
+    }
+
     public function test_submit_fails_when_brand_has_no_blog_id(): void
     {
         $post = $this->makePost('instagram');
