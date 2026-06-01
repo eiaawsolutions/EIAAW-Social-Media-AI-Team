@@ -41,16 +41,15 @@ class ManagePlatformConnections extends ManageRecords
 
     public function getSubheading(): ?string
     {
-        // Super admins (HQ) see EVERY workspace's connections here — the base
-        // query bypasses tenant scoping for support. The old "for your brand"
-        // copy was a lie in that context (it stacks all tenants' accounts
-        // behind one cryptic routing-space number). Be honest about the scope,
-        // and point them at the Brand/Workspace column + Brand filter that
-        // disambiguate it. "Refresh connections" still only re-reads ONE brand
-        // (the current workspace's), so call that out too.
+        // Super admins (HQ): the page DEFAULTS to your own workspace's brand
+        // (the Brand filter is pre-set to it), so you land on EIAAW's own
+        // platforms — not every tenant's. The base query still spans all
+        // workspaces for support, so changing/clearing the Brand filter lets you
+        // view a client or everyone. "Refresh connections" only re-reads your
+        // own workspace's brand, so call that out too.
         if (auth()->user()?->is_super_admin) {
-            return 'HQ view — showing connected accounts across ALL workspaces. '
-                . 'Use the "Brand / Workspace" column and the Brand filter to find a specific tenant. '
+            return 'HQ view — defaulting to your own workspace\'s platforms. '
+                . 'To view a client, pick their brand in the Brand filter; clear it to see all workspaces. '
                 . 'Note: "Refresh connections" re-reads only your own workspace\'s brand; '
                 . 'to refresh a customer, open their workspace.';
         }

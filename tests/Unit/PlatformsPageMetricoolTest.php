@@ -260,6 +260,72 @@ class PlatformsPageMetricoolTest extends TestCase
         );
     }
 
+    /**
+     * "Default to HQ-only, opt-in to clients": the Brand filter must DEFAULT to
+     * the super admin's own current-workspace brand(s), so HQ lands on EIAAW's
+     * own platforms rather than every tenant's. The default value comes from the
+     * currentWorkspaceBrandIds() helper; the filter is multiple-select so HQ can
+     * still widen to several tenants or clear it for the full support view.
+     */
+    public function test_brand_filter_defaults_to_current_workspace(): void
+    {
+        $src = $this->resourceSource();
+
+        $this->assertStringContainsString(
+            '->default(self::currentWorkspaceBrandIds())',
+            $src,
+            'The Brand filter must default to the super admin\'s own current-'
+            . 'workspace brand(s) so HQ lands on its OWN platforms by default.'
+        );
+        $this->assertStringContainsString(
+            'currentWorkspaceBrandIds',
+            $src,
+            'The currentWorkspaceBrandIds() helper must compute the HQ default.'
+        );
+        // Multiple-select so the default can be an array and HQ can widen/clear.
+        $this->assertStringContainsString(
+            '->multiple()',
+            $src,
+            'The Brand filter must be multiple-select so the workspace default '
+            . '(an array of brand ids) applies and HQ can view several tenants.'
+        );
+    }
+
+    /**
+     * The default scoping must NOT be baked into getEloquentQuery for super
+     * admins — the base query has to stay all-brands so the Brand filter can
+     * reach a client when picked. Scoping the base query would trap HQ in its
+     * own workspace with no way for the filter to widen (filters AND on top of
+     * the base query). This guards that the HQ-by-default is filter-driven, not
+     * base-query-driven.
+     */
+    public function test_super_admin_base_query_stays_all_brands_so_filter_can_reach_clients(): void
+    {
+        $src = $this->resourceSource();
+
+        // Isolate JUST the super-admin branch block: from the `if
+        // ($user?->is_super_admin) {` line up to its closing `}` (the next
+        // `if (! $workspaceId)` line). A whole-file regex would falsely match the
+        // customer branch below, which legitimately scopes by workspace_id.
+        $start = strpos($src, 'if ($user?->is_super_admin) {');
+        $this->assertNotFalse($start, 'super-admin branch must exist in getEloquentQuery.');
+        $end = strpos($src, 'if (! $workspaceId)', $start);
+        $this->assertNotFalse($end, 'customer-branch guard must follow the super-admin branch.');
+        $superAdminBranch = substr($src, $start, $end - $start);
+
+        // Within the super-admin branch ONLY, there must be no workspace_id
+        // constraint — if there were, the Brand filter could never opt in to a
+        // client (filters AND on top of the base query). HQ-by-default is
+        // achieved via the filter's default value, not by scoping the base query.
+        $this->assertStringNotContainsString(
+            'workspace_id',
+            $superAdminBranch,
+            'The super-admin base query must stay all-brands (no workspace_id '
+            . 'constraint) so the Brand filter can opt in to a client. HQ-by-'
+            . 'default is achieved via the filter default, not the base query.'
+        );
+    }
+
     public function test_brand_and_workspace_are_eager_loaded_to_avoid_n_plus_one(): void
     {
         $src = $this->resourceSource();
@@ -276,10 +342,11 @@ class PlatformsPageMetricoolTest extends TestCase
     }
 
     /**
-     * The subheading must tell the truth per audience. A super admin is looking
-     * at EVERY workspace's connections, so the old "for your brand" copy was
-     * misleading in that context. The page must branch on is_super_admin and say
-     * so. The customer copy ("for your brand") must remain for non-super-admins.
+     * The subheading must tell the truth per audience. A super admin now lands
+     * on their OWN workspace's platforms by default (the Brand filter is pre-set
+     * to it), with the ability to filter to a client. The page must branch on
+     * is_super_admin and explain that. The customer copy ("for your brand") must
+     * remain for non-super-admins.
      */
     public function test_subheading_is_honest_for_super_admins(): void
     {
@@ -288,21 +355,29 @@ class PlatformsPageMetricoolTest extends TestCase
         $this->assertStringContainsString(
             'is_super_admin',
             $src,
-            'getSubheading() must branch on is_super_admin so HQ gets an honest '
-            . '"all workspaces" message instead of the customer "for your brand" copy.'
+            'getSubheading() must branch on is_super_admin so HQ gets a scope-'
+            . 'accurate message instead of the customer "for your brand" copy.'
+        );
+        // HQ must be told the view defaults to their own workspace and that the
+        // Brand filter is how they reach a client.
+        $this->assertStringContainsStringIgnoringCase(
+            'your own workspace',
+            $src,
+            'The super-admin subheading must state the view DEFAULTS to their own '
+            . 'workspace\'s platforms (not every tenant\'s).'
         );
         $this->assertStringContainsStringIgnoringCase(
-            'all workspaces',
+            'Brand filter',
             $src,
-            'The super-admin subheading must state that the view spans all '
-            . 'workspaces (HQ scope), not a single brand.'
+            'The super-admin subheading must point HQ at the Brand filter as the '
+            . 'opt-in path to view a client.'
         );
         // The customer-facing honest copy must survive for non-super-admins.
         $this->assertStringContainsString(
             'connected for your brand',
             $src,
             'The customer subheading ("connected for your brand") must remain for '
-            . 'non-super-admins — only HQ gets the all-workspaces variant.'
+            . 'non-super-admins — only HQ gets the workspace-default variant.'
         );
     }
 }

@@ -155,18 +155,31 @@ class PlatformConnectionResource extends Resource
                     ->visible(fn () => (bool) auth()->user()?->is_super_admin)
                     ->query(fn (Builder $query): Builder => $query->where('status', '!=', 'revoked')),
 
-                // HQ-only brand filter. Lets a super admin narrow the
-                // all-workspaces view to a single tenant's brand — pairs with
-                // the Brand/Workspace column above. Options are every
-                // non-archived brand that actually has connections, labelled
-                // "Brand (Workspace)" so two same-named brands across tenants
-                // stay distinguishable. Hidden for customers: their view is
-                // already scoped to one workspace, and they typically have a
-                // single brand, so a brand picker would be empty ceremony.
+                // HQ brand filter — the "default to HQ-only, opt-in to clients"
+                // control. It DEFAULTS to the super admin's own current-workspace
+                // brand(s), so the page lands on EIAAW's own platforms rather
+                // than every tenant's. To view a client, pick their brand; to
+                // see everything, clear the filter. Multiple-select so HQ can
+                // view several tenants at once. Options are every non-archived
+                // brand with connections, labelled "Brand (Workspace)" so
+                // same-named brands across tenants stay distinguishable.
+                //
+                // Why this instead of scoping the base query: Filament filters
+                // apply additively (AND) on top of getEloquentQuery, so a
+                // workspace-scoped base query would make this filter UNABLE to
+                // reach a client's brand. Keeping the base query all-brands (for
+                // super admins) and defaulting the filter to HQ gives the
+                // HQ-by-default view while preserving cross-tenant support reach.
+                //
+                // Hidden for customers: their base query is already workspace-
+                // scoped and they typically have a single brand, so a picker
+                // would be empty ceremony.
                 Tables\Filters\SelectFilter::make('brand_id')
                     ->label('Brand')
+                    ->multiple()
                     ->searchable()
                     ->options(fn () => self::brandFilterOptions())
+                    ->default(self::currentWorkspaceBrandIds())
                     ->visible(fn () => (bool) auth()->user()?->is_super_admin),
             ])
             ->recordActions([
@@ -284,6 +297,40 @@ class PlatformConnectionResource extends Resource
                     ? sprintf('%s (%s)', $b->name, $b->workspace->name)
                     : $b->name,
             ])
+            ->all();
+    }
+
+    /**
+     * The brand IDs the super admin's CURRENT workspace owns (non-archived,
+     * with at least one connection). Used as the DEFAULT value of the Brand
+     * filter so HQ lands on its OWN platforms, not every tenant's — "default to
+     * HQ-only, opt-in to clients". Clearing or changing the filter widens the
+     * view (the base query stays all-brands for super admins so the filter can
+     * reach any tenant; see getEloquentQuery). Returns [] when the workspace has
+     * no connected brands yet, in which case the filter defaults to empty and
+     * the full HQ-support view shows — better than a blank table.
+     *
+     * @return array<int, int>
+     */
+    private static function currentWorkspaceBrandIds(): array
+    {
+        $user = auth()->user();
+        if (! $user?->is_super_admin) {
+            return [];
+        }
+
+        $workspaceId = $user->current_workspace_id
+            ?? $user->ownedWorkspaces()->value('id');
+        if (! $workspaceId) {
+            return [];
+        }
+
+        return Brand::query()
+            ->where('workspace_id', $workspaceId)
+            ->whereNull('archived_at')
+            ->whereHas('platformConnections')
+            ->orderBy('id')
+            ->pluck('id')
             ->all();
     }
 
