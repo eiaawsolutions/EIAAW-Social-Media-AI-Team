@@ -5,7 +5,10 @@ namespace App\Filament\Agency\Resources\ScheduledPosts;
 use App\Filament\Agency\Resources\ScheduledPosts\Pages\ManageScheduledPosts;
 use App\Models\ScheduledPost;
 use BackedEnum;
+use Filament\Actions\BulkAction;
+use Filament\Actions\BulkActionGroup;
 use Filament\Resources\Resource;
+use Illuminate\Support\Collection;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables;
@@ -374,6 +377,100 @@ class ScheduledPostResource extends Resource
                             ->send();
                     }),
             ])
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    // Bulk re-schedule the backlog of "already passed" posts.
+                    // Use case (2026-06-01): a brand accumulated 100+ failed/
+                    // cancelled posts dated weeks ago; the per-row Reschedule only
+                    // shows on `queued`, so there was no way to push them all to a
+                    // new date. Select Failed/Cancelled rows (Status filter), pick
+                    // a future time, and this revives the publishable ones.
+                    BulkAction::make('rescheduleBulk')
+                        ->label('Re-schedule selected')
+                        ->icon('heroicon-o-clock')
+                        ->color('gray')
+                        ->modalHeading('Re-schedule selected posts')
+                        ->modalDescription('Pushes the selected failed/cancelled posts to a new publish time and re-queues them. Posts whose content already published are skipped automatically so nothing double-posts. Times are read in each brand\'s timezone and stored as UTC.')
+                        ->modalSubmitActionLabel('Re-schedule')
+                        ->schema([
+                            \Filament\Forms\Components\DateTimePicker::make('scheduled_for')
+                                ->label('Publish at (brand timezone)')
+                                ->helperText('Selected posts are spaced a few minutes apart starting from this time, so a large batch does not all fire in the same minute. Read in each post\'s brand timezone; stored as UTC.')
+                                ->seconds(false)
+                                ->native(false)
+                                ->default(fn () => now()->addMinutes(10))
+                                ->minDate(fn () => now())
+                                ->required(),
+                        ])
+                        ->action(function (Collection $records, array $data): void {
+                            // The picker has no ->timezone() because one bulk
+                            // selection can span brands in different timezones.
+                            // We therefore treat the operator's input as a WALL
+                            // CLOCK string ("2026-06-02 17:44") and re-anchor it in
+                            // each record's own brand timezone before storing UTC —
+                            // so "5:44 PM" means 5:44 PM local to that brand.
+                            $wallClock = \Illuminate\Support\Carbon::parse($data['scheduled_for'])
+                                ->format('Y-m-d H:i:s');
+
+                            $rescheduled = 0;
+                            $skipped = 0;
+                            $skipReasons = [];
+                            $offset = 0;
+
+                            foreach ($records as $r) {
+                                $check = self::rescheduleEligibility($r);
+                                if (! $check['eligible']) {
+                                    $skipped++;
+                                    $skipReasons[$check['reason']] = ($skipReasons[$check['reason']] ?? 0) + 1;
+                                    continue;
+                                }
+
+                                $brandTz = $r->brand?->timezone ?: 'UTC';
+                                // Anchor the wall-clock in the brand tz, then stagger
+                                // so a 100-row batch doesn't all dispatch in a single
+                                // cron tick (rate-limit friendly), then store UTC.
+                                $when = \Illuminate\Support\Carbon::parse($wallClock, $brandTz)
+                                    ->addMinutes($offset)
+                                    ->utc();
+                                $offset += 3;
+
+                                $r->update([
+                                    'status' => 'queued',
+                                    'attempt_count' => 0,
+                                    'last_error' => null,
+                                    'blotato_post_id' => null,
+                                    'scheduled_for' => $when,
+                                ]);
+
+                                // Roll the draft back to 'scheduled' so the publisher
+                                // treats it as live (mirrors the per-row Re-evaluate).
+                                if ($r->draft && $r->draft->status !== 'published') {
+                                    $r->draft->update(['status' => 'scheduled']);
+                                }
+
+                                $rescheduled++;
+                            }
+
+                            $body = $rescheduled === 1
+                                ? '1 post re-queued.'
+                                : "{$rescheduled} posts re-queued.";
+                            if ($skipped > 0) {
+                                $body .= " {$skipped} skipped (";
+                                $body .= collect($skipReasons)
+                                    ->map(fn ($n, $reason) => "{$n}× {$reason}")
+                                    ->implode('; ');
+                                $body .= ').';
+                            }
+
+                            \Filament\Notifications\Notification::make()
+                                ->title($rescheduled > 0 ? 'Re-scheduled' : 'Nothing re-scheduled')
+                                ->body($body)
+                                ->color($rescheduled > 0 ? 'success' : 'warning')
+                                ->send();
+                        })
+                        ->deselectRecordsAfterCompletion(),
+                ]),
+            ])
             ->emptyStateHeading('Nothing scheduled')
             ->emptyStateDescription('Approve and schedule a draft on /agency/drafts to queue it for publishing.')
             ->emptyStateIcon(Heroicon::OutlinedCalendarDateRange);
@@ -409,6 +506,38 @@ class ScheduledPostResource extends Resource
         return [
             'index' => ManageScheduledPosts::route('/'),
         ];
+    }
+
+    /**
+     * Can this row be revived by the bulk "Re-schedule selected" action?
+     *
+     * Pure decision (no DB) so it's unit-testable on in-memory models. The bulk
+     * action calls this per record and only mutates the eligible ones, surfacing
+     * the skip reason for the rest.
+     *
+     * Safety gate (operator chose "skip already-published" on 2026-06-01): we
+     * only revive a row whose CONTENT has not gone live, otherwise re-queuing it
+     * would double-post on real accounts. So we require:
+     *   - the row itself is in a terminal-but-revivable state (failed/cancelled),
+     *     NOT in-flight (queued/submitting/submitted) and NOT published; and
+     *   - the underlying draft exists and is not 'published'.
+     */
+    public static function rescheduleEligibility(ScheduledPost $post): array
+    {
+        if (! in_array($post->status, ['failed', 'cancelled'], true)) {
+            return ['eligible' => false, 'reason' => 'not failed/cancelled (in-flight or already published — left untouched)'];
+        }
+
+        $draft = $post->draft;
+        if (! $draft) {
+            return ['eligible' => false, 'reason' => 'no underlying draft to publish'];
+        }
+
+        if ($draft->status === 'published') {
+            return ['eligible' => false, 'reason' => 'draft already published — re-scheduling would double-post'];
+        }
+
+        return ['eligible' => true, 'reason' => ''];
     }
 
     /**
