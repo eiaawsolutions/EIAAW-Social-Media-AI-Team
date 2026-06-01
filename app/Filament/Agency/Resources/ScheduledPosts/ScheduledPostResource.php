@@ -420,13 +420,23 @@ class ScheduledPostResource extends Resource
     {
         $now = \Carbon\Carbon::now();
 
+        // Name the live publisher rather than hardcoding "Blotato" — publishing
+        // moved to Metricool (PUBLISH_PROVIDER=metricool) and the old copy was
+        // misleading operators into thinking a removed provider was still in the
+        // loop. Falls back to a neutral phrase for any future provider.
+        $provider = match ((string) config('services.publishing.provider', 'metricool')) {
+            'metricool' => 'Metricool',
+            'blotato' => 'Blotato',
+            default => 'the publisher',
+        };
+
         return match ($post->status) {
             'queued' => $post->scheduled_for && $post->scheduled_for->isFuture()
                 ? 'AUTO: cron will dispatch at scheduled_for ('
                     . $post->scheduled_for->diffForHumans() . ')'
                 : 'AUTO: cron picks this up within 1 minute',
-            'submitting' => 'WAIT for Blotato to accept (auto)',
-            'submitted' => 'WAIT for Blotato status poll → published / failed',
+            'submitting' => 'WAIT for ' . $provider . ' to accept (auto)',
+            'submitted' => 'WAIT for ' . $provider . ' status poll → published / failed',
             'published' => 'DONE — view on Live feed',
             'failed' => $post->attempt_count < 3
                 ? 'AUTO: cron will retry in ~5 min (attempt ' . ($post->attempt_count + 1) . '/3)'
