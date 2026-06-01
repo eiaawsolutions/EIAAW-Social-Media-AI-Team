@@ -173,36 +173,31 @@ class VideoAgent extends BaseAgent
             if ($picked) {
                 /** @var \App\Models\BrandAsset $asset */
                 $asset = $picked['asset'];
-                // Upload through THIS WORKSPACE's Blotato — the returned URL
-                // is account-scoped and createPost() on another account 403s.
-                try {
-                    $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
-                        ->uploadMediaFromUrl($asset->public_url);
-                } catch (\Throwable $e) {
-                    Log::warning('VideoAgent: library asset Blotato upload failed; falling back to FAL', [
-                        'asset_id' => $asset->id,
-                        'workspace_id' => $brand->workspace_id,
-                        'error' => $e->getMessage(),
-                    ]);
-                    $blotatoUrl = null;
-                }
+                // Make the library clip publish-ready the way the active
+                // provider needs it (provider-aware): metricool → use the
+                // asset's public_url as-is (the publisher normalises at submit);
+                // blotato → re-host through THIS workspace's account (the URL is
+                // account-scoped; createPost() on another account 403s). A
+                // re-host failure degrades to FAL rather than shipping nothing.
+                $rehost = $this->rehostMedia($brand, $asset->public_url, $draft->id);
+                $assetUrl = $rehost['ok'] ? $rehost['url'] : null;
 
-                if ($blotatoUrl) {
+                if ($assetUrl) {
                     $newHistory = is_array($draft->asset_urls) ? $draft->asset_urls : [];
                     if ($draft->asset_url && ! in_array($draft->asset_url, $newHistory, true)) {
                         $newHistory[] = $draft->asset_url;
                     }
-                    $newHistory[] = $blotatoUrl;
+                    $newHistory[] = $assetUrl;
                     $newHistory[] = $asset->public_url;
                     $draft->update([
-                        'asset_url' => $blotatoUrl,
+                        'asset_url' => $assetUrl,
                         'asset_urls' => array_values(array_unique($newHistory)),
                     ]);
                     $asset->recordUse();
 
                     return AgentResult::ok([
                         'draft_id' => $draft->id,
-                        'asset_url' => $blotatoUrl,
+                        'asset_url' => $assetUrl,
                         'library_asset_id' => $asset->id,
                         'platform' => $draft->platform,
                         'cost_usd' => 0.0,
@@ -408,21 +403,20 @@ class VideoAgent extends BaseAgent
             }
         }
 
-        // Re-host on Blotato (this workspace's account) so it's publishable.
+        // Make the clip publish-ready the way the active provider needs it.
+        // Provider-aware (see rehostMedia) — this is the same seam that unbroke
+        // image generation after the Blotato→Metricool switch ([[designer-
+        // metricool-gap-resolved]]); VideoAgent had been MISSED and still
+        // unconditionally re-hosted through per-workspace Blotato, which throws
+        // for any Metricool-onboarded workspace (no Blotato key) and stranded
+        // every video draft as an image-less publish failure.
         $finalUrl = $urlForBlotato;
         if (empty($input['skip_blotato_upload'])) {
-            try {
-                $blotato = BlotatoClient::forWorkspace($brand->workspace);
-                $finalUrl = $blotato->uploadMediaFromUrl($urlForBlotato);
-            } catch (\Throwable $e) {
-                Log::error('VideoAgent: Blotato media upload failed', [
-                    'draft_id' => $draft->id,
-                    'workspace_id' => $brand->workspace_id,
-                    'fal_url' => $falUrl,
-                    'error' => $e->getMessage(),
-                ]);
-                return AgentResult::fail('Video generated but Blotato upload failed: ' . substr($e->getMessage(), 0, 240));
+            $rehost = $this->rehostMedia($brand, $urlForBlotato, $draft->id);
+            if (! $rehost['ok']) {
+                return AgentResult::fail('Video generated but media re-host failed: ' . substr($rehost['error'], 0, 240));
             }
+            $finalUrl = $rehost['url'];
         }
 
         // Move existing still into asset_urls history (so the user can
@@ -481,34 +475,30 @@ class VideoAgent extends BaseAgent
         /** @var \App\Models\BrandAsset $asset */
         $asset = $picked['asset'];
 
-        try {
-            $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
-                ->uploadMediaFromUrl($asset->public_url);
-        } catch (\Throwable $e) {
-            Log::warning('VideoAgent: library-fallback Blotato upload failed', [
-                'asset_id' => $asset->id,
-                'workspace_id' => $brand->workspace_id,
-                'error' => $e->getMessage(),
-            ]);
-
+        // Provider-aware (see rehostMedia): metricool → asset public_url as-is;
+        // blotato → re-host through this workspace's account. A failure returns
+        // null so the caller surfaces the real top-up remedy.
+        $rehost = $this->rehostMedia($brand, $asset->public_url, $draft->id);
+        if (! $rehost['ok']) {
             return null;
         }
+        $assetUrl = $rehost['url'];
 
         $newHistory = is_array($draft->asset_urls) ? $draft->asset_urls : [];
         if ($draft->asset_url && ! in_array($draft->asset_url, $newHistory, true)) {
             $newHistory[] = $draft->asset_url;
         }
-        $newHistory[] = $blotatoUrl;
+        $newHistory[] = $assetUrl;
         $newHistory[] = $asset->public_url;
         $draft->update([
-            'asset_url' => $blotatoUrl,
+            'asset_url' => $assetUrl,
             'asset_urls' => array_values(array_unique($newHistory)),
         ]);
         $asset->recordUse();
 
         return AgentResult::ok([
             'draft_id' => $draft->id,
-            'asset_url' => $blotatoUrl,
+            'asset_url' => $assetUrl,
             'library_asset_id' => $asset->id,
             'platform' => $draft->platform,
             'cost_usd' => 0.0,
@@ -518,6 +508,50 @@ class VideoAgent extends BaseAgent
             'source' => 'library-fallback',
             'cost_usd' => 0.0,
         ]);
+    }
+
+    /**
+     * Make a source media URL publish-ready, the way the active publishing
+     * provider needs it. Identical seam to DesignerAgent::rehostMedia — keep the
+     * two in lockstep.
+     *
+     *   metricool → no-op: return the public source URL unchanged. The clip
+     *               stays at its public origin (fal.media, the public storage
+     *               disk, or a brand asset's public_url); MetricoolPublisher
+     *               re-hosts it via /actions/normalize at publish time using the
+     *               ONE shared agency token. The Publisher owns provider-side
+     *               normalisation — the agent must not pre-empt it with a
+     *               per-workspace re-host (which throws when there is no Blotato
+     *               key, the bug this fixes).
+     *   blotato   → re-host now through THIS workspace's Blotato account (the
+     *               legacy rollback path; Blotato scopes hosted media to the
+     *               uploading account and rejects external mediaUrls).
+     *
+     * @return array{ok:bool, url:string, error:string}
+     */
+    private function rehostMedia(Brand $brand, string $sourceUrl, int $draftId): array
+    {
+        $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+
+        if ($provider !== 'blotato') {
+            return ['ok' => true, 'url' => $sourceUrl, 'error' => ''];
+        }
+
+        try {
+            $blotatoUrl = BlotatoClient::forWorkspace($brand->workspace)
+                ->uploadMediaFromUrl($sourceUrl);
+
+            return ['ok' => true, 'url' => $blotatoUrl, 'error' => ''];
+        } catch (\Throwable $e) {
+            Log::error('VideoAgent: Blotato media re-host failed', [
+                'draft_id' => $draftId,
+                'workspace_id' => $brand->workspace_id,
+                'source_url' => $sourceUrl,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['ok' => false, 'url' => '', 'error' => $e->getMessage()];
+        }
     }
 
     /**
