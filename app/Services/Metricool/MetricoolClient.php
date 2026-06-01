@@ -101,6 +101,27 @@ class MetricoolClient
             ->retry(2, 500, throw: false);
     }
 
+    /**
+     * Like client(), but WITHOUT the `Accept: application/json` header.
+     *
+     * The /actions/normalize/* endpoints respond with `text/plain` (the
+     * normalised URL as a bare string), NOT JSON. Demanding application/json
+     * makes Tomcat reject the request with HTTP 406 Not Acceptable — which was
+     * the root cause of every "Media normalize failed … (HTTP 406)" publish
+     * failure after the Blotato→Metricool switch. We send `Accept: * / *` so the
+     * server is free to return its native text/plain. Verified live 2026-06-01.
+     */
+    private function plainClient(): PendingRequest
+    {
+        return Http::withHeaders([
+                'X-Mc-Auth' => $this->apiToken,
+                'accept' => '*/*',
+            ])
+            ->baseUrl($this->baseUrl)
+            ->timeout($this->timeout)
+            ->retry(2, 500, throw: false);
+    }
+
     /** Query params Metricool requires on (nearly) every call. */
     private function baseQuery(?int $blogId = null): array
     {
@@ -331,20 +352,39 @@ class MetricoolClient
     /**
      * GET /actions/normalize/image/url — Metricool requires media URLs to be
      * normalised (re-hosted) before scheduling, exactly like Blotato's
-     * /v2/media. Returns the normalised reference (mediaId or hosted URL).
-     * Used by the publish probe's dry-run to prove the media path works.
+     * /v2/media. Returns the normalised reference (a hosted URL string).
      *
-     * @return array{found:bool, status:int, body:mixed}
+     * CONTRACT (verified live against prod 2026-06-01):
+     *   - This single endpoint normalises BOTH images AND videos. There is NO
+     *     separate /actions/normalize/video/url route (it 404s). The "image" in
+     *     the path is a misnomer — it is the universal media-normalise endpoint.
+     *   - The response is `text/plain` whose body IS the normalised URL. It is
+     *     NOT JSON: $response->json() returns null. So we read the raw body and
+     *     surface it as a string in `body`.
+     *   - Sending `Accept: application/json` makes the server return HTTP 406
+     *     Not Acceptable (content negotiation) — that was the publish-killer
+     *     bug. We use plainClient() (Accept: * / *) here.
+     *
+     * @return array{found:bool, status:int, body:string|null}
      */
     public function normalizeMedia(string $url): array
     {
         $query = array_merge($this->baseQuery(), ['url' => $url]);
-        $response = $this->client()->get('/actions/normalize/image/url', $query);
+        $response = $this->plainClient()->get('/actions/normalize/image/url', $query);
 
         if (! $response->successful()) {
-            return ['found' => false, 'status' => $response->status(), 'body' => $response->json()];
+            return ['found' => false, 'status' => $response->status(), 'body' => null];
         }
-        return ['found' => true, 'status' => $response->status(), 'body' => $response->json()];
+
+        // text/plain body = the normalised URL. Trim stray whitespace/newlines.
+        $normalised = trim((string) $response->body());
+        if ($normalised === '') {
+            // 2xx but empty body — treat as a failure rather than publish with
+            // no media (the Truthfulness/no-half-posts contract).
+            return ['found' => false, 'status' => $response->status(), 'body' => null];
+        }
+
+        return ['found' => true, 'status' => $response->status(), 'body' => $normalised];
     }
 
     /**

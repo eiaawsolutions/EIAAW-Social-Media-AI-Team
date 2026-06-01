@@ -64,8 +64,12 @@ class MetricoolPublisherTest extends TestCase
 
     public function test_submit_targets_brand_blog_id_and_returns_submitted(): void
     {
+        // The /actions/normalize/* endpoint returns text/plain (the normalised
+        // URL as a bare string), NOT JSON — see MetricoolClient::normalizeMedia.
         Http::fake([
-            'app.metricool.com/api/actions/normalize/*' => Http::response(['mediaId' => 'mc-media-1'], 200),
+            'app.metricool.com/api/actions/normalize/*' => Http::response(
+                'https://media.metricool.com/img.jpg', 200, ['Content-Type' => 'text/plain']
+            ),
             'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['id' => 'sched-700'], 200),
         ]);
 
@@ -79,7 +83,7 @@ class MetricoolPublisherTest extends TestCase
         $this->assertSame('sched-700', $result->providerPostId);
 
         // The scheduler call must be scoped to blogId 6322515 and carry the
-        // normalised media + provider object.
+        // normalised media URL (the plain-text body) + provider object.
         Http::assertSent(function ($r) {
             if (! str_contains($r->url(), '/v2/scheduler/posts')) {
                 return false;
@@ -88,8 +92,55 @@ class MetricoolPublisherTest extends TestCase
                 && $r['text'] === 'caption text #tag'
                 && $r['autoPublish'] === true
                 && $r['providers'][0]['network'] === 'instagram'
-                && $r['media'] === ['mc-media-1'];
+                && $r['media'] === ['https://media.metricool.com/img.jpg'];
         });
+    }
+
+    /**
+     * REGRESSION (root cause of the 2026-06-01 "Media normalize failed … HTTP
+     * 406" outage): the normalize endpoint serves text/plain, so the client must
+     * NOT demand `Accept: application/json` — that makes Tomcat reject with 406.
+     * This locks the request to send a non-JSON Accept header.
+     */
+    public function test_normalize_request_does_not_demand_json_accept(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/actions/normalize/*' => Http::response(
+                'https://media.metricool.com/ok.jpg', 200, ['Content-Type' => 'text/plain']
+            ),
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['id' => 'sched-acc'], 200),
+        ]);
+
+        (new MetricoolPublisher($this->client()))
+            ->submit($this->makePost('instagram'), 'cap', ['https://r2.example/img.jpg']);
+
+        Http::assertSent(function ($r) {
+            if (! str_contains($r->url(), '/actions/normalize/')) {
+                return false;
+            }
+            // The Accept header must permit text/plain (i.e. it is NOT pinned to
+            // application/json). `*\/*` satisfies the live server.
+            $accept = strtolower(implode(',', $r->header('Accept')));
+            return $accept !== 'application/json' && ($accept === '' || str_contains($accept, '*/*'));
+        });
+    }
+
+    /**
+     * A 2xx response with an empty body is NOT a usable normalised URL — the
+     * publisher must hard-fail rather than schedule a media-less post (no
+     * half-posts contract).
+     */
+    public function test_submit_fails_when_normalize_returns_empty_body(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/actions/normalize/*' => Http::response('', 200, ['Content-Type' => 'text/plain']),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))
+            ->submit($this->makePost('instagram'), 'cap', ['https://r2.example/img.jpg']);
+
+        $this->assertSame('failed', $result->state);
+        $this->assertStringContainsString('normalize', (string) $result->error);
     }
 
     public function test_submit_builds_tiktok_data_with_ai_flag_and_privacy(): void
