@@ -30,15 +30,20 @@ class MetricoolPublisherTest extends TestCase
         );
     }
 
-    private function makePost(string $platform, array $targetOverrides = []): ScheduledPost
-    {
+    private function makePost(
+        string $platform,
+        array $targetOverrides = [],
+        string $blogId = '6322515',
+        int $brandId = 10,
+        int $workspaceId = 1,
+    ): ScheduledPost {
         $ws = new Workspace();
-        $ws->id = 1;
+        $ws->id = $workspaceId;
         $ws->settings = ['timezone' => 'Asia/Kuala_Lumpur'];
 
         $brand = new Brand();
-        $brand->id = 10;
-        $brand->metricool_blog_id = '6322515';
+        $brand->id = $brandId;
+        $brand->metricool_blog_id = $blogId;
         $brand->setRelation('workspace', $ws);
 
         $draft = new Draft();
@@ -49,7 +54,7 @@ class MetricoolPublisherTest extends TestCase
 
         $post = new ScheduledPost();
         $post->id = 700;
-        $post->brand_id = 10;
+        $post->brand_id = $brandId;
         $post->setRelation('brand', $brand);
         $post->setRelation('draft', $draft);
         $post->setRelation('platformConnection', $conn);
@@ -122,6 +127,42 @@ class MetricoolPublisherTest extends TestCase
             $tt = $r['tiktokData'] ?? [];
             return ($tt['privacyOption'] ?? null) === 'SELF_ONLY';
         });
+    }
+
+    /**
+     * Tenant isolation at the publish boundary: the SAME publisher, given posts
+     * from two different brands/workspaces, routes each to its OWN brand's
+     * blogId. This is the load-bearing guarantee behind "HQ posts only land on
+     * HQ platforms; a client's posts only land on theirs" — MetricoolPublisher
+     * derives the target purely from $post->brand->metricool_blog_id, so a post
+     * can only ever reach its own brand's connected account.
+     */
+    public function test_submit_routes_each_brand_to_its_own_blog_id(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['id' => 'sched-x'], 200),
+        ]);
+
+        $publisher = new MetricoolPublisher($this->client());
+
+        // HQ post (brand 10 / ws 1 / blogId 6322515)
+        $publisher->submit($this->makePost('instagram', blogId: '6322515', brandId: 10, workspaceId: 1), 'hq caption', []);
+        // Client post (brand 88 / ws 3 / blogId 6325160)
+        $publisher->submit($this->makePost('instagram', blogId: '6325160', brandId: 88, workspaceId: 3), 'client caption', []);
+
+        // The HQ caption must ONLY ever have gone to the HQ blogId, and the
+        // client caption ONLY to the client blogId. No crossing.
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/v2/scheduler/posts')
+            && str_contains($r->url(), 'blogId=6322515')
+            && $r['text'] === 'hq caption');
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/v2/scheduler/posts')
+            && str_contains($r->url(), 'blogId=6325160')
+            && $r['text'] === 'client caption');
+        // The cross combinations must NEVER have been sent.
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'blogId=6325160')
+            && ($r['text'] ?? null) === 'hq caption');
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'blogId=6322515')
+            && ($r['text'] ?? null) === 'client caption');
     }
 
     public function test_submit_fails_when_brand_has_no_blog_id(): void
