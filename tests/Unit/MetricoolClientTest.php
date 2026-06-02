@@ -65,6 +65,48 @@ class MetricoolClientTest extends TestCase
         $this->assertNull(MetricoolClient::fromConfig());
     }
 
+    /**
+     * Self-heal guard: a leftover secret:// handle with the resolver DISABLED
+     * must NOT attempt resolution (no Infisical call in local/test) and still
+     * read as "not configured" — protects the existing no-op-when-unprovisioned
+     * behaviour after the 2026-06-02 flap fix.
+     */
+    public function test_from_config_does_not_self_heal_when_resolver_disabled(): void
+    {
+        config()->set('secrets.infisical.enabled', false);
+        config()->set('services.metricool.api_token', 'secret://eiaaw-all-projects/prod/METRICOOL_API_TOKEN');
+        config()->set('services.metricool.user_id', 4242);
+
+        $this->assertNull(MetricoolClient::fromConfig());
+    }
+
+    public function test_get_scheduled_posts_sends_blog_id_and_window_and_parses_rows(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response([
+                'data' => [
+                    ['id' => '332536114', 'providers' => [['network' => 'facebook', 'status' => 'PUBLISHED']]],
+                    ['id' => '332536115', 'providers' => [['network' => 'instagram', 'status' => 'PENDING']]],
+                ],
+            ], 200),
+        ]);
+
+        $res = $this->client()->getScheduledPosts(6322515, '2026-06-01T00:00:00', '2026-06-03T23:59:59');
+
+        $this->assertTrue($res['found']);
+        $this->assertCount(2, $res['rows']);
+        $this->assertSame('332536114', $res['rows'][0]['id']);
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/v2/scheduler/posts')
+                && $request->hasHeader('X-Mc-Auth', 'mc_test_token')
+                && str_contains($request->url(), 'blogId=6322515')
+                // scheduler endpoint uses start/end (NOT from/to)
+                && str_contains($request->url(), 'start=')
+                && str_contains($request->url(), 'end=');
+        });
+    }
+
     public function test_list_brands_sends_user_id_and_auth_header(): void
     {
         Http::fake([

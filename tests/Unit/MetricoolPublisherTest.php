@@ -337,4 +337,149 @@ class MetricoolPublisherTest extends TestCase
         $this->assertSame('failed', $result->state);
         $this->assertStringContainsString('normalize', (string) $result->error);
     }
+
+    // ─── poll(): the submitted→published bridge via /v2/scheduler/posts ──────
+    //
+    // Root cause of the 46 stuck-`submitted` rows (2026-06-02): poll() matched
+    // our post in the ANALYTICS list, but a fresh post isn't there yet and the
+    // scheduler id is a different namespace than the analytics postId. The
+    // authoritative source is the SCHEDULER list, whose row.id == our stored
+    // provider id and whose providers[].status/publicUrl give live delivery
+    // state. Fixtures are the REAL shape captured from prod (2026-06-02).
+
+    /** Set the stored provider/scheduler id the poll matches on. */
+    private function submittedPost(string $platform, string $schedulerId): ScheduledPost
+    {
+        $post = $this->makePost($platform);
+        $post->status = 'submitted';
+        $post->blotato_post_id = $schedulerId; // generic provider id column
+        $post->platform_post_url = null;       // fresh post — no URL captured yet
+        return $post;
+    }
+
+    public function test_poll_flips_to_published_when_scheduler_reports_published(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['data' => [[
+                'id' => '332536114',
+                'text' => 'What makes an AI company actually different',
+                'providers' => [[
+                    'network' => 'facebook',
+                    'id' => '122100975111347164',
+                    'status' => 'PUBLISHED',
+                    'publicUrl' => 'https://facebook.com/122099042661347164/posts/122100975111347164',
+                ]],
+            ]]], 200),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))->poll(
+            $this->submittedPost('facebook', '332536114')
+        );
+
+        $this->assertSame('published', $result->state);
+        $this->assertSame('https://facebook.com/122099042661347164/posts/122100975111347164', $result->platformPostUrl);
+        $this->assertSame('122100975111347164', $result->platformPostId);
+    }
+
+    public function test_poll_uses_publicurl_when_provider_id_is_the_url(): void
+    {
+        // Instagram rows carry the publicUrl in BOTH `id` and `publicUrl`.
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['data' => [[
+                'id' => '332119548',
+                'providers' => [[
+                    'network' => 'instagram',
+                    'id' => 'https://www.instagram.com/p/DZChA00CBS-/',
+                    'status' => 'PUBLISHED',
+                    'publicUrl' => 'https://www.instagram.com/p/DZChA00CBS-/',
+                ]],
+            ]]], 200),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))->poll(
+            $this->submittedPost('instagram', '332119548')
+        );
+
+        $this->assertSame('published', $result->state);
+        $this->assertSame('https://www.instagram.com/p/DZChA00CBS-/', $result->platformPostUrl);
+    }
+
+    public function test_poll_marks_failed_when_scheduler_reports_error(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['data' => [[
+                'id' => '332536999',
+                'providers' => [[
+                    'network' => 'facebook',
+                    'status' => 'ERROR',
+                    'detail' => 'Page token expired',
+                ]],
+            ]]], 200),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))->poll(
+            $this->submittedPost('facebook', '332536999')
+        );
+
+        $this->assertSame('failed', $result->state);
+        $this->assertStringContainsString('ERROR', strtoupper((string) $result->error));
+    }
+
+    public function test_poll_stays_pending_when_not_yet_delivered(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['data' => [[
+                'id' => '332536114',
+                'providers' => [[
+                    'network' => 'facebook',
+                    'status' => 'PENDING',
+                ]],
+            ]]], 200),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))->poll(
+            $this->submittedPost('facebook', '332536114')
+        );
+
+        $this->assertSame('pending', $result->state);
+    }
+
+    public function test_poll_stays_pending_when_our_row_is_absent_from_scheduler(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['data' => [[
+                'id' => '999999999',
+                'providers' => [['network' => 'facebook', 'status' => 'PUBLISHED', 'publicUrl' => 'https://facebook.com/x/posts/1']],
+            ]]], 200),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))->poll(
+            $this->submittedPost('facebook', '332536114')
+        );
+
+        $this->assertSame('pending', $result->state);
+    }
+
+    public function test_poll_reads_only_the_provider_for_our_network(): void
+    {
+        // Same scheduler row, two providers: ours (linkedin) PUBLISHED, an
+        // unrelated facebook provider ERROR. We must read linkedin only.
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['data' => [[
+                'id' => '332534167',
+                'providers' => [
+                    ['network' => 'facebook', 'status' => 'ERROR', 'detail' => 'unrelated'],
+                    ['network' => 'linkedin', 'status' => 'PUBLISHED',
+                     'publicUrl' => 'https://www.linkedin.com/feed/update/urn:li:ugcPost:7467171310805176320'],
+                ],
+            ]]], 200),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))->poll(
+            $this->submittedPost('linkedin', '332534167')
+        );
+
+        $this->assertSame('published', $result->state);
+        $this->assertStringContainsString('urn:li:ugcPost:7467171310805176320', (string) $result->platformPostUrl);
+    }
 }

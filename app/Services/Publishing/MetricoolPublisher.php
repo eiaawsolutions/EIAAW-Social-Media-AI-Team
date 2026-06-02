@@ -98,19 +98,100 @@ class MetricoolPublisher implements Publisher
         return PublishResult::submitted($providerId, is_array($res['response'] ?? null) ? $res['response'] : null);
     }
 
+    /**
+     * Flip a submitted post to published/failed/pending by reading Metricool's
+     * AUTHORITATIVE scheduler-status list (GET /v2/scheduler/posts).
+     *
+     * Why the scheduler list, not the analytics list (the 2026-06-02 fix): a
+     * just-submitted post does NOT appear in /v2/analytics/posts for hours (that
+     * list only carries posts the platform has begun reporting engagement on),
+     * and its scheduler id is a different namespace than the analytics postId —
+     * so the old analytics-list match could NEVER bridge a fresh post, stranding
+     * 46 rows in `submitted` even though 43 were already PUBLISHED on-platform.
+     * The scheduler list keys on row.id == our stored provider id and exposes
+     * providers[].status + publicUrl the instant delivery resolves.
+     *
+     * Status mapping (statuses observed live + Metricool's set):
+     *   PUBLISHED                    → verify publicUrl/id, then published
+     *   ERROR / FAILED               → failed (carry the detail)
+     *   PENDING/SCHEDULED/PUBLISHING → pending (poll again next tick)
+     *
+     * Falls back to the analytics list only when the scheduler row has aged out
+     * of the window (covers historical rows past the lookback).
+     */
     public function poll(ScheduledPost $post): PublishResult
     {
         $blogId = $post->brand?->metricool_blog_id;
         $network = $this->networkFor((string) ($post->draft?->platform ?? ''));
+        $schedulerId = (string) ($post->blotato_post_id ?? '');
         if (! $blogId || $network === null) {
             return PublishResult::pending();
         }
 
-        // Metricool exposes the live post (with its platform URL) via the same
-        // analytics/posts list the metrics collector uses. We match by the
-        // captured platform_post_url when we have one; otherwise we cannot yet
-        // verify and stay pending.
+        $platform = (string) ($post->draft?->platform ?? '');
+
+        // 1) AUTHORITATIVE: the scheduler queue. Window covers a few days each
+        //    side of now so a post scheduled slightly ahead is still found.
+        if ($schedulerId !== '' && $schedulerId !== 'pending') {
+            try {
+                $sched = $this->client->getScheduledPosts(
+                    blogId: (int) $blogId,
+                    start: Carbon::now()->subDays(14)->startOfDay()->format('Y-m-d\TH:i:s'),
+                    end: Carbon::now()->addDays(2)->endOfDay()->format('Y-m-d\TH:i:s'),
+                );
+            } catch (\Throwable $e) {
+                Log::warning('MetricoolPublisher: scheduler poll failed (will retry)', [
+                    'post_id' => $post->id,
+                    'error' => $e->getMessage(),
+                ]);
+                $sched = ['found' => false, 'rows' => []];
+            }
+
+            if ($sched['found'] ?? false) {
+                $provider = $this->providerStatusFor($sched['rows'], $schedulerId, $network);
+                if ($provider !== null) {
+                    $status = strtoupper((string) ($provider['status'] ?? ''));
+
+                    if (in_array($status, ['ERROR', 'FAILED', 'REJECTED'], true)) {
+                        $detail = (string) ($provider['detail'] ?? $provider['error'] ?? $provider['errorMessage'] ?? 'no detail');
+                        return PublishResult::failed('Metricool delivery ' . $status . ': ' . substr($detail, 0, 200), $provider);
+                    }
+
+                    if ($status === 'PUBLISHED') {
+                        // publicUrl is the permalink; `id` is sometimes the URL
+                        // (instagram) and sometimes the platform id (facebook).
+                        $url = (string) ($provider['publicUrl'] ?? $provider['url'] ?? '');
+                        $rawId = (string) ($provider['id'] ?? '');
+                        // If `id` is itself a URL, it's not a platform id.
+                        $platformId = ($rawId !== '' && ! str_starts_with($rawId, 'http')) ? $rawId : null;
+                        if ($url === '' && $platformId === null) {
+                            return PublishResult::pending(raw: $provider);
+                        }
+                        $verdict = PostVerificationRules::verify($platform, $platformId, $url);
+                        if (! $verdict['verified']) {
+                            // Delivered per Metricool but not a verifiable
+                            // permalink yet — keep polling rather than claim it.
+                            return PublishResult::pending(raw: $provider);
+                        }
+                        return PublishResult::published($platformId, $url, $provider);
+                    }
+
+                    // PENDING / SCHEDULED / PUBLISHING / unknown → keep polling.
+                    return PublishResult::pending(raw: $provider);
+                }
+                // Row not in the scheduler window → fall through to analytics.
+            }
+        }
+
+        // 2) FALLBACK: the analytics list (historical rows aged out of the
+        //    scheduler window, or no scheduler id). Match robustly by the
+        //    captured permalink — the same canonical strategy the metrics
+        //    collector uses — never by the scheduler-id (wrong namespace).
         $knownUrl = (string) ($post->platform_post_url ?? '');
+        if ($knownUrl === '') {
+            // No permalink + not in scheduler → nothing to verify against yet.
+            return PublishResult::pending();
+        }
 
         try {
             $result = $this->client->postAnalytics(
@@ -120,7 +201,7 @@ class MetricoolPublisher implements Publisher
                 network: $network,
             );
         } catch (\Throwable $e) {
-            Log::warning('MetricoolPublisher: poll list failed (will retry)', [
+            Log::warning('MetricoolPublisher: analytics poll fallback failed (will retry)', [
                 'post_id' => $post->id,
                 'error' => $e->getMessage(),
             ]);
@@ -131,26 +212,57 @@ class MetricoolPublisher implements Publisher
             return PublishResult::pending();
         }
 
-        // Find the just-published post. With no platform URL yet, match on the
-        // provider post id captured at submit (stored as blotato_post_id — the
-        // generic "provider submission id" column, reused).
-        $match = $this->locatePost($result['body'], $knownUrl, (string) ($post->blotato_post_id ?? ''));
+        $match = $this->locatePost($result['body'], $knownUrl, '');
         if ($match === null) {
             return PublishResult::pending();
         }
 
-        $url = (string) ($match['url'] ?? $match['shareUrl'] ?? $match['postUrl'] ?? '');
+        $url = (string) ($match['url'] ?? $match['shareUrl'] ?? $match['postUrl'] ?? $match['watchUrl'] ?? $match['permalink'] ?? '');
         $platformId = isset($match['postId']) ? (string) $match['postId']
             : (isset($match['videoId']) ? (string) $match['videoId'] : null);
 
-        $platform = (string) ($post->draft?->platform ?? '');
         $verdict = PostVerificationRules::verify($platform, $platformId, $url);
         if (! $verdict['verified']) {
-            // Reached the post but it isn't a verifiable permalink yet.
             return PublishResult::pending(raw: $match);
         }
 
         return PublishResult::published($platformId, $url, $match);
+    }
+
+    /**
+     * Find OUR scheduler row (by id) in the scheduler list, then the provider
+     * entry for OUR network. Returns the provider sub-object or null.
+     *
+     * @param  array<int,array<string,mixed>>  $rows
+     * @return array<string,mixed>|null
+     */
+    private function providerStatusFor(array $rows, string $schedulerId, string $network): ?array
+    {
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $rowId = (string) ($row['id'] ?? $row['uuid'] ?? '');
+            if ($rowId !== $schedulerId) {
+                continue;
+            }
+            $providers = $row['providers'] ?? [];
+            if (! is_array($providers)) {
+                return null;
+            }
+            foreach ($providers as $pr) {
+                if (is_array($pr) && strtolower((string) ($pr['network'] ?? '')) === strtolower($network)) {
+                    return $pr;
+                }
+            }
+            // Row matched but no provider for our network — single-network rows
+            // sometimes omit the network key; return the sole provider.
+            if (count($providers) === 1 && is_array($providers[0])) {
+                return $providers[0];
+            }
+            return null;
+        }
+        return null;
     }
 
     /** Map our internal platform enum to Metricool's network slug. */

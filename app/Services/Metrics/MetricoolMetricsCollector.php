@@ -104,7 +104,7 @@ class MetricoolMetricsCollector
         }
 
         $posts = $this->extractPosts($result['body']);
-        $match = $this->matchByUrl($posts, $postUrl);
+        $match = $this->matchPost($platform, $posts, $postUrl, $post->platform_post_id);
 
         if ($match === null) {
             // Reached the endpoint but our post isn't in the returned set yet
@@ -207,34 +207,164 @@ class MetricoolMetricsCollector
     }
 
     /**
-     * Find the post whose url/shareUrl matches our platform_post_url.
+     * Find OUR post inside Metricool's returned list. PUBLIC + per-platform so
+     * it is unit-testable against the real shapes captured live 2026-06-02.
      *
-     * @param  array<int,array<string,mixed>>  $posts
+     * Why this replaced the old exact-string matchByUrl: Metricool reports a
+     * post's URL in a DIFFERENT shape than the one we stored at publish, so a
+     * literal compare matched only Instagram/Threads and silently dropped
+     * LinkedIn/TikTok/YouTube (the "metrics pending" gap). The differences are:
+     *   - a `www.` prefix and/or protocol/case difference
+     *   - a `?utm_…` query suffix Metricool appends (TikTok)
+     *   - a different URL FIELD name (YouTube uses `watchUrl`, FB uses `link`)
+     *   - a different URN representation (LinkedIn share↔ugcPost)
+     *
+     * Strategy: reduce BOTH sides to a per-platform CANONICAL post id (the
+     * stable bit — IG/Threads shortcode, TikTok/YouTube video id, LinkedIn
+     * activity number, etc.) and compare those. We also read Metricool's own id
+     * fields (videoId/postId/shortCode/id), which carry the same canonical id
+     * even when the URL field is absent. Falls back to a normalised-URL compare
+     * for any platform we don't special-case. Returns null on no match — never
+     * a cross-post false positive (see the LinkedIn share≠ugcPost test).
+     *
+     * @param  array<int,array<string,mixed>>  $posts  Metricool's post list
+     * @param  string|null  $ourUrl  scheduled_posts.platform_post_url
+     * @param  string|null  $ourId   scheduled_posts.platform_post_id (usually null today)
      * @return array<string,mixed>|null
      */
-    private function matchByUrl(array $posts, string $postUrl): ?array
+    public function matchPost(string $platform, array $posts, ?string $ourUrl, ?string $ourId): ?array
     {
-        $needle = $this->normaliseUrl($postUrl);
-        if ($needle === '') {
+        // Our canonical key: prefer the captured platform id, else derive from
+        // the stored permalink.
+        $needleKey = $this->canonicalPostKey($platform, (string) ($ourId ?? ''))
+            ?? $this->canonicalPostKey($platform, (string) ($ourUrl ?? ''));
+        $needleUrl = $this->normaliseUrl((string) ($ourUrl ?? ''));
+
+        if ($needleKey === null && $needleUrl === '') {
             return null;
         }
+
         foreach ($posts as $p) {
             if (! is_array($p)) {
                 continue;
             }
-            foreach (['url', 'shareUrl', 'postUrl', 'embedLink', 'permalink'] as $field) {
-                $candidate = $this->normaliseUrl((string) ($p[$field] ?? ''));
-                if ($candidate !== '' && $candidate === $needle) {
-                    return $p;
+
+            // 1) Canonical-id match — robust across www/query/URN/field-name.
+            if ($needleKey !== null) {
+                foreach ($this->candidateIdentifiers($p) as $candidate) {
+                    if ($this->canonicalPostKey($platform, $candidate) === $needleKey) {
+                        return $p;
+                    }
+                }
+            }
+
+            // 2) Fallback: exact normalised-URL compare (covers any platform
+            //    not special-cased by canonicalPostKey).
+            if ($needleUrl !== '') {
+                foreach (['url', 'shareUrl', 'postUrl', 'embedLink', 'permalink', 'watchUrl', 'link'] as $field) {
+                    if ($this->normaliseUrl((string) ($p[$field] ?? '')) === $needleUrl) {
+                        return $p;
+                    }
                 }
             }
         }
         return null;
     }
 
+    /**
+     * Every string in a Metricool post object that could carry the post's
+     * identity (URL fields + id fields). canonicalPostKey() distils each to the
+     * stable key, so we feed it the superset.
+     *
+     * @param  array<string,mixed>  $p
+     * @return array<int,string>
+     */
+    private function candidateIdentifiers(array $p): array
+    {
+        $out = [];
+        foreach (['url', 'shareUrl', 'postUrl', 'embedLink', 'permalink', 'watchUrl', 'link',
+                  'videoId', 'postId', 'shortCode', 'id'] as $field) {
+            $v = $p[$field] ?? null;
+            if (is_scalar($v) && (string) $v !== '') {
+                $out[] = (string) $v;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Reduce a URL OR a bare id to the platform's stable canonical post key.
+     * Returns null when no key can be extracted (caller then can't id-match;
+     * the URL fallback may still apply).
+     *
+     * Per-platform key (verified against live prod shapes 2026-06-02):
+     *   instagram  shortcode from /p|reel|tv/<code>   ('ig:<code>')
+     *   threads    shortcode from /post/<code>, or a bare shortCode ('th:<code>')
+     *   tiktok     numeric video id from /video/<n> or a bare videoId ('tt:<n>')
+     *   youtube    11-char video id from watch?v=/shorts//youtu.be or videoId ('yt:<id>')
+     *   linkedin   numeric activity id from urn:li:(share|ugcPost|activity):<n>
+     *              — NOTE share and ugcPost carry DIFFERENT numbers for the same
+     *              post, so a share-id will not match an ugcPost-id (documented
+     *              limitation, not a bug). ('li:<n>')
+     *   facebook   posts/<id> or videos/<id> or a bare postId ('fb:<id>')
+     *   x/twitter  status/<id>                                   ('tw:<id>')
+     *   pinterest  pin/<n>                                       ('pin:<n>')
+     */
+    private function canonicalPostKey(string $platform, string $raw): ?string
+    {
+        $s = trim($raw);
+        if ($s === '') {
+            return null;
+        }
+        $low = strtolower($s);
+
+        return match (strtolower($platform)) {
+            'instagram' => preg_match('#(?:/(?:p|reel|tv)/)([a-z0-9_-]+)#i', $s, $m)
+                ? 'ig:' . strtolower($m[1])
+                : (preg_match('#^[a-z0-9_-]{5,}$#i', $s) ? 'ig:' . $low : null),
+            'threads' => preg_match('#/post/([a-z0-9_-]+)#i', $s, $m)
+                ? 'th:' . strtolower($m[1])
+                : (preg_match('#^[a-z0-9_-]{5,}$#i', $s) ? 'th:' . $low : null),
+            'tiktok' => preg_match('#/(?:video|photo)/(\d+)#', $s, $m)
+                ? 'tt:' . $m[1]
+                : (preg_match('#^\d{6,}$#', $s) ? 'tt:' . $s : null),
+            'youtube' => preg_match('#(?:watch\?v=|/shorts/|/live/|youtu\.be/)([a-z0-9_-]{6,})#i', $s, $m)
+                ? 'yt:' . $m[1]
+                : (preg_match('#^[a-z0-9_-]{6,15}$#i', $s) ? 'yt:' . $s : null),
+            // LinkedIn: pull the trailing numeric id from a urn (share/ugcPost/
+            // activity) OR from the URL. The URN TYPE is intentionally dropped —
+            // we key on the number — but share vs ugcPost numbers differ, so
+            // those simply won't collide. A bare numeric id also works.
+            'linkedin' => preg_match('#urn:li:(?:share|ugcpost|activity):(\d+)#i', $low, $m)
+                ? 'li:' . $m[1]
+                : (preg_match('#(\d{8,})#', $s, $m2) ? 'li:' . $m2[1] : null),
+            'facebook' => preg_match('#/(?:posts|videos|reel)/(\d+)#', $s, $m)
+                ? 'fb:' . $m[1]
+                : (preg_match('#[?&]v=(\d+)#', $s, $m2) ? 'fb:' . $m2[1]
+                    : (preg_match('#^\d{6,}$#', $s) ? 'fb:' . $s : null)),
+            'x', 'twitter' => preg_match('#/status/(\d+)#', $s, $m)
+                ? 'tw:' . $m[1]
+                : (preg_match('#^\d{6,}$#', $s) ? 'tw:' . $s : null),
+            'pinterest' => preg_match('#/pin/(\d+)#', $s, $m)
+                ? 'pin:' . $m[1]
+                : (preg_match('#^\d{6,}$#', $s) ? 'pin:' . $s : null),
+            default => null,
+        };
+    }
+
     private function normaliseUrl(string $url): string
     {
-        return rtrim(strtolower(trim($url)), '/');
+        // Lowercase, strip a query/fragment (Metricool appends ?utm_…), drop a
+        // leading www. and the scheme, and trim a trailing slash so two
+        // otherwise-identical permalinks compare equal.
+        $u = strtolower(trim($url));
+        if ($u === '') {
+            return '';
+        }
+        $u = preg_replace('/[?#].*$/', '', $u) ?? $u;     // drop query + fragment
+        $u = preg_replace('#^https?://#', '', $u) ?? $u;  // drop scheme
+        $u = preg_replace('#^www\.#', '', $u) ?? $u;      // drop www.
+        return rtrim($u, '/');
     }
 
     /**
