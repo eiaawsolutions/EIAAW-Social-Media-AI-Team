@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Agents\VideoAgent;
+use App\Jobs\RegenerateStaleVideoPost;
 use App\Models\ScheduledPost;
 use App\Services\Imagery\FalAiClient;
 use Illuminate\Console\Command;
@@ -59,13 +60,15 @@ class PostsRegenerateStaleVideo extends Command
     protected $signature = 'posts:regenerate-stale-video
                             {--workspace= : restrict to one workspace id (default: all)}
                             {--limit=0 : max posts to regenerate this run (0 = no limit; video is slow + metered)}
-                            {--apply : actually clear assets, call VideoAgent, and requeue (default is dry-run)}';
+                            {--queue : dispatch each regen as a RegenerateStaleVideoPost job (worker, 330s budget) instead of running VideoAgent inline — REQUIRED when running over railway ssh, where a slow Veo i2v→t2v generation outlives the session and gets killed mid-run}
+                            {--apply : actually clear assets, regenerate, and requeue (default is dry-run)}';
 
     protected $description = 'Recover posts that failed the video-format integrity gate: re-run VideoAgent on the stale-image draft, then requeue.';
 
     public function handle(): int
     {
         $apply = (bool) $this->option('apply');
+        $queue = (bool) $this->option('queue');
         $limit = (int) $this->option('limit');
         $workspaceId = $this->option('workspace') !== null ? (int) $this->option('workspace') : null;
 
@@ -86,7 +89,7 @@ class PostsRegenerateStaleVideo extends Command
         }
 
         $stats = ['eligible' => 0, 'skipped_provider_id' => 0, 'skipped_no_draft' => 0,
-                  'regenerated' => 0, 'requeued' => 0, 'regen_failed' => 0];
+                  'regenerated' => 0, 'requeued' => 0, 'regen_failed' => 0, 'dispatched' => 0];
         $processed = 0;
 
         foreach ($rows as $sp) {
@@ -120,11 +123,26 @@ class PostsRegenerateStaleVideo extends Command
             }
 
             if (! $apply) {
-                $this->comment('  [dry-run] would clear image, re-run VideoAgent (force_fal), then requeue if video attaches.');
+                $this->comment($queue
+                    ? '  [dry-run] would DISPATCH RegenerateStaleVideoPost (worker regenerates + requeues).'
+                    : '  [dry-run] would clear image, re-run VideoAgent (force_fal), then requeue if video attaches.');
                 continue;
             }
 
             $processed++;
+
+            // --queue: hand the slow regen to the worker (330s budget) instead
+            // of running VideoAgent inline. The job does the identical clear →
+            // VideoAgent → requeue/restore steps, but isn't tied to this (often
+            // ssh) session, so a long Veo i2v→t2v generation can't be killed
+            // mid-run. Use this over railway ssh; the inline path is for a local
+            // shell or a worker context where the wall-clock is unbounded.
+            if ($queue) {
+                RegenerateStaleVideoPost::dispatch($sp->id)->onQueue('drafting');
+                $stats['dispatched']++;
+                $this->info('  → dispatched RegenerateStaleVideoPost (queue: drafting).');
+                continue;
+            }
 
             // 1. Clear the stale still so the idempotent VideoAgent regenerates.
             $history = is_array($draft->asset_urls) ? $draft->asset_urls : [];
@@ -171,13 +189,21 @@ class PostsRegenerateStaleVideo extends Command
         $this->line('eligible:                   ' . $stats['eligible']);
         $this->line('skipped (has provider id):  ' . $stats['skipped_provider_id']);
         $this->line('skipped (no draft/brand):   ' . $stats['skipped_no_draft']);
-        $this->line('video regenerated:          ' . $stats['regenerated']);
-        $this->line('requeued:                   ' . $stats['requeued']);
-        $this->line('regen failed (left failed): ' . $stats['regen_failed']);
+        if ($queue) {
+            $this->line('dispatched to worker:       ' . $stats['dispatched']);
+        } else {
+            $this->line('video regenerated:          ' . $stats['regenerated']);
+            $this->line('requeued:                   ' . $stats['requeued']);
+            $this->line('regen failed (left failed): ' . $stats['regen_failed']);
+        }
         $this->line('');
 
         if (! $apply) {
-            $this->warn('DRY-RUN — nothing written, no VideoAgent calls. Re-run with --apply to recover (costs FAL credit).');
+            $this->warn($queue
+                ? 'DRY-RUN — no jobs dispatched. Re-run with --apply --queue to dispatch (worker regenerates; costs FAL credit).'
+                : 'DRY-RUN — nothing written, no VideoAgent calls. Re-run with --apply to recover (costs FAL credit).');
+        } elseif ($queue) {
+            $this->info('Jobs dispatched to the `drafting` queue. The worker regenerates each video (i2v→t2v self-heal) and requeues the post on success; posts:dispatch-due then resubmits. Watch worker logs / re-run this command to see remaining still-only rows.');
         } else {
             $this->info('Requeued rows will be picked up by posts:dispatch-due on the next cron tick (≤1 min).');
         }
