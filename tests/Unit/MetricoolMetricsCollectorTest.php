@@ -212,4 +212,90 @@ class MetricoolMetricsCollectorTest extends TestCase
         $ours = 'https://www.tiktok.com/@x/video/999';
         $this->assertNull($this->collector()->matchPost('tiktok', $posts, $ours, null));
     }
+
+    // ─── Caption-text fallback (the LinkedIn share≠ugcPost recovery) ─────────
+    //
+    // LinkedIn stores `urn:li:share:<a>` at publish but Metricool analytics
+    // reports `urn:li:ugcPost:<b>` — DIFFERENT numbers for the same post, so id
+    // matching is impossible (above). The ONLY reliable join is the post
+    // CAPTION: LinkedIn analytics carries it in `comment`, IG in `content`,
+    // TikTok in `videoDescription`. matchPost() takes the caption as a 5th arg
+    // and falls back to it when id/URL matching fails. Fixtures are the REAL
+    // LinkedIn analytics shape captured from prod (2026-06-02).
+
+    public function test_match_linkedin_by_caption_when_urn_ids_differ(): void
+    {
+        $caption = '"Run an entire organisation in one click" sounds like a replacement. It is not.';
+        $posts = [[
+            'postId' => 'urn:li:ugcPost:7467171310805176320',          // ugcPost
+            'url' => 'https://www.linkedin.com/feed/update/urn:li:ugcPost:7467171310805176320',
+            'comment' => $caption,                                     // <-- the caption field
+            'impressions' => 16,
+        ]];
+        // Our stored URL is the share form (won't id-match); caption bridges.
+        $ours = 'https://linkedin.com/feed/update/urn:li:share:7456717032256958465';
+        $match = $this->collector()->matchPost('linkedin', $posts, $ours, null, $caption);
+        $this->assertNotNull($match);
+        $this->assertSame(16, $match['impressions']);
+    }
+
+    public function test_caption_fallback_matches_when_platform_appends_hashtags(): void
+    {
+        // The REAL Metricool case: the platform shows our full body then appends
+        // the hashtag block. Our body is a clean PREFIX of the platform caption,
+        // so they match on the common leading length.
+        $ourCaption = 'Most AI rollouts skip the most important step and nobody notices';
+        $posts = [['comment' => $ourCaption . ' #ai #automation #b2b', 'likes' => 3]];
+        $ours = 'https://linkedin.com/feed/update/urn:li:share:1';
+        $this->assertNotNull(
+            $this->collector()->matchPost('linkedin', $posts, $ours, null, $ourCaption)
+        );
+    }
+
+    public function test_caption_fallback_does_not_match_on_a_shared_short_opener(): void
+    {
+        // Two posts in a series share a generic opener but diverge — must NOT
+        // false-match (mid-string divergence within the comparable length).
+        $ourCaption = 'Here is the thing about AI onboarding calls that nobody admits openly';
+        $posts = [['comment' => 'Here is the thing about AI vendor demos that always goes wrong', 'likes' => 3]];
+        $ours = 'https://linkedin.com/feed/update/urn:li:share:1';
+        $this->assertNull(
+            $this->collector()->matchPost('linkedin', $posts, $ours, null, $ourCaption)
+        );
+    }
+
+    public function test_caption_fallback_abstains_when_two_rows_match_ambiguously(): void
+    {
+        // If our caption prefix matches MORE than one row, abstain (return null)
+        // rather than risk attributing the wrong post's metrics.
+        $cap = 'A long enough distinctive caption opener about AI rollouts and pilots';
+        $posts = [
+            ['comment' => $cap . ' part one', 'likes' => 1],
+            ['comment' => $cap . ' part two', 'likes' => 2],
+        ];
+        $ours = 'https://linkedin.com/feed/update/urn:li:share:1';
+        $this->assertNull(
+            $this->collector()->matchPost('linkedin', $posts, $ours, null, $cap)
+        );
+    }
+
+    public function test_caption_fallback_does_not_match_a_different_post(): void
+    {
+        $posts = [['comment' => 'Completely unrelated caption about something else entirely here', 'likes' => 9]];
+        $ours = 'https://linkedin.com/feed/update/urn:li:share:1';
+        $this->assertNull(
+            $this->collector()->matchPost('linkedin', $posts, $ours, null, 'Our caption is about AI onboarding calls')
+        );
+    }
+
+    public function test_caption_fallback_ignored_when_too_short_to_be_distinctive(): void
+    {
+        // A 10-char caption is too generic to safely bridge on — must NOT match
+        // (avoids false positives on boilerplate openers).
+        $posts = [['comment' => 'Thank you so much everyone for the support today!!', 'likes' => 1]];
+        $ours = 'https://linkedin.com/feed/update/urn:li:share:1';
+        $this->assertNull(
+            $this->collector()->matchPost('linkedin', $posts, $ours, null, 'Thank you')
+        );
+    }
 }

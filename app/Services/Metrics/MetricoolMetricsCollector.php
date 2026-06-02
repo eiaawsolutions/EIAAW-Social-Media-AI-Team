@@ -104,7 +104,7 @@ class MetricoolMetricsCollector
         }
 
         $posts = $this->extractPosts($result['body']);
-        $match = $this->matchPost($platform, $posts, $postUrl, $post->platform_post_id);
+        $match = $this->matchPost($platform, $posts, $postUrl, $post->platform_post_id, (string) ($post->draft?->body ?? ''));
 
         if ($match === null) {
             // Reached the endpoint but our post isn't in the returned set yet
@@ -230,19 +230,18 @@ class MetricoolMetricsCollector
      * @param  array<int,array<string,mixed>>  $posts  Metricool's post list
      * @param  string|null  $ourUrl  scheduled_posts.platform_post_url
      * @param  string|null  $ourId   scheduled_posts.platform_post_id (usually null today)
+     * @param  string|null  $ourCaption  draft.body — the LAST-RESORT bridge for
+     *         posts whose id/URL can't match (LinkedIn share≠ugcPost). Matched
+     *         on a leading slice against the row's caption field.
      * @return array<string,mixed>|null
      */
-    public function matchPost(string $platform, array $posts, ?string $ourUrl, ?string $ourId): ?array
+    public function matchPost(string $platform, array $posts, ?string $ourUrl, ?string $ourId, ?string $ourCaption = null): ?array
     {
         // Our canonical key: prefer the captured platform id, else derive from
         // the stored permalink.
         $needleKey = $this->canonicalPostKey($platform, (string) ($ourId ?? ''))
             ?? $this->canonicalPostKey($platform, (string) ($ourUrl ?? ''));
         $needleUrl = $this->normaliseUrl((string) ($ourUrl ?? ''));
-
-        if ($needleKey === null && $needleUrl === '') {
-            return null;
-        }
 
         foreach ($posts as $p) {
             if (! is_array($p)) {
@@ -268,7 +267,80 @@ class MetricoolMetricsCollector
                 }
             }
         }
+
+        // 3) LAST-RESORT: caption-text bridge. Only reached when NO post id/url
+        //    matched — the LinkedIn share≠ugcPost case, where the post genuinely
+        //    cannot be id-joined. Match our draft body against the row's caption
+        //    field on a stable leading slice (Metricool may append hashtags /
+        //    truncate). Gated on a distinctive minimum length AND UNIQUENESS:
+        //    if two rows share our caption prefix we ABSTAIN (return null) rather
+        //    than risk attributing the wrong post's metrics — the Truthfulness
+        //    Contract favours "no data" over "wrong data".
+        $ourCap = $this->normaliseCaption((string) ($ourCaption ?? ''));
+        if ($ourCap !== null) {
+            $hits = [];
+            foreach ($posts as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                foreach (['comment', 'content', 'text', 'videoDescription', 'description', 'title'] as $field) {
+                    $rowCap = $this->normaliseCaption((string) ($p[$field] ?? ''), enforceMin: false);
+                    if ($rowCap !== null && $this->captionsMatch($ourCap, $rowCap)) {
+                        $hits[] = $p;
+                        break; // one field hit per row is enough
+                    }
+                }
+            }
+            // Exactly one row matched our caption → confident bridge. Zero or
+            // ambiguous (>1) → abstain.
+            if (count($hits) === 1) {
+                return $hits[0];
+            }
+        }
+
         return null;
+    }
+
+    /**
+     * Two normalised captions identify the same post iff one is a prefix of the
+     * other over a meaningful comparable length — Metricool may append hashtags
+     * or truncate the tail, and our body may carry a longer tail than the
+     * platform shows. We compare the COMMON leading length (min of the two,
+     * capped) so a mid-string divergence (e.g. our "…step and nobody" vs the
+     * platform's "…step #ai") does NOT match, but a clean prefix does.
+     */
+    private function captionsMatch(string $a, string $b): bool
+    {
+        $n = min(mb_strlen($a), mb_strlen($b), 80);
+        // Need a meaningfully long shared opener to be confident.
+        if ($n < 30) {
+            return false;
+        }
+        return mb_substr($a, 0, $n) === mb_substr($b, 0, $n);
+    }
+
+    /**
+     * Normalise a caption for comparison: lowercase, collapse whitespace, strip
+     * emoji/punctuation that the platform may render differently than we stored.
+     * Returns null when OUR caption is too short to be a SAFE distinctive bridge
+     * ($enforceMin); a row's caption can be any length (we compare on the common
+     * leading length, so a long body or a short platform render both work).
+     */
+    private function normaliseCaption(string $caption, bool $enforceMin = true): ?string
+    {
+        $s = strtolower(trim($caption));
+        $s = preg_replace('/\s+/u', ' ', $s) ?? $s;          // whitespace → single space
+        $s = preg_replace('/[^\p{L}\p{N} ]+/u', '', $s) ?? $s; // drop emoji/quotes/punct
+        $s = trim($s);
+        if ($s === '') {
+            return null;
+        }
+        // Distinctiveness floor for OUR caption: a too-short body can't safely
+        // identify a single post.
+        if ($enforceMin && mb_strlen($s) < 30) {
+            return null;
+        }
+        return $s;
     }
 
     /**
