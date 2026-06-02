@@ -249,10 +249,14 @@ class MetricoolPublisherTest extends TestCase
     }
 
     /**
-     * When a LinkedIn pageId override IS present, linkedinData is sent as a
-     * populated object (so Page targeting still works).
+     * REGRESSION (2026-06-02 Facebook/LinkedIn HTTP 400 "Unrecognized field
+     * 'pageId'"): Metricool's ScheduledPostLinkedinData / ScheduledPostFacebookData
+     * have NO `pageId` field (per the Swagger) — Metricool routes to the
+     * Page/Company-page by the connected profile. A leftover Blotato-era
+     * `target_overrides.pageId` must be IGNORED, not forwarded; the *Data block
+     * is omitted entirely. (Sending pageId fails the whole post.)
      */
-    public function test_submit_sends_linkedin_data_when_page_id_override_present(): void
+    public function test_submit_ignores_blotato_era_page_id_override_for_linkedin(): void
     {
         Http::fake([
             'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['id' => 'sched-li2'], 200),
@@ -261,8 +265,31 @@ class MetricoolPublisherTest extends TestCase
         (new MetricoolPublisher($this->client()))
             ->submit($this->makePost('linkedin', ['pageId' => '12345']), 'li', []);
 
-        Http::assertSent(fn ($r) => str_contains($r->url(), '/v2/scheduler/posts')
-            && ($r['linkedinData']['pageId'] ?? null) === '12345');
+        Http::assertSent(function ($r) {
+            if (! str_contains($r->url(), '/v2/scheduler/posts')) {
+                return false;
+            }
+            // No linkedinData block at all (pageId is not a Metricool field).
+            return ! array_key_exists('linkedinData', (array) $r->data());
+        });
+    }
+
+    /** Same guard for Facebook — pageId override must never reach the body. */
+    public function test_submit_ignores_blotato_era_page_id_override_for_facebook(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['id' => 'sched-fb'], 200),
+        ]);
+
+        (new MetricoolPublisher($this->client()))
+            ->submit($this->makePost('facebook', ['pageId' => '67890']), 'fb', []);
+
+        Http::assertSent(function ($r) {
+            if (! str_contains($r->url(), '/v2/scheduler/posts')) {
+                return false;
+            }
+            return ! array_key_exists('facebookData', (array) $r->data());
+        });
     }
 
     /**

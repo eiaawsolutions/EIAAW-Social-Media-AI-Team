@@ -262,15 +262,21 @@ final class PlatformRules
             }
         }
 
-        // ── Connection-level required overrides ──
-        // Facebook (Pages API): Blotato requires `pageId` on every post,
-        // even for personal-feed connections. Verified live 2026-05-07
-        // after 4 prod posts failed HTTP 400 "body.post.target must have
-        // required property 'pageId'".
-        // Pinterest: requires `boardId`. Same shape.
-        // Without a connection passed in, we can't check these — caller's
-        // back-compat path. Surfaces at publish-time instead via Blotato 400.
-        if ($connection !== null) {
+        // ── Connection-level required overrides (BLOTATO-ONLY) ──
+        // Facebook (Pages API): Blotato requires `pageId` on every post, even
+        // for personal-feed connections (verified live 2026-05-07: 4 prod posts
+        // failed HTTP 400 "body.post.target must have required property
+        // 'pageId'"). Pinterest: requires `boardId`. Same shape.
+        //
+        // These are BLOTATO requirements and must NOT be enforced under
+        // Metricool: Metricool's ScheduledPostFacebookData has NO `pageId` field
+        // (it routes to the Page by the brand's connected profile) — sending one
+        // is rejected HTTP 400 "Unrecognized field 'pageId'". Enforcing the gate
+        // under Metricool created a deadlock: no pageId → this gate blocks; with
+        // pageId → Metricool's scheduler rejects it. So gate only on blotato.
+        // Without a connection passed in we can't check these (back-compat path).
+        $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+        if ($connection !== null && $provider === 'blotato') {
             $platform = strtolower((string) $draft->platform);
             $overrides = is_array($connection->target_overrides) ? $connection->target_overrides : [];
 

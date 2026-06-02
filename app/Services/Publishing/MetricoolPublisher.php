@@ -224,18 +224,21 @@ class MetricoolPublisher implements Publisher
                 ['privacyStatus' => 'privacy'],
             ))],
             'pinterest' => ['pinterestData' => array_filter([
-                'boardId' => $ov['boardId'] ?? null,
+                'boardId' => $ov['boardId'] ?? null, // valid per Swagger ScheduledPostPinterestData
             ], fn ($v) => $v !== null)],
-            'linkedin' => ['linkedinData' => array_filter([
-                // Page vs personal: Metricool selects by the connected profile;
-                // a pageId override targets a Company Page.
-                'pageId' => $ov['pageId'] ?? null,
-            ], fn ($v) => $v !== null)],
-            'facebook' => ['facebookData' => array_filter([
-                'pageId' => $ov['pageId'] ?? null,
-            ], fn ($v) => $v !== null)],
+            // Facebook & LinkedIn: Metricool selects the Page / Company-page by
+            // the brand's CONNECTED profile, NOT a body field. Per the Swagger,
+            // ScheduledPostFacebookData (boost*, type, title) and
+            // ScheduledPostLinkedinData (documentTitle, publishImagesAsPDF,
+            // previewIncluded, type, poll) have NO `pageId` — sending one yields
+            // HTTP 400 "Unrecognized field 'pageId'". So we send NO targeting
+            // block; the empty array is dropped by the array_filter below. (A
+            // leftover target_overrides.pageId from the Blotato era is ignored
+            // on purpose — it is not a Metricool field.)
+            'linkedin' => ['linkedinData' => []],
+            'facebook' => ['facebookData' => []],
             'threads' => ['threadsData' => array_filter([
-                'replyControl' => $ov['replyControl'] ?? null,
+                'replyControl' => $ov['replyControl'] ?? null, // valid per Swagger ScheduledPostThreadsData
             ], fn ($v) => $v !== null)],
             default => [],
         };
