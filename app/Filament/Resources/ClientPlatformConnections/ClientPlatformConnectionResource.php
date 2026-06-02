@@ -1,8 +1,9 @@
 <?php
 
-namespace App\Filament\Agency\Resources\PlatformConnections;
+namespace App\Filament\Resources\ClientPlatformConnections;
 
-use App\Filament\Agency\Resources\PlatformConnections\Pages\ManagePlatformConnections;
+use App\Filament\Resources\ClientPlatformConnections\Pages\ManageClientPlatformConnections;
+use App\Models\Brand;
 use App\Models\PlatformConnection;
 use BackedEnum;
 use Filament\Resources\Resource;
@@ -13,40 +14,47 @@ use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
- * Platform Connections — read-only-ish list of social accounts the customer
- * has connected via Metricool. The actual connection flow happens through a
- * Metricool connect-link in the "Platform setup" wizard (MetricoolSetup);
- * Metricool has done App Review with each platform and we read the resulting
- * connection state per brand from /admin/profile.
+ * HQ CLIENT PLATFORM CONNECTIONS — cross-tenant administration of every
+ * workspace's social connections, relocated from the customer-facing Agency
+ * PlatformConnectionResource (incident 2026-06-02; see ClientBrandResource for
+ * the full rationale).
  *
- * The table page exposes:
- *   - One row per connected network (per brand)
- *   - "Refresh from Metricool" header action (re-reads /admin/profile via
- *     MetricoolConnectionService::sync)
- *   - "Connect a platform" header action → points at the connect-link wizard
- *   - Target overrides per connection (consumed by MetricoolPublisher at
- *     publish time) — editing one marks nothing revoked; preserves the
- *     ScheduledPost audit chain
+ * A PlatformConnection is the single most sensitive tenant object in SMT: it is
+ * the OAuth/Metricool routing record for a brand's social account. Cross-tenant
+ * visibility of these is therefore restricted to the /admin panel, gated by
+ * User::canAccessPanel('admin') => is_super_admin, AND re-checked at the resource
+ * boundary below. Customers see ONLY their own workspace's connections, in
+ * /agency, where the resource is now hard workspace-scoped with no super-admin
+ * bypass.
  *
- * Stage-04 of SetupReadiness (`platform_connected`) flips to done = true once
- * at least one PlatformConnection exists for the focused brand with status=active.
+ * Capability ported here (Amos: "full edit + onboarding actions"):
+ *   - "Brand / Workspace" column so HQ always knows whose connection a row is
+ *   - routing-space (metricool_blog_id) column
+ *   - per-network "Target overrides" modal (writes PlatformConnection.target_overrides,
+ *     consumed verbatim by MetricoolPublisher::perNetworkData at publish time)
+ *   - a "Hide revoked" toggle (default ON) to surface inert tombstones for audit
+ *   - a Brand filter to focus a single tenant
  */
-class PlatformConnectionResource extends Resource
+class ClientPlatformConnectionResource extends Resource
 {
     protected static ?string $model = PlatformConnection::class;
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedLink;
-    protected static ?string $navigationLabel = 'Platforms';
-    protected static ?string $modelLabel = 'Platform connection';
-    protected static ?string $pluralModelLabel = 'Platforms';
-    protected static ?int $navigationSort = 4;
+    protected static ?string $navigationLabel = 'Client platforms';
+    protected static ?string $modelLabel = 'Client platform connection';
+    protected static ?string $pluralModelLabel = 'Client platforms';
+    protected static \UnitEnum|string|null $navigationGroup = 'Clients';
+    protected static ?int $navigationSort = 2;
 
-    /**
-     * No editable form for v1 — Metricool is the source of truth for which
-     * accounts are connected (read from /admin/profile). Stub schema satisfies
-     * Filament's resource contract; the page uses `ManageRecords` (no per-record
-     * edit modal). The one editable thing — target overrides — lives in its own
-     * record action below.
-     */
+    public static function canAccess(): bool
+    {
+        return (bool) auth()->user()?->is_super_admin;
+    }
+
+    public static function canViewAny(): bool
+    {
+        return (bool) auth()->user()?->is_super_admin;
+    }
+
     public static function form(Schema $schema): Schema
     {
         return $schema->components([]);
@@ -79,19 +87,28 @@ class PlatformConnectionResource extends Resource
                     ->fontFamily('mono')
                     ->prefix('@')
                     ->placeholder('—'),
-                // The HQ-only "Brand / Workspace" column was removed 2026-06-02
-                // when this panel became hard own-workspace for everyone. A
-                // customer only ever has their own workspace's connections here,
-                // so a brand/workspace label is noise. HQ's cross-tenant view —
-                // where that column is load-bearing — lives in /admin →
-                // ClientPlatformConnectionResource.
+                // "Whose account is this?" — always shown here (this panel is
+                // cross-tenant by definition). Brand name + owning workspace.
+                Tables\Columns\TextColumn::make('brand.name')
+                    ->label('Brand / Workspace')
+                    ->description(fn (PlatformConnection $r) => $r->brand?->workspace
+                        ? 'ws: ' . $r->brand->workspace->name
+                        : null)
+                    ->wrap()
+                    ->searchable(query: fn (Builder $query, string $search): Builder => $query->whereHas(
+                        'brand',
+                        fn (Builder $q) => $q
+                            ->where('name', 'like', "%{$search}%")
+                            ->orWhereHas('workspace', fn (Builder $w) => $w->where('name', 'like', "%{$search}%")),
+                    ))
+                    ->placeholder('—'),
                 Tables\Columns\TextColumn::make('brand.metricool_blog_id')
                     ->label('Routing space')
                     ->fontFamily('mono')
                     ->color('gray')
                     ->size('sm')
                     ->limit(16)
-                    ->tooltip('The secure space this connection is routed through. Set once per brand by EIAAW during setup.')
+                    ->tooltip('The Metricool brand (blogId) this connection routes through.')
                     ->placeholder('—'),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
@@ -117,13 +134,22 @@ class PlatformConnectionResource extends Resource
                         ? json_encode($r->target_overrides, JSON_UNESCAPED_SLASHES)
                         : 'Personal account (no overrides — we route to the connected profile)'),
             ])
-            // No table filters. The HQ-only "Hide revoked" toggle and "Brand"
-            // cross-tenant picker were removed 2026-06-02 when this panel became
-            // hard own-workspace for everyone. Customers see only their own live
-            // (non-revoked) connections — revoked rows are excluded in
-            // getEloquentQuery(), so there is nothing here for a customer to
-            // filter. HQ's cross-tenant controls live in /admin →
-            // ClientPlatformConnectionResource.
+            ->filters([
+                Tables\Filters\Filter::make('hide_revoked')
+                    ->label('Hide revoked connections')
+                    ->toggle()
+                    ->default(true)
+                    ->query(fn (Builder $query): Builder => $query->where('status', '!=', 'revoked')),
+
+                // Focus a single tenant. Options labelled "Brand (Workspace)" so
+                // same-named brands across tenants stay distinguishable. No HQ
+                // default here — this panel shows all clients by design.
+                Tables\Filters\SelectFilter::make('brand_id')
+                    ->label('Brand')
+                    ->multiple()
+                    ->searchable()
+                    ->options(fn () => self::brandFilterOptions()),
+            ])
             ->recordActions([
                 \Filament\Actions\Action::make('targetOverrides')
                     ->label('Target overrides')
@@ -147,75 +173,61 @@ class PlatformConnectionResource extends Resource
                             ->send();
                     }),
             ])
-            ->emptyStateHeading('No platforms connected yet')
-            ->emptyStateDescription('Connect your social accounts via the secure link in "Platform setup", then click "Refresh connections" above. Once a platform is authorised, your connection appears here automatically.')
+            ->defaultSort('updated_at', 'desc')
+            ->emptyStateHeading('No client platform connections')
+            ->emptyStateDescription('Once a client connects a social account in Metricool and it syncs, it appears here.')
             ->emptyStateIcon(Heroicon::OutlinedLink);
     }
 
     /**
-     * Constrain to brands the current user's workspace owns. Same pattern as
-     * BrandResource::getEloquentQuery — single source of truth across list,
-     * record-resolution, summary, and modal queries.
-     *
-     * 'revoked' connections are hidden by default for EVERYONE. Those rows are
-     * inert tombstones (legacy Blotato-era rows the Metricool sync revoked rather
-     * than deleted, to preserve the ScheduledPost audit chain — see
-     * MetricoolConnectionService::sync). They never re-activate, so they're noise
-     * in the default view. We keep 'expired'/'reauth_required' visible — those
-     * are states the customer must act on.
-     *
-     * Revoked rows are hidden HERE, unconditionally, for everyone. A platform
-     * connection holds OAuth/routing data, so the Agency panel only ever shows a
-     * customer their OWN workspace's live connections.
-     *
-     * NO super-admin bypass (removed 2026-06-02). The Agency panel is hard
-     * own-workspace for EVERYONE, including HQ — a platform connection is the
-     * single most sensitive tenant object (OAuth/Metricool routing), so the
-     * previous cross-tenant super-admin view of it was the highest-risk part of
-     * the leak that read as a breach. HQ now administers every tenant's
-     * connections (with the routing-space column, target-overrides modal, and
-     * revoked toggle) from /admin → ClientPlatformConnectionResource, behind the
-     * super-admin panel gate. The TenantIsolationGuardTest fails the build if a
-     * bypass is reintroduced here.
+     * Cross-tenant by design. Eager-loads brand + workspace for the
+     * "Brand / Workspace" column. Hides connections whose brand is archived
+     * (the brand was retired; its connections are noise). Revoked rows are NOT
+     * hidden here — the "Hide revoked" filter (default ON) governs that, so HQ
+     * can toggle tombstones back in for audit. The panel-level super-admin gate
+     * is what makes seeing every tenant safe.
      */
     public static function getEloquentQuery(): Builder
     {
-        $user = auth()->user();
-        $workspaceId = $user?->current_workspace_id
-            ?? $user?->ownedWorkspaces()->value('id');
-
-        // Eager-load brand: the Routing-space column reads brand.metricool_blog_id.
-        $query = parent::getEloquentQuery()->with('brand');
-
-        // Tenant isolation: a user with no resolvable workspace sees nothing.
-        if (! $workspaceId) {
-            return $query->whereRaw('1 = 0');
-        }
-
-        return $query
-            ->where('status', '!=', 'revoked')
-            ->whereHas('brand', function (Builder $q) use ($workspaceId) {
-                $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
-            });
+        return parent::getEloquentQuery()
+            ->with('brand.workspace')
+            ->whereHas('brand', fn (Builder $q) => $q->whereNull('archived_at'));
     }
 
     public static function getPages(): array
     {
         return [
-            'index' => ManagePlatformConnections::route('/'),
+            'index' => ManageClientPlatformConnections::route('/'),
         ];
     }
 
-    // brandFilterOptions() and currentWorkspaceBrandIds() were removed
-    // 2026-06-02 — they only fed the HQ-only cross-tenant "Brand" filter, which
-    // no longer exists on this customer-facing panel. The equivalent picker
-    // lives in /admin → ClientPlatformConnectionResource.
+    /**
+     * Every non-archived brand that owns at least one connection, labelled
+     * "Brand (Workspace)". Restricted to brands-with-connections so the picker
+     * isn't cluttered with brands that would filter the table to empty.
+     *
+     * @return array<int, string>
+     */
+    private static function brandFilterOptions(): array
+    {
+        return Brand::query()
+            ->whereNull('archived_at')
+            ->whereHas('platformConnections')
+            ->with('workspace')
+            ->orderBy('name')
+            ->get()
+            ->mapWithKeys(fn (Brand $b) => [
+                $b->id => $b->workspace
+                    ? sprintf('%s (%s)', $b->name, $b->workspace->name)
+                    : $b->name,
+            ])
+            ->all();
+    }
 
     /**
-     * Per-platform form fields for the "Target overrides" modal. These map onto
-     * MetricoolPublisher::perNetworkData() (the connection's target_overrides →
-     * Metricool's `<network>Data` block), so what the operator sets here is
-     * exactly what gets merged into every publish to this connection.
+     * Per-platform fields for the "Target overrides" modal. Map onto
+     * MetricoolPublisher::perNetworkData() — what the operator sets here is what
+     * gets merged into every publish to this connection.
      *
      * @return array<int, \Filament\Forms\Components\Field>
      */
@@ -282,8 +294,6 @@ class PlatformConnectionResource extends Resource
                     ])
                     ->helperText('Defaults to everyone if unset.'),
             ],
-            // Instagram, X, Bluesky: targetType-only — no per-account overrides
-            // are required. Show a friendly note instead of empty form.
             default => [
                 \Filament\Forms\Components\Placeholder::make('no_overrides')
                     ->label('')
@@ -294,14 +304,13 @@ class PlatformConnectionResource extends Resource
 
     /**
      * Pre-populate the modal from the row's existing target_overrides JSON.
-     * Casts boolean toggles back to booleans so Filament shows them correctly.
      *
      * @return array<string, mixed>
      */
     private static function fillFormFromOverrides(PlatformConnection $r): array
     {
         $overrides = is_array($r->target_overrides) ? $r->target_overrides : [];
-        // Coerce stored booleans (sometimes stringified by the JSON pass).
+
         return collect($overrides)
             ->map(fn ($v) => is_string($v) && in_array($v, ['true', 'false'], true) ? $v === 'true' : $v)
             ->all();

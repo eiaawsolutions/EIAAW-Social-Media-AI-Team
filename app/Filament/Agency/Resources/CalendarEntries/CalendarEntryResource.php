@@ -400,13 +400,11 @@ class CalendarEntryResource extends Resource
         $workspaceId = $user?->current_workspace_id
             ?? $user?->ownedWorkspaces()->value('id');
 
-        // Tenant isolation: super admin sees everything; anyone else without a
-        // resolvable workspace sees nothing (prevents cross-tenant IDOR).
-        if ($user?->is_super_admin) {
-            return parent::getEloquentQuery()
-                ->whereHas('brand', fn (Builder $q) => $q->whereNull('archived_at'));
-        }
-
+        // Tenant isolation: a user with no resolvable workspace sees nothing
+        // (prevents cross-tenant IDOR). NO super-admin bypass (removed
+        // 2026-06-02): the Agency panel is hard own-workspace for EVERYONE,
+        // including HQ, which administers other tenants from /admin. See
+        // BrandResource for the full rationale.
         if (! $workspaceId) {
             return parent::getEloquentQuery()->whereRaw('1 = 0');
         }

@@ -175,8 +175,18 @@ class BrandResource extends Resource
      * a builder whose underlying query had been mutated in a way that left
      * $this->model null — Eloquent then threw "Call to a member function
      * newQueryWithoutRelationships() on null" at Builder.php:325.
+     *
+     * NO super-admin bypass (removed 2026-06-02). The Agency panel is the
+     * surface a CUSTOMER uses, so it is now hard-scoped to the current user's
+     * own workspace for EVERYONE — including EIAAW HQ. HQ administers other
+     * tenants' brands from the dedicated /admin panel (ClientBrandResource),
+     * never from here. The previous `if ($user?->is_super_admin) return $query;`
+     * was isolation-correct but made HQ's own Agency account show every client's
+     * brand with no workspace label, which read as a cross-tenant leak. The
+     * TenantIsolationGuardTest now FAILS the build if a super-admin bypass is
+     * ever reintroduced into any Agency resource.
      */
-    public static function getEloquentQuery(): \Illuminate\Database\Eloquent\Builder
+    public static function getEloquentQuery(): Builder
     {
         $user = auth()->user();
         $workspaceId = $user?->current_workspace_id
@@ -185,11 +195,6 @@ class BrandResource extends Resource
         $query = parent::getEloquentQuery()->whereNull('archived_at');
 
         // Tenant isolation: a user with no resolvable workspace sees nothing.
-        // Super admins (EIAAW HQ) bypass the filter so they can support tenants.
-        if ($user?->is_super_admin) {
-            return $query;
-        }
-
         if (! $workspaceId) {
             return $query->whereRaw('1 = 0');
         }

@@ -41,19 +41,10 @@ class ManagePlatformConnections extends ManageRecords
 
     public function getSubheading(): ?string
     {
-        // Super admins (HQ): the page DEFAULTS to your own workspace's brand
-        // (the Brand filter is pre-set to it), so you land on EIAAW's own
-        // platforms — not every tenant's. The base query still spans all
-        // workspaces for support, so changing/clearing the Brand filter lets you
-        // view a client or everyone. "Refresh connections" only re-reads your
-        // own workspace's brand, so call that out too.
-        if (auth()->user()?->is_super_admin) {
-            return 'HQ view — defaulting to your own workspace\'s platforms. '
-                . 'To view a client, pick their brand in the Brand filter; clear it to see all workspaces. '
-                . 'Note: "Refresh connections" re-reads only your own workspace\'s brand; '
-                . 'to refresh a customer, open their workspace.';
-        }
-
+        // This page is own-workspace for EVERYONE now, including HQ (the
+        // cross-tenant super-admin view moved to /admin →
+        // ClientPlatformConnectionResource on 2026-06-02). So no HQ-special
+        // copy here — HQ sees its own platforms exactly like any customer.
         if ($this->workspaceHasNoMappedBrand()) {
             return 'Your brand needs its secure space set up before social accounts can be connected. '
                 . 'Head to Platform setup to request it — our team sets it up, then sends you a secure connect-link.';

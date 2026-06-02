@@ -152,7 +152,62 @@ class TenantIsolationGuardTest extends TestCase
                 . "(whereRaw('1 = 0')) for a user with no resolvable workspace. Without it, a "
                 . 'half-provisioned account could fall through to an unscoped query.'
             );
+
+            // NO super-admin bypass on the Agency (customer-facing) panel
+            // (invariant added 2026-06-02 after the cross-tenant view of an HQ
+            // super-admin's own Agency account READ as a data breach — it showed
+            // a client's brand next to EIAAW's with no workspace label). The
+            // Agency panel is now hard own-workspace for EVERYONE, including HQ.
+            // HQ administers other tenants from the dedicated /admin panel
+            // (App\Filament\Resources\ClientBrandResource /
+            // ClientPlatformConnectionResource), which is gated by
+            // User::canAccessPanel('admin') => is_super_admin (locked by
+            // test_admin_panel_is_super_admin_only below). If a getEloquentQuery
+            // branches on is_super_admin to widen the result set, the leak is
+            // back — so this is forbidden here.
+            $this->assertDoesNotMatchRegularExpression(
+                '/is_super_admin/',
+                $src,
+                "SECURITY: {$class}::getEloquentQuery() references is_super_admin. A super-admin "
+                . 'bypass on the customer-facing Agency panel reintroduces the 2026-06-02 '
+                . "cross-tenant exposure (HQ's own Agency account shows every client's rows). "
+                . 'Cross-tenant administration belongs in the /admin panel, not here. Remove the '
+                . 'bypass — the Agency panel must be own-workspace for everyone.'
+            );
         }
+    }
+
+    /**
+     * Lock the panel-boundary half of the isolation model: only super-admins can
+     * reach the /admin panel, where the cross-tenant client-administration
+     * resources (ClientBrandResource, ClientPlatformConnectionResource) live.
+     * The Agency-resource bypass was removed on the assumption this gate holds;
+     * if someone widens canAccessPanel('admin'), the cross-tenant resources would
+     * be reachable by a customer — so pin it here.
+     *
+     * Source-level: we read User::canAccessPanel() rather than execute it, to
+     * stay DB-free like the rest of this guard.
+     */
+    public function test_admin_panel_is_super_admin_only(): void
+    {
+        $ref = new ReflectionClass(\App\Models\User::class);
+        $method = new ReflectionMethod(\App\Models\User::class, 'canAccessPanel');
+        $lines = file((string) $ref->getFileName()) ?: [];
+        $src = implode('', array_slice(
+            $lines,
+            $method->getStartLine() - 1,
+            $method->getEndLine() - $method->getStartLine() + 1,
+        ));
+
+        // The 'admin' panel arm must resolve to is_super_admin and nothing
+        // weaker. We assert the literal mapping is present.
+        $this->assertMatchesRegularExpression(
+            "/['\"]admin['\"]\\s*=>\\s*\\\$this->is_super_admin/",
+            $src,
+            'SECURITY: User::canAccessPanel() no longer gates the admin panel on is_super_admin. '
+            . 'The /admin panel hosts cross-tenant client-administration resources; widening this '
+            . 'gate would let a customer reach every tenant\'s brands and platform connections.'
+        );
     }
 
     /**
