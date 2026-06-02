@@ -87,4 +87,27 @@ class ImageCreativeDirectionTest extends TestCase
         // Wan 2.5/2.6 caps negative_prompt at 500 chars — must stay under.
         $this->assertLessThanOrEqual(500, strlen($negative));
     }
+
+    public function test_video_policy_safety_block_steers_toward_advertiser_safe_content(): void
+    {
+        $block = ImageCreativeDirection::videoPolicySafetyBlock();
+
+        // The clause every video request now carries — the high-value safety
+        // signals that keep Veo's content checker happy on benign B2B drafts.
+        $this->assertStringContainsStringIgnoringCase('safe-for-work', $block);
+        $this->assertStringContainsStringIgnoringCase('brand-safe', $block);
+        // No real-person likeness (the i2v keyframe culprit) + no minors/violence.
+        $this->assertStringContainsStringIgnoringCase('likeness', $block);
+        $this->assertStringContainsStringIgnoringCase('no minors', $block);
+        $this->assertStringContainsStringIgnoringCase('violence', $block);
+    }
+
+    public function test_video_negative_prompt_includes_content_safety_terms(): void
+    {
+        $negative = ImageCreativeDirection::videoNegativePrompt();
+
+        foreach (['celebrity likeness', 'violence', 'weapon', 'nudity', 'minor'] as $token) {
+            $this->assertStringContainsString($token, $negative);
+        }
+    }
 }

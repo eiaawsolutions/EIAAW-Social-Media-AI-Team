@@ -15,6 +15,7 @@ use App\Services\Imagery\DraftSceneBrief;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAccountLockedException;
 use App\Services\Imagery\FalAiClient;
+use App\Services\Imagery\FalContentPolicyException;
 use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -242,17 +243,22 @@ class VideoAgent extends BaseAgent
 
         $stillUrl = $this->stillUrlForKeyframe($draft);
 
+        // Generate the base clip. image_url present → image-to-video (keyframe);
+        // absent → text-to-video. The closure lets us retry as t2v if the
+        // keyframe trips Veo's content checker (see the FalContentPolicy catch).
+        $generate = fn (?string $keyframe): array => $fal->generateVideo($prompt, array_filter([
+            'image_url' => $keyframe,
+            'aspect_ratio' => $aspect,
+            'resolution' => '720p',
+            'duration' => $baseDuration,
+            // Veo Fast has no negative_prompt field (the client drops it for
+            // Veo); the realism "AVOID …" clauses live in the positive prompt.
+            // Forwarded anyway so a Wan rollback still gets its negative.
+            'negative_prompt' => ImageCreativeDirection::videoNegativePrompt(),
+        ]));
+
         try {
-            $generated = $fal->generateVideo($prompt, array_filter([
-                'image_url' => $stillUrl,
-                'aspect_ratio' => $aspect,
-                'resolution' => '720p',
-                'duration' => $baseDuration,
-                // Veo Fast has no negative_prompt field (the client drops it for
-                // Veo); the realism "AVOID …" clauses live in the positive prompt.
-                // Forwarded anyway so a Wan rollback still gets its negative.
-                'negative_prompt' => ImageCreativeDirection::videoNegativePrompt(),
-            ]));
+            $generated = $generate($stillUrl);
         } catch (FalAccountLockedException $e) {
             // FAL is account-locked (balance exhausted) — no clip can be made
             // until a top-up. Try a brand-library VIDEO asset so a reel/short
@@ -271,6 +277,36 @@ class VideoAgent extends BaseAgent
                 'FAL.AI account locked (balance exhausted) and no brand-library video to fall back to. '
                 .'Top up at fal.ai/dashboard/billing — generation auto-resumes within ~2 min, or upload a brand video.'
             );
+        } catch (FalContentPolicyException $e) {
+            // Veo's safety checker refused THIS request. When we sent a keyframe,
+            // the culprit is almost always the photoreal still (i2v is stricter
+            // than t2v) — the scripted scene brief itself is benign. Retry ONCE
+            // as text-to-video (no keyframe). If we already had no keyframe, the
+            // text is the problem and there's nothing more to drop.
+            if ($stillUrl !== null) {
+                Log::warning('VideoAgent: i2v content-policy rejection; retrying as text-to-video (drop keyframe)', [
+                    'draft_id' => $draft->id,
+                    'error' => substr($e->getMessage(), 0, 200),
+                ]);
+                try {
+                    $generated = $generate(null);
+                    $stillUrl = null; // record that the keyframe was dropped
+                } catch (\Throwable $e2) {
+                    Log::error('VideoAgent: text-to-video retry also failed after i2v content-policy', [
+                        'draft_id' => $draft->id,
+                        'error' => substr($e2->getMessage(), 0, 200),
+                    ]);
+                    return AgentResult::fail(
+                        'Video generation refused by the content checker even without the keyframe — '
+                        .'the scene brief needs adjusting for this draft. (' . substr($e2->getMessage(), 0, 160) . ')'
+                    );
+                }
+            } else {
+                return AgentResult::fail(
+                    'Video generation refused by the content checker (text-to-video) — '
+                    .'the scene brief needs adjusting for this draft. (' . substr($e->getMessage(), 0, 160) . ')'
+                );
+            }
         } catch (\Throwable $e) {
             Log::error('VideoAgent: FAL generation failed', [
                 'draft_id' => $draft->id,
@@ -595,10 +631,12 @@ class VideoAgent extends BaseAgent
             .'on a composed final beat. No on-screen text, no captions, no watermarks.';
 
         if (EiaawBrandLock::appliesTo($brand)) {
-            return $continuity.' '.EiaawBrandLock::videoDirective().' '.ImageCreativeDirection::videoRealismBlock();
+            return $continuity.' '.EiaawBrandLock::videoDirective().' '.ImageCreativeDirection::videoRealismBlock()
+                .' '.ImageCreativeDirection::videoPolicySafetyBlock();
         }
 
-        return $continuity.' '.ImageCreativeDirection::videoRealismBlock();
+        return $continuity.' '.ImageCreativeDirection::videoRealismBlock()
+            .' '.ImageCreativeDirection::videoPolicySafetyBlock();
     }
 
     /**
@@ -702,7 +740,7 @@ class VideoAgent extends BaseAgent
             };
 
             return sprintf(
-                '%d-second %s video for EIAAW Solutions on %s. %s. %s %s %s No on-screen text, no captions, no watermarks baked in.',
+                '%d-second %s video for EIAAW Solutions on %s. %s. %s %s %s No on-screen text, no captions, no watermarks baked in. %s',
                 $duration,
                 $orientation,
                 ucfirst($draft->platform),
@@ -710,6 +748,7 @@ class VideoAgent extends BaseAgent
                 EiaawBrandLock::videoDirective(),
                 $sceneBrief,
                 ImageCreativeDirection::videoRealismBlock(),
+                ImageCreativeDirection::videoPolicySafetyBlock(),
             );
         }
 
@@ -730,7 +769,7 @@ class VideoAgent extends BaseAgent
         };
 
         return sprintf(
-            '%d-second %s video for "%s" on %s. %s. %s %s Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s.',
+            '%d-second %s video for "%s" on %s. %s. %s %s Realistic camera motion, no on-screen text or watermarks. Anti-slop: avoid stock-video clichés, generic AI swirl effects, and rapid scene cuts every 0.3s. %s',
             $duration,
             $orientation,
             $brand->name,
@@ -738,6 +777,7 @@ class VideoAgent extends BaseAgent
             $platformHint,
             $sceneBrief,
             ImageCreativeDirection::videoRealismBlock(),
+            ImageCreativeDirection::videoPolicySafetyBlock(),
         );
     }
 

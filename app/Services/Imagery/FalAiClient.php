@@ -143,12 +143,54 @@ class FalAiClient
             );
         }
 
+        // Content-policy / safety rejection of THIS request (typically the Veo
+        // image-to-video safety checker disliking a photoreal keyframe). Typed
+        // so VideoAgent can retry once as text-to-video (drop the keyframe)
+        // instead of hard-failing the draft.
+        if (self::isContentPolicyBody($status, $body)) {
+            throw new FalContentPolicyException(sprintf(
+                'FAL.AI %s rejected the content (HTTP %d content-policy): %s',
+                $model,
+                $status,
+                substr($body, 0, 300),
+            ));
+        }
+
         throw new RuntimeException(sprintf(
             'FAL.AI %s failed: HTTP %d — %s',
             $model,
             $status,
             substr($body, 0, 400),
         ));
+    }
+
+    /**
+     * True if a FAL failure is a content-policy / safety refusal of this
+     * specific request (NOT an account problem). Veo returns these as HTTP 422
+     * with a content_policy_violation type or a "content checker" / "unsafe
+     * content" / "could not generate images with the given prompts and images"
+     * message. Matched on substrings so a phrasing tweak upstream doesn't slip
+     * past us.
+     */
+    public static function isContentPolicyBody(int $status, string $body): bool
+    {
+        if ($status !== 422 && $status !== 400) {
+            return false;
+        }
+        $b = strtolower($body);
+        foreach ([
+            'content_policy_violation',
+            'content checker',
+            'flagged by a content',
+            'unsafe content',
+            'could not generate images with the given prompts',
+            'safety',
+        ] as $needle) {
+            if (str_contains($b, $needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function client(): PendingRequest

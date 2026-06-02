@@ -306,10 +306,37 @@ final class ImageCreativeDirection
     }
 
     /**
+     * Content-policy / advertiser-safety clause appended to EVERY video request
+     * (both buildPrompt paths + buildExtendPrompt), so all drafts — current and
+     * future — steer the model toward content Veo's safety checker accepts.
+     *
+     * Why this exists: benign B2B drafts (ethical-AI reflections, SDR workflow
+     * explainers) were rejected HTTP 422 content_policy_violation on the
+     * image-to-video endpoint — Veo's i2v safety checker is strict about
+     * photoreal human likeness/faces in the keyframe + ambiguous scenes. This
+     * positive instruction keeps generations safe-by-construction (the negative
+     * reinforcement lives in videoNegativePrompt). It is NOT a substitute for the
+     * i2v→t2v keyframe-drop fallback in VideoAgent, but it reduces how often that
+     * fallback is needed and keeps t2v retries clean too.
+     */
+    public static function videoPolicySafetyBlock(): string
+    {
+        return implode(' ', [
+            'CONTENT SAFETY (must hold for advertiser-friendly, platform-compliant generation):',
+            'depict only safe-for-work, brand-safe, professional business content;',
+            'do NOT generate real public figures, named individuals, celebrity or politician likenesses, or recognisable real people — any humans shown are generic, anonymous, fictional models with no identifiable likeness;',
+            'no logos, trademarks or brand marks of third parties; no minors;',
+            'no violence, weapons, gore, hate symbols, sexual or suggestive content, substances, or anything graphic or disturbing;',
+            'keep it calm, clean, corporate and non-controversial.',
+        ]);
+    }
+
+    /**
      * Structured negative prompt for video. Veo Fast ignores it (no field), but
      * a Wan rollback honours it — kept under Wan's 500-char limit. Targets
      * temporal artefacts (flicker, morph, warp) on top of the still-image AI
-     * tells.
+     * tells, plus the content-safety negatives that pair with
+     * videoPolicySafetyBlock.
      */
     public static function videoNegativePrompt(): string
     {
@@ -320,6 +347,11 @@ final class ImageCreativeDirection
             'unreal cinematic glow', 'neon glow', 'oversaturated', 'over-processed lighting',
             'rapid chaotic cuts', 'strobing', 'stock video cliché',
             'on-screen text', 'caption', 'subtitles', 'watermark', 'logo', 'AI artifacts',
+            // Content-safety negatives (pair with videoPolicySafetyBlock). Kept
+            // short — Wan caps this field at 500 chars and Veo ignores it
+            // entirely, so the positive safety block is the real steering.
+            'celebrity likeness', 'real public figure',
+            'violence', 'weapon', 'gore', 'nudity', 'minor',
         ]);
     }
 }
