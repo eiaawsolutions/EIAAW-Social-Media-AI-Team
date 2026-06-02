@@ -67,18 +67,33 @@ class MetricoolClient
     }
 
     /**
-     * Build from Laravel config. SecretsServiceProvider has already swapped the
+     * Build from Laravel config. SecretsServiceProvider normally swaps the
      * `secret://` handle for the real token at boot, so config holds the value.
-     * Returns null (not throws) when unconfigured, so probes can no-op cleanly
-     * with a clear message rather than blowing up an unprovisioned environment.
+     *
+     * SELF-HEALING (2026-06-02): if the token is STILL a `secret://` handle, the
+     * boot-time resolution fail-opened — typically a transient Infisical flap
+     * (5s timeout, single attempt) during worker startup. Without this, that
+     * worker process stays poisoned for its whole lifetime: every publish job it
+     * runs throws "Metricool not configured", and metrics collection silently
+     * returns nothing — which is exactly the 2026-06-01 outage. So we lazily
+     * re-resolve the handle on demand via the InfisicalResolver (whose own cache
+     * means we pay the network cost at most once per process after it succeeds).
+     * A still-unresolvable handle returns null as before — genuinely
+     * unprovisioned environments still no-op cleanly.
      */
     public static function fromConfig(): ?self
     {
         $token = (string) config('services.metricool.api_token', '');
         $userId = (int) config('services.metricool.user_id', 0);
+
+        // Lazy self-heal: a leftover handle means boot-time resolution flapped.
+        if (str_starts_with($token, 'secret://')) {
+            $token = self::lazyResolve($token);
+        }
+
         if ($token === '' || str_starts_with($token, 'secret://') || $userId <= 0) {
-            // Empty, an unresolved handle (Infisical disabled locally), or no
-            // user id → treat as "not configured" so the probe says so plainly.
+            // Empty, a STILL-unresolved handle (Infisical down or disabled
+            // locally), or no user id → treat as "not configured".
             return null;
         }
 
@@ -88,6 +103,33 @@ class MetricoolClient
             baseUrl: rtrim((string) config('services.metricool.base_url', 'https://app.metricool.com/api'), '/'),
             timeout: (int) config('services.metricool.request_timeout', 30),
         );
+    }
+
+    /**
+     * Resolve a leftover `secret://` handle on demand via the InfisicalResolver,
+     * caching the result back into config so subsequent fromConfig() calls in
+     * this process skip the round-trip. Returns the handle unchanged on any
+     * failure (resolver unbound, Infisical still down) so the caller's existing
+     * null-guard takes over — never throws into the publish/metrics hot path.
+     */
+    private static function lazyResolve(string $handle): string
+    {
+        if (! (bool) config('secrets.infisical.enabled', false)) {
+            return $handle; // resolver intentionally off (e.g. local dev)
+        }
+        try {
+            $resolved = app(InfisicalResolver::class)->resolve($handle);
+            if (is_string($resolved) && $resolved !== '' && ! str_starts_with($resolved, 'secret://')) {
+                config(['services.metricool.api_token' => $resolved]); // heal for the rest of this process
+                Log::info('MetricoolClient: self-healed token from a leftover secret:// handle (boot-time Infisical flap).');
+                return $resolved;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('MetricoolClient: lazy secret resolve failed; treating as unconfigured.', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+        return $handle;
     }
 
     private function client(): PendingRequest
@@ -183,6 +225,70 @@ class MetricoolClient
         $this->throwIfError($response, "postAnalytics({$network})");
 
         return ['found' => true, 'status' => $response->status(), 'body' => $response->json()];
+    }
+
+    /**
+     * GET /v2/scheduler/posts — the brand's SCHEDULER queue over a window. This
+     * is the AUTHORITATIVE delivery-status source (distinct from the analytics
+     * /v2/analytics/posts list, which only carries posts the platform has begun
+     * reporting engagement on and lags hours behind delivery).
+     *
+     * Verified live against prod blogId 6322515 (2026-06-02): each row is
+     *   {
+     *     "id": <numeric scheduler id, == what schedulePost returns>,
+     *     "publicationDate": {"dateTime":…,"timezone":…},
+     *     "text": "...",
+     *     "providers": [
+     *        {"network":"facebook","id":"<platformPostId>","status":"PUBLISHED",
+     *         "publicUrl":"https://facebook.com/…/posts/…", "detail":…},
+     *        …
+     *     ],
+     *     "autoPublish": true, "draft": false, …
+     *   }
+     * provider.status observed: PUBLISHED | ERROR (others per Metricool: PENDING,
+     * SCHEDULED, PUBLISHING). publicUrl is the platform permalink once delivered.
+     *
+     * This is how MetricoolPublisher::poll() flips submitted→published: it
+     * matches our stored scheduler id (scheduled_posts.blotato_post_id) to a
+     * row's `id`, reads the provider for our network, and trusts PUBLISHED +
+     * a verifiable publicUrl. The analytics list could never bridge this (the
+     * scheduler id is a different namespace than the analytics postId, and a
+     * fresh post isn't in analytics yet — the cause of the 46 stuck-`submitted`
+     * rows on 2026-06-02).
+     *
+     * Window params are `start`/`end` here (the scheduler endpoint's contract),
+     * NOT the `from`/`to` the analytics endpoints want — verified live.
+     *
+     * @return array{found:bool, status:int, rows:array<int,array<string,mixed>>}
+     */
+    public function getScheduledPosts(int $blogId, string $start, string $end): array
+    {
+        $query = array_merge($this->baseQuery($blogId), [
+            'start' => $start,
+            'end' => $end,
+        ]);
+
+        $response = $this->client()->get('/v2/scheduler/posts', $query);
+
+        if ($response->status() === 404) {
+            return ['found' => false, 'status' => 404, 'rows' => []];
+        }
+        $this->throwIfError($response, 'getScheduledPosts');
+
+        $body = $response->json();
+        $rows = [];
+        if (is_array($body) && array_is_list($body)) {
+            $rows = $body;
+        } elseif (is_array($body)) {
+            foreach (['data', 'posts', 'items', 'results'] as $key) {
+                if (isset($body[$key]) && is_array($body[$key]) && array_is_list($body[$key])) {
+                    $rows = $body[$key];
+                    break;
+                }
+            }
+        }
+
+        return ['found' => true, 'status' => $response->status(), 'rows' => $rows];
     }
 
     /**
