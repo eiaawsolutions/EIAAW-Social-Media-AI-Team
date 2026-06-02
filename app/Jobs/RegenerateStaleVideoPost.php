@@ -130,15 +130,36 @@ class RegenerateStaleVideoPost implements ShouldQueue
     }
 
     /**
-     * Restore the original still if the regen produced no video — so the draft
-     * is never left media-less (a still on a video format still fails the
-     * integrity gate, but it preserves the asset for the operator / a later
-     * scene-brief edit).
+     * Restore a still if the regen produced no video — so the draft is never
+     * left media-less (a still on a video format still fails the integrity gate,
+     * but it preserves the asset for the operator / a later scene-brief edit).
+     *
+     * Prefer the still this job cleared ($priorStill); if that's empty (a prior
+     * run already cleared asset_url before this job ran), fall back to the most
+     * recent still in asset_urls history. Without the history fallback a
+     * repeatedly-regenerated stubborn draft ends up media-less.
      */
     private function restoreStill(\App\Models\Draft $draft, string $priorStill): void
     {
-        if ($priorStill !== '' && empty($draft->asset_url)) {
-            $draft->update(['asset_url' => $priorStill]);
+        if (! empty($draft->asset_url)) {
+            return; // already has media
+        }
+
+        $still = $priorStill;
+        if ($still === '') {
+            $history = is_array($draft->asset_urls) ? $draft->asset_urls : [];
+            // Most recent non-video entry in history.
+            for ($i = count($history) - 1; $i >= 0; $i--) {
+                $candidate = (string) $history[$i];
+                if ($candidate !== '' && ! self::urlIsVideo($candidate)) {
+                    $still = $candidate;
+                    break;
+                }
+            }
+        }
+
+        if ($still !== '') {
+            $draft->update(['asset_url' => $still]);
         }
     }
 
