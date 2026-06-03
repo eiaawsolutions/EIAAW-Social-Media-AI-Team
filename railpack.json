@@ -25,7 +25,7 @@
     "zip"
   ],
   "deploy": {
-    "aptPackages": ["ffmpeg", "fonts-noto-core", "fonts-noto-cjk"],
-    "startCommand": "/bin/sh -c 'php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache && case \"${SERVICE_ROLE:-web}\" in web) exec php artisan serve --host=0.0.0.0 --port=$PORT ;; worker) exec php -d max_execution_time=0 -d memory_limit=512M artisan queue:work --queue=publishing,drafting,metrics,autopilot,default --tries=1 --timeout=330 --sleep=3 --memory=384 --max-time=3600 ;; scheduler) exec php artisan schedule:work ;; *) echo \"Unknown SERVICE_ROLE: $SERVICE_ROLE\" >&2; exit 1 ;; esac'"
+    "aptPackages": ["ffmpeg", "fonts-noto-core", "fonts-noto-cjk", "tini"],
+    "startCommand": "/bin/sh -c 'TINI=$(command -v tini || echo /usr/bin/tini); if [ ! -x \"$TINI\" ]; then echo \"WARN: tini not found, running without a reaping init (zombie risk on scheduler)\" >&2; TINI=; fi; BOOT=\"php artisan migrate --force && php artisan config:cache && php artisan route:cache && php artisan view:cache\"; case \"${SERVICE_ROLE:-web}\" in web) APP=\"php artisan serve --host=0.0.0.0 --port=$PORT\" ;; worker) APP=\"php -d max_execution_time=0 -d memory_limit=512M artisan queue:work --queue=publishing,drafting,metrics,autopilot,default --tries=1 --timeout=330 --sleep=3 --memory=384 --max-time=3600\" ;; scheduler) APP=\"php artisan schedule:work\" ;; *) echo \"Unknown SERVICE_ROLE: $SERVICE_ROLE\" >&2; exit 1 ;; esac; eval \"$BOOT\" || exit 1; if [ -n \"$TINI\" ]; then exec \"$TINI\" -s -- sh -c \"exec $APP\"; else exec sh -c \"exec $APP\"; fi'"
   }
 }

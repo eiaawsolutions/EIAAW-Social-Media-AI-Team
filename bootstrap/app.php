@@ -20,6 +20,26 @@ return Application::configure(basePath: dirname(__DIR__))
         // entire pipeline for a full day until manually cleared with
         // `php artisan schedule:clear-cache`. With 5-min TTL the scheduler
         // self-heals on the next minute after the lock expires.
+        //
+        // runInBackground() policy (set after the 2026-06-03 zombie-PID
+        // outage): under `schedule:work` as PID 1, every runInBackground()
+        // command is launched as a detached subshell ( ... ) & by Laravel's
+        // CommandBuilder. When its parent `schedule:run` exits seconds later
+        // those subshells RE-PARENT to PID 1 — but schedule:work only reaps
+        // its direct schedule:run child, never the grandchildren. They pile
+        // up as zombies and, at ~6/minute, eventually exhaust the cgroup PID
+        // ceiling (1000), after which schedule:work can no longer fork ANY
+        // command and the whole pipeline silently stops dispatching.
+        //
+        // Two-layer fix:
+        //  (1) tini is PID 1 in prod (railpack.json startCommand) and reaps
+        //      re-parented zombies, so backgrounding is now safe.
+        //  (2) Defence in depth — only commands that genuinely RUN LONG
+        //      (LLM/FAL/HTTP fan-out) use runInBackground(), so they don't
+        //      block the every-minute tick. The sub-15ms publish-loop
+        //      commands run INLINE inside schedule:run, which reaps them
+        //      itself before exiting — they can never leak, with or without
+        //      tini. Do NOT add runInBackground() to a fast command.
 
         // Content autopilot: the FRONT half of the autonomous loop. Hourly,
         // for every eligible brand (active access + NOT publishing-paused),
@@ -44,20 +64,24 @@ return Application::configure(basePath: dirname(__DIR__))
         // yet, and queue them. Closes the loop between the autonomy lane
         // ("green = auto-publish") and the Schedule page actually filling.
         // Idempotent + race-safe (lockForUpdate inside a transaction).
+        // INLINE (not background): near-instant (~6ms). Runs inside
+        // schedule:run, which reaps it — no zombie risk. See policy note above.
         $schedule->command('posts:auto-schedule-approved')
             ->everyMinute()
-            ->withoutOverlapping(5)
-            ->runInBackground();
+            ->withoutOverlapping(5);
 
         // Publish path: every minute, dispatch jobs for queued / pollable /
         // retryable scheduled posts. The Job itself is idempotent so even if
         // the cron fires twice in the same minute, we won't double-publish.
         // withoutOverlapping() guards against long-running dispatches piling
         // up if the queue is slow.
+        // INLINE (not background): near-instant (~7ms). This is THE publish
+        // trigger — it must fire every minute. Keeping it inline (reaped by
+        // schedule:run) is what prevents the 2026-06-03 zombie outage from
+        // ever silently taking down dispatch again. See policy note above.
         $schedule->command('posts:dispatch-due')
             ->everyMinute()
-            ->withoutOverlapping(5)
-            ->runInBackground();
+            ->withoutOverlapping(5);
 
         // Metrics collection — tiered sampling (every 30min for hot posts,
         // 6h for warm, 24h for cold). The command itself enforces tiering;
@@ -82,10 +106,12 @@ return Application::configure(basePath: dirname(__DIR__))
         // 5-minute cadence (not every-minute) caps LLM cost on a backlog —
         // each redraft is ~$0.02-0.05. Cooldown enforces 10 min between
         // attempts on the same draft so a flaky check doesn't burn budget.
+        // INLINE (not background): one query + job dispatch loop. The LLM work
+        // happens in the dispatched RedraftFailedDraft job on the worker, not
+        // here, so this command itself is near-instant.
         $schedule->command('drafts:redraft-failed')
             ->everyFiveMinutes()
-            ->withoutOverlapping(10)
-            ->runInBackground();
+            ->withoutOverlapping(10);
 
         // Weekly competitor intel refresh — Mondays 03:00 UTC, just after
         // Optimizer (02:00). Pulls competitor ads from Meta Ad Library +
@@ -102,18 +128,18 @@ return Application::configure(basePath: dirname(__DIR__))
         // queued_for_period_at has arrived. Hourly cadence is plenty — the
         // worst-case latency is "publishes within an hour of the new month
         // starting", which is well below user-visible expectations.
+        // INLINE (not background): a single bulk UPDATE, sub-second.
         $schedule->command('posts:release-queued-next-period')
             ->hourly()
-            ->withoutOverlapping(10)
-            ->runInBackground();
+            ->withoutOverlapping(10);
 
         // Cap-warning sweep: daily at 09:00 UTC (mid-morning APAC), email
         // workspaces that have crossed 80% of their monthly post cap. Once
         // per period per workspace — see PostsWarnNearCap throttle key.
+        // INLINE (not background): a handful of workspaces, queued mailers.
         $schedule->command('posts:warn-near-cap')
             ->dailyAt('09:00')
-            ->withoutOverlapping(30)
-            ->runInBackground();
+            ->withoutOverlapping(30);
 
         // Signup reconcile backstop: daily at 08:30 UTC, sweep the last 48h of
         // Stripe Checkout Sessions for PAID signups with no matching account —
@@ -124,10 +150,10 @@ return Application::configure(basePath: dirname(__DIR__))
         // then runs `php artisan signup:reconcile` (no flag) to provision. The
         // 48h window comfortably overlaps Stripe's 3-day webhook retry, so this
         // only ever surfaces sessions BOTH the webhook and success() missed.
+        // INLINE (not background): one Stripe list call + DB diff, report-only.
         $schedule->command('signup:reconcile --report-only')
             ->dailyAt('08:30')
-            ->withoutOverlapping(30)
-            ->runInBackground();
+            ->withoutOverlapping(30);
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(
