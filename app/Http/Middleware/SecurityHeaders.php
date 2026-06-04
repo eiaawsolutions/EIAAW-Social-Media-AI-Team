@@ -70,7 +70,7 @@ class SecurityHeaders
             // value of CSP. Validate any change against `storage/logs/csp.log`
             // for at least 1 week before enforcing.
             $policy = "default-src 'self'; "
-                . "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://checkout.stripe.com; "
+                . "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://checkout.stripe.com https://connect.facebook.net; "
                 . "script-src-attr 'unsafe-inline'; "
                 . "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
                 . "style-src-attr 'unsafe-inline'; "
@@ -80,7 +80,10 @@ class SecurityHeaders
                 . "worker-src 'self' blob:; "
                 . "manifest-src 'self'; "
                 . "frame-src 'self' https://js.stripe.com https://checkout.stripe.com https://hooks.stripe.com; "
-                . "connect-src 'self' https://api.stripe.com https://*.eiaawsolutions.com wss: ws:; "
+                // connect-src — Meta Pixel (fbq) sends events to www.facebook.com /
+                // connect.facebook.net; fbevents.js is loaded from connect.facebook.net
+                // (script-src). The noscript <img> beacon is covered by img-src https:.
+                . "connect-src 'self' https://api.stripe.com https://*.eiaawsolutions.com https://www.facebook.com https://connect.facebook.net wss: ws:; "
                 . "frame-ancestors 'self'; "
                 . "base-uri 'self'; "
                 . "object-src 'none'; "
