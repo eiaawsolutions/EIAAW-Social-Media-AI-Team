@@ -41,11 +41,21 @@ class TrialExpired extends Page
                 : $this->workspace->trial_ends_at->format('j M Y');
         }
 
-        $this->planLabel = match ($this->workspace?->plan) {
-            'solo' => 'Solo · RM 99 / mo',
-            'studio' => 'Studio · RM 299 / mo',
-            'agency' => 'Agency · RM 799 / mo',
-            default => 'Choose a plan',
-        };
+        // Label derives from config/billing.php so it never drifts when prices
+        // or tiers change (was hardcoded RM 99/299/799 — two pricing eras stale).
+        // Enterprise has no catalog price (bespoke, is_contact) so it reads as a
+        // "Talk to us" label rather than a RM figure.
+        $plan = $this->workspace?->plan;
+        $planConfig = $plan ? config("billing.plans.{$plan}") : null;
+
+        if (! $planConfig) {
+            $this->planLabel = 'Choose a plan';
+        } elseif (! empty($planConfig['is_contact'])) {
+            $this->planLabel = (string) ($planConfig['name'] ?? 'Enterprise') . ' · Talk to us';
+        } else {
+            $name = (string) ($planConfig['name'] ?? ucfirst((string) $plan));
+            $price = (int) ($planConfig['price_myr'] ?? 0);
+            $this->planLabel = "{$name} · RM " . number_format($price) . ' / mo';
+        }
     }
 }

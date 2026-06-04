@@ -36,7 +36,7 @@ class AgentTelemetryCapClassificationTest extends TestCase
 {
     private const DAILY_VIDEO_CAP = 'Daily video budget reached: $4.00 / $4.00 on the Solo plan. Resets at midnight UTC. Upgrade at /agency/billing for a higher daily ceiling.';
     private const DAILY_IMAGE_CAP = 'Daily image budget reached: $1.50 / $1.50 on the Solo plan. Resets at midnight UTC. Upgrade at /agency/billing for a higher daily ceiling.';
-    private const MONTHLY_VIDEO_CAP = 'Solo plan monthly AI-video allowance reached (5/5). Resets on the 1st, or upgrade at /agency/billing for a higher video allowance. Use a still image for this draft in the meantime.';
+    private const MONTHLY_VIDEO_CAP = 'Solo plan monthly AI-video allowance reached (4/4). Resets on the 1st, or upgrade at /agency/billing for a higher video allowance. Use a still image for this draft in the meantime.';
     private const PLATFORM_SKIP = "Platform 'x' does not accept short-form video — skip VideoAgent on this draft.";
     private const REAL_FAULT = 'Video generation failed: SQLSTATE[HY000] connection refused';
 
