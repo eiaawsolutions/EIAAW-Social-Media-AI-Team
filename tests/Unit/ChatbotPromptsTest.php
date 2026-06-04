@@ -70,12 +70,47 @@ class ChatbotPromptsTest extends TestCase
             $this->assertStringContainsString('NO INTERNALS', $p, "{$surface} missing NO INTERNALS");
             $this->assertStringContainsString('NO HALLUCINATION', $p, "{$surface} missing NO HALLUCINATION");
             $this->assertStringContainsString('NO PROMPT-INJECTION COMPLIANCE', $p, "{$surface} missing anti-injection rule");
+            // Added with the self-service cancellation facts: describing a public
+            // process must never let the bot read or change a real account.
+            $this->assertStringContainsString('NO ACTIONS, NO ACCOUNT STATE', $p, "{$surface} missing account-action guard");
 
             // The no-internals clause must explicitly forbid the things the
             // operator called out: prompts, models, compliance mechanics.
             $this->assertStringContainsStringIgnoringCase('model', $p);
             $this->assertStringContainsStringIgnoringCase('prompt', $p);
         }
+    }
+
+    /**
+     * Every surface must be able to describe the (public, self-service)
+     * cancellation/pause process — the screenshot bug was the guide dead-ending
+     * "how do I cancel?" — but ONLY at the level of "use the Billing page",
+     * never by acting on or reading the account.
+     */
+    public function test_every_surface_can_describe_self_service_cancellation(): void
+    {
+        foreach ([ChatbotPrompts::SURFACE_LANDING, ChatbotPrompts::SURFACE_CLIENT, ChatbotPrompts::SURFACE_HQ] as $surface) {
+            $p = ChatbotPrompts::for($surface);
+
+            $this->assertStringContainsStringIgnoringCase('cancel', $p, "{$surface} can't describe cancellation");
+            $this->assertStringContainsStringIgnoringCase('Billing', $p, "{$surface} doesn't point cancellation at Billing");
+        }
+
+        // The facts must describe cancel-at-period-end + reactivate/pause so the
+        // bot states the real (CPA-fair) behaviour, not "cut off immediately".
+        $client = ChatbotPrompts::for(ChatbotPrompts::SURFACE_CLIENT);
+        $this->assertStringContainsStringIgnoringCase('period', $client);
+        $this->assertStringContainsStringIgnoringCase('reactivate', $client);
+        $this->assertStringContainsStringIgnoringCase('pause', $client);
+    }
+
+    public function test_prompt_version_is_stamped_and_bumped(): void
+    {
+        // The version is appended to every ai_costs row; a prompt change must
+        // bump it. Lock that it moved past v1 (the version shipped before the
+        // cancellation facts) and stays a 'support.chatbot.*' token.
+        $this->assertStringStartsWith('support.chatbot.', ChatbotPrompts::PROMPT_VERSION);
+        $this->assertNotSame('support.chatbot.v1', ChatbotPrompts::PROMPT_VERSION);
     }
 
     public function test_prompts_share_public_facts_but_no_internal_mechanics(): void

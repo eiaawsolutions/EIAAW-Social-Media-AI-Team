@@ -45,6 +45,7 @@
       quick: [
         { label: 'How do I get started?', msg: 'How do I get started — what are the first steps?' },
         { label: 'Why was a post held?', msg: 'Why was one of my posts held instead of published?' },
+        { label: 'How do I cancel?', msg: 'How do I cancel or pause my subscription?' },
         { label: 'Talk to us', action: 'form' },
       ],
     },
