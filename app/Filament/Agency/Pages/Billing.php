@@ -2,14 +2,19 @@
 
 namespace App\Filament\Agency\Pages;
 
+use App\Mail\SubscriptionCancelled;
+use App\Models\AuditLogEntry;
 use App\Models\Workspace;
 use App\Services\Billing\PlanCaps;
 use App\Services\StripePriceCache;
 use Filament\Actions\Action;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 
 /**
  * Workspace billing page. Always accessible (the trial-expiry guard whitelists
@@ -39,6 +44,19 @@ class Billing extends Page
     public ?string $statusLabel = null;
     public ?string $planLabel = null;
     public bool $hasActiveSub = false;
+
+    /**
+     * Cancellation lifecycle state for the view's grace banners + button gating.
+     * One of: active | grace_period | read_only_grace | expired.
+     * @see \App\Models\Workspace::cancellationState()
+     */
+    public ?string $cancellationState = null;
+
+    /** Formatted date the cancel-at-period-end grace ends (paid access until then). */
+    public ?string $gracePeriodEndsAt = null;
+
+    /** Formatted date the 30-day post-cancellation read-only grace ends. */
+    public ?string $readOnlyGraceEndsAt = null;
 
     /** Per-month usage snapshot driven by PlanCaps. Surfaced on the page. */
     public ?array $usage = null;
@@ -100,6 +118,54 @@ class Billing extends Page
                 'tax_note' => $this->buildTaxNote(),
             ];
         }
+
+        // Status + trial badge + active flag. These were previously stranded as
+        // dead code AFTER the early `return` inside buildTaxNote(), so they never
+        // ran — $hasActiveSub was always false (hiding the Manage/Cancel buttons)
+        // and $statusLabel/$trialBadge were always null. They belong here in
+        // mount() where $this->workspace is populated.
+        $this->statusLabel = match ($this->workspace->subscription_status) {
+            'trialing' => 'Free trial',
+            'active' => 'Active subscription',
+            'past_due' => 'Payment failed — please update card',
+            'canceled' => $this->cancellationStatusLabel(),
+            'none' => 'Trial ended — subscribe to continue',
+            default => ucfirst((string) $this->workspace->subscription_status),
+        };
+
+        if ($this->workspace->subscription_status === 'trialing'
+            && $this->workspace->trial_ends_at
+        ) {
+            // Carbon 3 (Laravel 11) returns a float from diffInDays; ceil so the
+            // user sees "Trial ends in 14 days", not "13.98… days".
+            $days = (int) ceil(now()->diffInDays($this->workspace->trial_ends_at, false));
+            $this->trialBadge = $days > 0
+                ? "Trial ends in {$days} day" . ($days === 1 ? '' : 's')
+                : 'Trial ending today';
+        }
+
+        $this->hasActiveSub = method_exists($this->workspace, 'subscribed')
+            && $this->workspace->subscribed('default');
+
+        // Cancellation lifecycle, surfaced to the view for the grace banners
+        // and the Cancel/Reactivate button visibility.
+        $this->cancellationState = $this->workspace->cancellationState();
+        $sub = $this->workspace->subscription('default');
+        $this->gracePeriodEndsAt = $sub?->ends_at?->format('j M Y');
+        $this->readOnlyGraceEndsAt = $this->workspace->readOnlyGraceEndsAt()?->format('j M Y');
+    }
+
+    /**
+     * Human label for a canceled workspace, distinguishing the cancel-at-period-end
+     * grace window (still has access) from a fully-ended subscription.
+     */
+    private function cancellationStatusLabel(): string
+    {
+        return match ($this->workspace?->cancellationState()) {
+            'grace_period' => 'Cancelling — access continues until period end',
+            'read_only_grace' => 'Subscription ended — data preserved during grace period',
+            default => 'Subscription canceled',
+        };
     }
 
     /**
@@ -126,31 +192,6 @@ class Billing extends Page
             $ratePct,
             $regNo !== '' ? $regNo : '(pending)',
         );
-
-        $this->statusLabel = match ($this->workspace->subscription_status) {
-            'trialing' => 'Free trial',
-            'active' => 'Active subscription',
-            'past_due' => 'Payment failed — please update card',
-            'canceled' => 'Subscription canceled',
-            'none' => 'Trial ended — subscribe to continue',
-            default => ucfirst((string) $this->workspace->subscription_status),
-        };
-
-        if ($this->workspace->subscription_status === 'trialing'
-            && $this->workspace->trial_ends_at
-        ) {
-            // Carbon 3 (Laravel 11) returns a float from diffInDays; cast/ceil
-            // so the user sees "Trial ends in 14 days", not "13.98... days".
-            // Use ceil so a 13.98-day-remaining trial reads as "14 days" until
-            // the moment it actually ticks past midnight to 13.0.
-            $days = (int) ceil(now()->diffInDays($this->workspace->trial_ends_at, false));
-            $this->trialBadge = $days > 0
-                ? "Trial ends in {$days} day" . ($days === 1 ? '' : 's')
-                : 'Trial ending today';
-        }
-
-        $this->hasActiveSub = method_exists($this->workspace, 'subscribed')
-            && $this->workspace->subscribed('default');
     }
 
     public function subscribeAction(): Action
@@ -181,6 +222,187 @@ class Billing extends Page
             ->icon('heroicon-o-cog-6-tooth')
             ->visible(fn () => $this->hasActiveSub)
             ->action(fn () => $this->openCustomerPortal());
+    }
+
+    /**
+     * Cancel-at-period-end. The customer keeps full access until the paid
+     * period ends (Cashier grace period via Subscription::cancel(), which sets
+     * ends_at) — the international SaaS norm and Malaysia CPA-fair: no
+     * mid-cycle cutoff, no clawback. Confirmation modal explains the date,
+     * offers ONE retention alternative (pause publishing instead), and
+     * captures an OPTIONAL churn reason. Hidden once already cancelling.
+     */
+    public function cancelAction(): Action
+    {
+        return Action::make('cancel')
+            ->label('Cancel subscription')
+            ->color('danger')
+            ->outlined()
+            ->icon('heroicon-o-x-circle')
+            ->visible(fn () => $this->hasActiveSub && $this->cancellationState === 'active')
+            ->modalHeading('Cancel your subscription')
+            ->modalDescription(
+                // No live Stripe round-trip on modal open: Stripe will set the
+                // exact end date when we call cancel(), and the confirmation
+                // notification + email state it. Keep the modal copy generic.
+                'You will keep full access until the end of the period you have already paid for — no further charges after that, and you can reactivate any time before then. '
+                . 'Prefer to pause instead? You can stop all publishing for now and keep your plan from the dashboard, then resume when you are ready.',
+            )
+            ->modalSubmitActionLabel('Cancel at period end')
+            ->modalIcon('heroicon-o-x-circle')
+            ->schema([
+                Select::make('reason')
+                    ->label('What made you decide to cancel? (optional)')
+                    ->options([
+                        'too_expensive' => 'Too expensive',
+                        'not_using' => 'Not using it enough',
+                        'missing_feature' => 'Missing a feature I need',
+                        'switching' => 'Switching to another tool',
+                        'results' => "Didn't see the results I wanted",
+                        'other' => 'Other',
+                    ])
+                    ->native(false),
+                Textarea::make('reason_detail')
+                    ->label('Anything we could have done better? (optional)')
+                    ->rows(3)
+                    ->maxLength(2000),
+            ])
+            ->action(fn (array $data) => $this->cancelSubscription($data));
+    }
+
+    /**
+     * Reactivate a subscription that is cancel-at-period-end but whose paid
+     * period has not yet ended. Cashier resume() clears ends_at; billing
+     * resumes on the existing schedule. Only visible during the grace window.
+     */
+    public function resumeAction(): Action
+    {
+        return Action::make('resume')
+            ->label('Reactivate subscription')
+            ->color('primary')
+            ->icon('heroicon-o-arrow-path')
+            ->visible(fn () => $this->cancellationState === 'grace_period')
+            ->requiresConfirmation()
+            ->modalHeading('Reactivate your subscription')
+            ->modalDescription('Your plan will continue without interruption and billing resumes on your normal renewal date.')
+            ->modalSubmitActionLabel('Reactivate')
+            ->action(fn () => $this->resumeSubscription());
+    }
+
+    private function cancelSubscription(array $data): void
+    {
+        if (! $this->workspace) {
+            $this->failNotification('No workspace found for your account.');
+            return;
+        }
+
+        $subscription = $this->workspace->subscription('default');
+        if (! $subscription || ! $subscription->active()) {
+            $this->failNotification('No active subscription to cancel.');
+            return;
+        }
+
+        try {
+            // cancel() = cancel_at_period_end on Stripe; Cashier sets ends_at.
+            $subscription->cancel();
+        } catch (\Throwable $e) {
+            Log::error('Subscription cancel failed', [
+                'workspace_id' => $this->workspace->id,
+                'error' => $e->getMessage(),
+            ]);
+            $this->failNotification('Could not cancel right now: ' . $e->getMessage());
+            return;
+        }
+
+        $endsAt = $this->workspace->subscription('default')?->ends_at;
+
+        // Immutable audit row — actor, action, and the churn reason as context.
+        // Never invent a column; reason + detail live in the JSON `context`.
+        AuditLogEntry::create([
+            'workspace_id' => $this->workspace->id,
+            'actor_user_id' => auth()->id(),
+            'actor_type' => 'user',
+            'action' => 'subscription.cancel_requested',
+            'subject_type' => Workspace::class,
+            'subject_id' => $this->workspace->id,
+            'context' => [
+                'reason' => $data['reason'] ?? null,
+                'reason_detail' => $data['reason_detail'] ?? null,
+                'ends_at' => $endsAt?->toIso8601String(),
+                'plan' => $this->workspace->plan,
+            ],
+            'occurred_at' => now(),
+        ]);
+
+        // Confirmation email — queued on the pinned Resend transport
+        // ([[resend_mail_wiring]]). Non-fatal: a mail failure must not block
+        // the cancellation the customer just confirmed.
+        if ($this->workspace->owner) {
+            try {
+                Mail::to($this->workspace->owner->email)
+                    ->queue(new SubscriptionCancelled($this->workspace, $endsAt));
+            } catch (\Throwable $e) {
+                Log::error('SubscriptionCancelled email queue failed', [
+                    'workspace_id' => $this->workspace->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        Notification::make()
+            ->title('Subscription cancelled')
+            ->body($endsAt
+                ? 'You keep full access until ' . $endsAt->format('j M Y') . '. Reactivate any time before then.'
+                : 'Your subscription will end at the close of the current billing period.')
+            ->success()
+            ->send();
+
+        // Refresh the page-level state so the banner + buttons flip immediately.
+        $this->mount();
+    }
+
+    private function resumeSubscription(): void
+    {
+        if (! $this->workspace) {
+            $this->failNotification('No workspace found for your account.');
+            return;
+        }
+
+        $subscription = $this->workspace->subscription('default');
+        if (! $subscription || ! $subscription->onGracePeriod()) {
+            $this->failNotification('This subscription is not in a state that can be reactivated.');
+            return;
+        }
+
+        try {
+            $subscription->resume();
+        } catch (\Throwable $e) {
+            Log::error('Subscription resume failed', [
+                'workspace_id' => $this->workspace->id,
+                'error' => $e->getMessage(),
+            ]);
+            $this->failNotification('Could not reactivate right now: ' . $e->getMessage());
+            return;
+        }
+
+        AuditLogEntry::create([
+            'workspace_id' => $this->workspace->id,
+            'actor_user_id' => auth()->id(),
+            'actor_type' => 'user',
+            'action' => 'subscription.resumed',
+            'subject_type' => Workspace::class,
+            'subject_id' => $this->workspace->id,
+            'context' => ['plan' => $this->workspace->plan],
+            'occurred_at' => now(),
+        ]);
+
+        Notification::make()
+            ->title('Subscription reactivated')
+            ->body('Your plan continues without interruption.')
+            ->success()
+            ->send();
+
+        $this->mount();
     }
 
     /**

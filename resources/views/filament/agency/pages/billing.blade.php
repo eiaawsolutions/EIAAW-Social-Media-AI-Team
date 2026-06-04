@@ -7,7 +7,11 @@
                     <h2 class="text-lg font-semibold tracking-tight">{{ $planLabel }}</h2>
                     <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ $statusLabel }}</p>
                 </div>
-                @if ($trialBadge)
+                @if ($cancellationState === 'grace_period')
+                    <span class="inline-flex items-center rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                        Cancelling
+                    </span>
+                @elseif ($trialBadge)
                     <span class="inline-flex items-center rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
                         {{ $trialBadge }}
                     </span>
@@ -18,6 +22,23 @@
                 @endif
             </div>
         </div>
+
+        {{-- Cancellation lifecycle banners. Mutually exclusive with the
+             subscribe/manage block below; driven by Workspace::cancellationState(). --}}
+        @if ($cancellationState === 'grace_period')
+            <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
+                <p class="font-medium">Your subscription is set to cancel{{ $gracePeriodEndsAt ? ' on ' . $gracePeriodEndsAt : ' at the end of this billing period' }}.</p>
+                <p class="mt-1">You keep full access until then. Changed your mind? Reactivate any time before that date — nothing is lost.</p>
+            </div>
+        @elseif ($cancellationState === 'read_only_grace')
+            <div class="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-200">
+                <p class="font-medium">Your subscription has ended.</p>
+                <p class="mt-1">
+                    Your brands, content and history are preserved{{ $readOnlyGraceEndsAt ? ' until ' . $readOnlyGraceEndsAt : ' for 30 days' }}.
+                    Resubscribe below before then to pick up exactly where you left off.
+                </p>
+            </div>
+        @endif
 
         {{-- Usage this month: brands / posts published / AI videos. Shown
              only when the workspace has caps to display (skip for eiaaw_internal). --}}
@@ -84,11 +105,19 @@
         {{-- Subscribe / manage actions --}}
         <div class="rounded-xl border border-gray-200 bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
             <h3 class="text-base font-semibold tracking-tight">
-                @if ($hasActiveSub) Manage your subscription @else Subscribe to keep your brand running @endif
+                @if ($cancellationState === 'grace_period')
+                    Reactivate your subscription
+                @elseif ($hasActiveSub)
+                    Manage your subscription
+                @else
+                    Subscribe to keep your brand running
+                @endif
             </h3>
             <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-                @if ($hasActiveSub)
-                    Update your card, switch plans, or download invoices through Stripe's secure portal.
+                @if ($cancellationState === 'grace_period')
+                    Reactivate to continue without interruption, or manage your card and invoices in Stripe's secure portal.
+                @elseif ($hasActiveSub)
+                    Update your card, switch plans, or download invoices through Stripe's secure portal. You can cancel any time — your access continues until the end of the period you've paid for.
                 @else
                     Pick monthly to stay flexible, or annual for two months free. Cancel any time — no auto-renewal traps.
                 @endif
@@ -113,10 +142,18 @@
 
             <div class="mt-5 flex flex-wrap gap-3">
                 @if (! $hasActiveSub)
+                    {{-- No live subscription (never subscribed, trial ended, or in
+                         read-only grace after cancellation) → offer to (re)subscribe. --}}
                     {{ $this->subscribeAction }}
                     {{ $this->subscribeAnnualAction }}
-                @else
+                @elseif ($cancellationState === 'grace_period')
+                    {{-- Cancel-at-period-end, still inside the paid window. --}}
+                    {{ $this->resumeAction }}
                     {{ $this->manageAction }}
+                @else
+                    {{-- Active subscription not cancelling. --}}
+                    {{ $this->manageAction }}
+                    {{ $this->cancelAction }}
                 @endif
             </div>
         </div>

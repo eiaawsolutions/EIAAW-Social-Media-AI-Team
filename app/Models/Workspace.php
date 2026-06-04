@@ -15,6 +15,23 @@ class Workspace extends Model
     use Billable, HasFactory;
 
     /**
+     * Days of read-only data retention after a cancelled subscription's paid
+     * period ends, before the scheduled lifecycle command soft-deletes the
+     * workspace. Matches the "30-day read-only grace" the billing-columns
+     * migration documents and follow-ups item #3. Single source of truth —
+     * read by hasActiveAccess(), cancellationState(), and
+     * SubscriptionsEnforceLifecycle.
+     */
+    public const READ_ONLY_GRACE_DAYS = 30;
+
+    /**
+     * Days of access after a failed payment (past_due) before suspension.
+     * Mirrors the existing hasActiveAccess() past_due grace so the scheduled
+     * suspension and the live access check never disagree.
+     */
+    public const PAST_DUE_GRACE_DAYS = 3;
+
+    /**
      * Cashier reads/writes `stripe_id` on the billable model. Our column is
      * `stripe_customer_id` for clarity (we don't want to confuse it with
      * users.stripe_id elsewhere in the EIAAW stack). Proxy the attribute
@@ -132,9 +149,93 @@ class Workspace extends Model
         return match ($this->subscription_status) {
             'active' => true,
             'trialing' => $this->trial_ends_at !== null && $this->trial_ends_at->isFuture(),
-            'past_due' => $this->past_due_at !== null && $this->past_due_at->copy()->addDays(3)->isFuture(),
-            default => false,
+            'past_due' => $this->past_due_at !== null
+                && $this->past_due_at->copy()->addDays(self::PAST_DUE_GRACE_DAYS)->isFuture(),
+            // A subscription that is cancel-at-period-end keeps FULL access
+            // until the paid period actually ends. Stripe leaves stripe_status
+            // 'active' during this window and our webhook keeps
+            // subscription_status='active', so this branch is normally hit by
+            // 'active' above. We also honour the Cashier grace period directly
+            // as a belt-and-braces check in case the denormalised column lags.
+            'canceled' => $this->onCancellationGracePeriod(),
+            default => $this->onCancellationGracePeriod(),
         };
+    }
+
+    /**
+     * True while a subscription is scheduled to cancel at period end but the
+     * paid period has NOT yet elapsed — the customer keeps full access and can
+     * reactivate. Reads Cashier's `ends_at` (set by Subscription::cancel()).
+     */
+    public function onCancellationGracePeriod(): bool
+    {
+        return (bool) $this->subscription('default')?->onGracePeriod();
+    }
+
+    /**
+     * The moment the cancellation grace period ends — i.e. when paid access
+     * stops. Null when the subscription is not cancelling. Drives the
+     * "Cancelling on {date}" banner and the lifecycle command's read-only-grace
+     * start point.
+     */
+    public function cancellationGraceEndsAt(): ?\Illuminate\Support\Carbon
+    {
+        $sub = $this->subscription('default');
+        return $sub && $sub->onGracePeriod() ? $sub->ends_at : null;
+    }
+
+    /**
+     * Within the post-cancellation READ-ONLY grace window: the paid period has
+     * ended (no panel access) but the workspace's data is preserved and the
+     * subscription can still be re-established. Begins when the subscription is
+     * terminally canceled (canceled_at set, no live grace period) and lasts
+     * READ_ONLY_GRACE_DAYS. After it, the lifecycle command soft-deletes.
+     */
+    public function inReadOnlyGrace(): bool
+    {
+        if ($this->isSuspended) {
+            return false; // already soft-deleted / suspended → past read-only grace
+        }
+        if ($this->onCancellationGracePeriod()) {
+            return false; // still has full access; not yet read-only
+        }
+
+        return $this->readOnlyGraceEndsAt()?->isFuture() ?? false;
+    }
+
+    /**
+     * End of the 30-day read-only retention window, measured from canceled_at.
+     * Null when the workspace was never canceled.
+     */
+    public function readOnlyGraceEndsAt(): ?\Illuminate\Support\Carbon
+    {
+        if ($this->subscription_status !== 'canceled' || $this->canceled_at === null) {
+            return null;
+        }
+
+        return $this->canceled_at->copy()->addDays(self::READ_ONLY_GRACE_DAYS);
+    }
+
+    /**
+     * Coarse cancellation lifecycle state for UI branching. Mirrors the
+     * blotatoSetupState() accessor-style pattern.
+     *
+     *   - 'active'          → live (or trialing/past-due) subscription, not cancelling
+     *   - 'grace_period'    → cancel-at-period-end, paid access continues until ends_at
+     *   - 'read_only_grace' → period ended, data preserved, within 30-day window
+     *   - 'expired'         → past the read-only window (about to / already soft-deleted)
+     */
+    public function cancellationState(): string
+    {
+        if ($this->onCancellationGracePeriod()) {
+            return 'grace_period';
+        }
+
+        if ($this->subscription_status === 'canceled') {
+            return $this->inReadOnlyGrace() ? 'read_only_grace' : 'expired';
+        }
+
+        return 'active';
     }
 
     public function trialEnded(): bool

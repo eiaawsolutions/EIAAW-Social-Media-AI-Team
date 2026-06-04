@@ -268,12 +268,35 @@ class StripeWebhookController extends CashierWebhookController
             default => $workspace->subscription_status, // unknown statuses → leave as-is
         };
 
+        // A subscription scheduled to cancel at period end keeps stripe_status
+        // 'active' (Cashier stores ends_at separately). We intentionally do NOT
+        // flip subscription_status to 'canceled' here — the customer keeps full
+        // access during the grace window, and onCancellationGracePeriod() reads
+        // ends_at directly. Only the terminal customer.subscription.deleted
+        // event (handled in applySaaSSideEffects) sets 'canceled' + canceled_at.
+        $scheduledToCancel = $sub->ends_at !== null && $sub->ends_at->isFuture();
+
         $updates = [
             'subscription_status' => $newStatus,
             'trial_ends_at' => $sub->trial_ends_at,
             'past_due_at' => $newStatus === 'past_due' ? ($workspace->past_due_at ?? now()) : null,
-            'canceled_at' => $newStatus === 'canceled' ? ($workspace->canceled_at ?? now()) : null,
+            // PRESERVE canceled_at by default. The terminal customer.subscription.deleted
+            // event (applySaaSSideEffects) is the SOLE writer of canceled_at — it
+            // stamps the moment cancellation took effect, which anchors the 30-day
+            // read-only-grace window (Workspace::readOnlyGraceEndsAt). syncWorkspaceFromCashier
+            // must never overwrite or null it on an intermediate transition (e.g. a
+            // past_due blip during grace) — doing so would either lose the timestamp
+            // or, on a later deletion, reset the grace clock to the deletion time.
+            // The ONLY case where we clear it is a genuine resume (handled below).
+            'canceled_at' => $workspace->canceled_at,
         ];
+
+        // Resume: a previously cancel-at-period-end subscription is active again
+        // with ends_at cleared. Null any stale canceled_at so the read-only-grace
+        // window doesn't fire for a customer who reactivated.
+        if (in_array($newStatus, ['trialing', 'active'], true) && ! $scheduledToCancel) {
+            $updates['canceled_at'] = null;
+        }
 
         if ($workspace->isSuspended && in_array($newStatus, ['trialing', 'active'], true)) {
             $updates['suspended_at'] = null;

@@ -154,6 +154,19 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('signup:reconcile --report-only')
             ->dailyAt('08:30')
             ->withoutOverlapping(30);
+
+        // Subscription lifecycle enforcement: daily at 08:45 UTC, surface
+        // workspaces that have crossed a lifecycle boundary — past_due beyond
+        // the 3-day grace (→ suspend) and cancelled beyond the 30-day read-only
+        // grace (→ soft-delete). REPORT-ONLY by design (no --apply): an
+        // unattended cron must never suspend or soft-delete a paying customer's
+        // workspace without a human in the loop. It logs what WOULD change; the
+        // operator reviews, then runs `php artisan subscriptions:enforce-lifecycle
+        // --apply --force` to commit. Mirrors the signup:reconcile safety stance.
+        // INLINE (not background): a handful of workspaces, pure DB reads.
+        $schedule->command('subscriptions:enforce-lifecycle')
+            ->dailyAt('08:45')
+            ->withoutOverlapping(30);
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->trustProxies(
