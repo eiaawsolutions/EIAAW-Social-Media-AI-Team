@@ -121,6 +121,13 @@ class SignupProvisioner
                     ? Carbon::createFromTimestamp($subscription->trial_end)
                     : null;
 
+                // GRANDFATHER (2026-06-04): snapshot the caps that are live in
+                // config TODAY into the workspace, so a later allowance change in
+                // config/billing.php never strips what this customer paid for.
+                // PlanCaps::capsFor() reads this snapshot before live config. See
+                // [[billing_caps_pricing_tax_architecture]] / the config header.
+                $capsSnapshot = app(PlanCaps::class)->snapshotCapsFor($plan);
+
                 $workspace = Workspace::create([
                     'slug' => $slug,
                     'name' => $workspaceName,
@@ -130,6 +137,9 @@ class SignupProvisioner
                     'subscription_status' => $workspaceStatus,
                     'trial_ends_at' => $trialEndsAt,
                     'stripe_customer_id' => $stripeCustomerId,
+                    'settings' => [
+                        PlanCaps::SNAPSHOT_SETTINGS_KEY => $capsSnapshot,
+                    ],
                 ]);
 
                 WorkspaceMember::create([

@@ -75,12 +75,26 @@ class SignupController extends Controller
     }
 
     /**
+     * Tiers shown on the public pricing surfaces (landing + signup picker).
+     * These are the self-serve checkout plans PLUS the Enterprise "Talk to us"
+     * tier. Distinct from ALLOWED_PLANS (which gates self-serve CHECKOUT only) —
+     * Enterprise is displayed but routes to /enterprise, never to /signup.
+     *
+     * @var list<string>
+     */
+    public const DISPLAY_PLANS = ['solo', 'studio', 'agency', 'enterprise'];
+
+    /**
      * Static so the landing page Blade can call it without a controller
      * instance. Returns a list of tier cards ready to render: name + MYR
      * price + caps (brands, posts/mo) + marketing copy + annual savings.
      *
+     * For a contact tier (Enterprise: is_contact=true) the price/caps become
+     * "Custom" strings and `is_contact=true` so the Blade renders a "Talk to us"
+     * CTA → /enterprise instead of a price + Subscribe button.
+     *
      * @return array<int, array{
-     *   key:string, name:string,
+     *   key:string, name:string, is_contact:bool,
      *   price:string, unit:string, price_myr:int,
      *   annual_myr:int, annual_savings_myr:int,
      *   brands:string, posts:string, videos:string,
@@ -102,15 +116,24 @@ class SignupController extends Controller
                 'best' => 'For agencies with per-client guardrail isolation across every brand.',
                 'highlight' => true,
             ],
+            'enterprise' => [
+                'best' => 'For Enterprise levels.',
+            ],
         ];
 
         $tiers = [];
         $plans = (array) config('billing.plans', []);
 
-        foreach (self::ALLOWED_PLANS as $key) {
+        foreach (self::DISPLAY_PLANS as $key) {
             $plan = $plans[$key] ?? null;
             $cfg = $copy[$key] ?? null;
             if (! $plan || ! $cfg) continue;
+
+            // Contact tier (Enterprise): bespoke price + caps, "Talk to us" CTA.
+            if (! empty($plan['is_contact'])) {
+                $tiers[] = self::contactTier($key, $plan, $cfg);
+                continue;
+            }
 
             $brands = (int) ($plan['caps']['max_brands'] ?? 0);
             // Image-post allowance drives the card copy; fall back to the total
@@ -133,6 +156,7 @@ class SignupController extends Controller
             $tiers[] = [
                 'key' => $key,
                 'name' => (string) ($plan['name'] ?? ucfirst($key)),
+                'is_contact' => false,
                 'price' => 'RM ' . number_format((int) ($plan['price_myr'] ?? 0)),
                 'unit' => '/ month',
                 'price_myr' => (int) ($plan['price_myr'] ?? 0),
@@ -147,9 +171,56 @@ class SignupController extends Controller
                     : (count($platformLabels) . ' platforms: ' . implode(', ', $platformLabels)),
                 'best' => (string) $cfg['best'],
                 'highlight' => (bool) ($cfg['highlight'] ?? false),
+                'cta_label' => 'Subscribe now',
+                'cta_url' => url('/signup/' . $key),
             ];
         }
 
         return $tiers;
+    }
+
+    /**
+     * Build the Enterprise "Talk to us" card. No price, no caps numbers — those
+     * are bespoke — and the CTA routes to /enterprise (the enquiry form), never
+     * to /signup/enterprise (which would 404 the picker since enterprise is not
+     * in ALLOWED_PLANS).
+     *
+     * @param  array<string,mixed>  $plan
+     * @param  array<string,mixed>  $cfg
+     * @return array<string,mixed>
+     */
+    private static function contactTier(string $key, array $plan, array $cfg): array
+    {
+        $platforms = (array) ($plan['platforms'] ?? []);
+        $platformCasing = [
+            'linkedin' => 'LinkedIn', 'tiktok' => 'TikTok', 'youtube' => 'YouTube',
+            'facebook' => 'Facebook', 'instagram' => 'Instagram', 'threads' => 'Threads',
+        ];
+        $platformLabels = array_map(
+            static fn (string $p): string => $platformCasing[$p] ?? ucfirst($p),
+            $platforms,
+        );
+
+        return [
+            'key' => $key,
+            'name' => (string) ($plan['name'] ?? ucfirst($key)),
+            'is_contact' => true,
+            'price' => 'Custom',
+            'unit' => '',
+            'price_myr' => 0,
+            'annual_myr' => 0,
+            'annual_savings_myr' => 0,
+            'brands' => 'Custom brands',
+            'posts' => 'Custom AI image posts/mo',
+            'videos' => 'Custom AI 15-sec video posts/mo',
+            'platforms' => $platformLabels,
+            'platforms_label' => $platformLabels === []
+                ? ''
+                : (count($platformLabels) . ' platforms: ' . implode(', ', $platformLabels)),
+            'best' => (string) $cfg['best'],
+            'highlight' => (bool) ($cfg['highlight'] ?? false),
+            'cta_label' => 'Talk to us',
+            'cta_url' => url('/enterprise'),
+        ];
     }
 }

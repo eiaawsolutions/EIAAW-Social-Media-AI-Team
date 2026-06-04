@@ -121,6 +121,12 @@ class ChatbotPromptsTest extends TestCase
         $this->assertStringContainsString('RM 688', $p);
         $this->assertStringContainsString('smt.eiaawsolutions.com', $p);
         $this->assertStringContainsStringIgnoringCase('receipts', $p);
+        // Enterprise tier must be mentioned so the bot routes Enterprise asks to
+        // "Talk to us" rather than dead-ending — guards the prompt drift point.
+        $this->assertStringContainsStringIgnoringCase('Enterprise', $p);
+        // New caps must be the ones quoted (guards the hardcoded-facts drift).
+        $this->assertStringContainsString('25 AI image posts', $p);
+        $this->assertStringContainsString('4 AI video posts', $p);
 
         // Must NOT bake the actual model id or vendor into the knowledge — the
         // bot is told never to reveal them, and the FACTS section doesn't name

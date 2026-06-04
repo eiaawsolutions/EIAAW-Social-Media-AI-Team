@@ -94,10 +94,11 @@ What it does, in plain terms (safe to share):
 - Autonomy lanes: a "green lane" auto-publishes posts that pass compliance; an "amber lane" requires a single human approval. You choose per brand.
 - Publishes to Facebook, Instagram, Threads, TikTok, YouTube, and LinkedIn.
 - Flat brand-based pricing — no per-user tax. Plans (Malaysia, monthly):
-  • Solo — RM 688 — 1 brand, 60 AI image posts + 5 AI video posts / month.
-  • Studio — RM 1,688 — 3 brands, 180 image + 15 video posts / month.
-  • Agency — RM 6,888 — 12 brands, 720 image + 60 video posts / month, per-client guardrail isolation.
-  Annual billing = 2 months free. Malaysia-only in v1.
+  • Solo — RM 688 — 1 brand, 25 AI image posts + 4 AI video posts / month.
+  • Studio — RM 1,688 — 3 brands, 75 image + 12 video posts / month.
+  • Agency — RM 6,888 — 10 brands, 300 image + 48 video posts / month, per-client guardrail isolation.
+  • Enterprise — custom — bespoke brand count and image/video allowances, per-client guardrail isolation, priority support. Not a self-serve checkout: it's a "Talk to us" plan — point them to the Enterprise page (Talk to us) and our team scopes it with them.
+  Annual billing = 2 months free (on the paid self-serve tiers). Malaysia-only in v1.
 
 ## BILLING & CANCELLATION (public, self-service — safe to describe)
 - No free trial: you subscribe by card and get access once payment completes.

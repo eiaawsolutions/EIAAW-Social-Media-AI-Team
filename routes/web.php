@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\BillingController;
 use App\Http\Controllers\CspReportController;
+use App\Http\Controllers\EnterpriseEnquiryController;
 use App\Http\Controllers\SignupController;
 use App\Http\Controllers\SupportChatController;
 use App\Http\Controllers\StripeWebhookController;
@@ -51,6 +52,18 @@ Route::middleware('throttle:60,1')->group(function () {
     Route::get('/signup/{plan}', [SignupController::class, 'selectPlan'])->name('signup.select');
     Route::get('/billing/success', [BillingController::class, 'success'])->name('billing.success');
 });
+
+// Enterprise tier — a "Talk to us" lead flow, NOT a Stripe checkout. The
+// GET renders the dedicated enquiry form; the POST persists an
+// EnterpriseEnquiry + notifies HQ. The POST is a normal CSRF-protected
+// browser form (it carries @csrf), so unlike /api/contact it is NOT
+// CSRF-exempt. Tight write-throttle to deter scripted lead spam.
+Route::get('/enterprise', [EnterpriseEnquiryController::class, 'show'])
+    ->middleware('throttle:60,1')
+    ->name('enterprise.contact');
+Route::post('/enterprise', [EnterpriseEnquiryController::class, 'store'])
+    ->middleware('throttle:6,1')
+    ->name('enterprise.contact.store');
 
 Route::post('/billing/checkout/{plan}', [BillingController::class, 'checkout'])
     ->middleware('throttle:10,1')

@@ -23,6 +23,28 @@
  * Existing subscribers keep their old price (Stripe price_id is locked at
  * signup); only NEW signups see the new numbers.
  *
+ * Cap rebase 2026-06-04 (allowance tightening + Enterprise tier): PRICES UNCHANGED
+ * (RM 688/1688/6888) but allowances cut to lift margin —
+ *   Solo   1 brand  · 25 image · 4 video   (was 60 image · 5 video)
+ *   Studio 3 brands · 75 image · 12 video  (was 180 image · 15 video)
+ *   Agency 10 brands· 300 image· 48 video  (was 12 brands · 720 image · 60 video)
+ * and a fourth tier, ENTERPRISE, was added — a "Talk to us" lead tier with NO
+ * Stripe checkout and NO fixed caps (caps=null = unlimited until an operator
+ * provisions a bespoke workspace). Enterprise is NOT in SignupController::ALLOWED_PLANS,
+ * so it can never be self-serve checked-out; its card routes to /enterprise (a
+ * dedicated enquiry form), not /signup/{plan}.
+ *
+ * GRANDFATHERING (locked decision, 2026-06-04): these LOWER caps must NOT silently
+ * strip allowance from workspaces that signed up under the old numbers (e.g. the
+ * live Bear Hug Solo workspace had 60 image / 5 video). PlanCaps therefore reads a
+ * per-workspace cap SNAPSHOT stored at signup (workspaces.settings.plan_caps_snapshot)
+ * and only falls back to THIS live config when no snapshot exists. New signups get
+ * a snapshot of these new numbers; existing workspaces were backfilled with their
+ * old numbers. So editing a cap here changes the DEFAULT for brand-new signups only —
+ * never an existing subscriber. See App\Services\Billing\PlanCaps::capsFor() and
+ * App\Services\Billing\SignupProvisioner. To intentionally re-grant a customer the
+ * new caps, clear their snapshot (workspace:resnapshot-caps --reset).
+ *
  * POST-CAP MODEL: `max_published_posts_per_month` is the TOTAL publish ceiling
  * = image allowance + video allowance, so a video post never eats into the
  * image budget. `max_ai_image_posts_per_month` and `max_ai_videos_per_month`
@@ -68,19 +90,19 @@ return [
             // signup, including non-converters. Customers are charged on
             // checkout completion; access is gated until they pay.
             'trial_days'  => 0,
-            'description' => '1 brand · 60 image posts + 5 video posts/mo · all 6 agents · audit log',
-            'features'    => '1 brand, 60 AI image posts/mo, 5 AI 15-sec video posts/mo, 6 specialised agents, hard compliance gate, full audit log',
+            'description' => '1 brand · 25 image posts + 4 video posts/mo · all 6 agents · audit log',
+            'features'    => '1 brand, 25 AI image posts/mo, 4 AI 15-sec video posts/mo, 6 specialised agents, hard compliance gate, full audit log',
             // Supported publishing platforms (same set on every tier).
             'platforms'   => ['facebook', 'instagram', 'threads', 'tiktok', 'youtube', 'linkedin'],
             'caps' => [
                 // What the customer sees as the soft limit on /agency/billing.
                 'max_brands' => 1,
                 // Marketed media split (drives pricing-card copy).
-                'max_ai_image_posts_per_month' => 60,
+                'max_ai_image_posts_per_month' => 25,
                 // TOTAL publish ceiling = image + video, so a video post never
                 // eats the image budget. Posts past this defer to next period
                 // (auto-release 1st of month at workspace TZ). Warning at 80%.
-                'max_published_posts_per_month' => 65,
+                'max_published_posts_per_month' => 29, // 25 image + 4 video
                 // AI video generations (each a 15s Veo clip ≈ RM 18.80) —
                 // a single MONTHLY allowance; the customer self-paces within the
                 // month (no weekly/daily throttle). Hard fail past the month cap
@@ -90,37 +112,68 @@ return [
                 // caps. The old fal_*_daily_cap_usd keys were a hidden daily usage
                 // cap and were removed; do not reintroduce. See [[no-daily-fal-cap]]
                 // and PlanCapsTest::test_no_daily_usd_fal_breaker_in_config_or_caps.
-                'max_ai_videos_per_month' => 5,
+                'max_ai_videos_per_month' => 4,
             ],
         ],
         'studio' => [
             'name'        => 'Studio',
             'price_myr'   => 1688,
             'trial_days'  => 0,
-            'description' => '3 brands · 180 image posts + 15 video posts/mo · all 6 agents',
-            'features'    => '3 brands, 180 AI image posts/mo, 15 AI 15-sec video posts/mo, all 6 agents, hard compliance gate, full audit log',
+            'description' => '3 brands · 75 image posts + 12 video posts/mo · all 6 agents',
+            'features'    => '3 brands, 75 AI image posts/mo, 12 AI 15-sec video posts/mo, all 6 agents, hard compliance gate, full audit log',
             'platforms'   => ['facebook', 'instagram', 'threads', 'tiktok', 'youtube', 'linkedin'],
             'caps' => [
                 'max_brands' => 3,
-                'max_ai_image_posts_per_month' => 180,
-                'max_published_posts_per_month' => 195, // 180 image + 15 video
-                'max_ai_videos_per_month' => 15,
+                'max_ai_image_posts_per_month' => 75,
+                'max_published_posts_per_month' => 87, // 75 image + 12 video
+                'max_ai_videos_per_month' => 12,
             ],
         ],
         'agency' => [
             'name'        => 'Agency',
             'price_myr'   => 6888,
             'trial_days'  => 0,
-            'description' => '12 brands · 720 image posts + 60 video posts/mo · per-client guardrails',
-            'features'    => '12 brands, 720 AI image posts/mo, 60 AI 15-sec video posts/mo, per-client guardrail isolation, priority support',
+            'description' => '10 brands · 300 image posts + 48 video posts/mo · per-client guardrails',
+            'features'    => '10 brands, 300 AI image posts/mo, 48 AI 15-sec video posts/mo, per-client guardrail isolation, priority support',
             'platforms'   => ['facebook', 'instagram', 'threads', 'tiktok', 'youtube', 'linkedin'],
             'caps' => [
-                'max_brands' => 12,
-                'max_ai_image_posts_per_month' => 720,
-                'max_published_posts_per_month' => 780, // 720 image + 60 video
-                'max_ai_videos_per_month' => 60,
+                'max_brands' => 10,
+                'max_ai_image_posts_per_month' => 300,
+                'max_published_posts_per_month' => 348, // 300 image + 48 video
+                'max_ai_videos_per_month' => 48,
             ],
         ],
+        // ENTERPRISE — a "Talk to us" lead tier, NOT a self-serve checkout plan.
+        //
+        // Shown as the 4th pricing card on the landing + signup picker, but its
+        // CTA is "Talk to us" → /enterprise (a dedicated enquiry form), never
+        // /signup/enterprise. It is deliberately ABSENT from
+        // SignupController::ALLOWED_PLANS, so BillingController::checkout() and
+        // StripePriceCache will refuse it — there is no Stripe Product/Price for
+        // Enterprise. Pricing and caps are bespoke, negotiated per deal, then an
+        // operator provisions a workspace on plan='enterprise' with a custom cap
+        // snapshot (workspaces.settings.plan_caps_snapshot).
+        //
+        // price_myr=0 / is_contact=true drive the card to render "Custom" + a
+        // Talk-to-us button instead of a price + Subscribe button. caps=null
+        // means "no fixed plan caps" — if a workspace is ever put on plan=
+        // 'enterprise' WITHOUT a per-workspace snapshot, PlanCaps treats null as
+        // unlimited (PHP_INT_MAX) rather than falling back to Solo, because an
+        // Enterprise customer must never be silently throttled to Solo limits.
+        'enterprise' => [
+            'name'        => 'Enterprise',
+            'price_myr'   => 0,        // bespoke — never charged via Stripe
+            'is_contact'  => true,     // renders "Talk to us" instead of Subscribe
+            'trial_days'  => 0,
+            'description' => 'Custom brands · custom image + video allowances · per-client guardrails · priority support',
+            'features'    => 'Unlimited brands (negotiated), custom AI image + video allowances, all 6 agents, per-client guardrail isolation, priority support, bespoke onboarding',
+            'platforms'   => ['facebook', 'instagram', 'threads', 'tiktok', 'youtube', 'linkedin'],
+            // null = no fixed plan caps. A provisioned Enterprise workspace gets a
+            // bespoke per-workspace snapshot; absent that, PlanCaps treats this as
+            // unlimited (never Solo fallback) — see PlanCaps::capsFor().
+            'caps' => null,
+        ],
+
         // EIAAW internal workspace — no caps, no billing, no Stripe.
         // Used by HQ + dogfooding workspaces only.
         'eiaaw_internal' => [

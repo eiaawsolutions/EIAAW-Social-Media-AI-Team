@@ -160,7 +160,7 @@ class PlanCapsTest extends TestCase
         $soloPostCap = (int) config('billing.plans.solo.caps.max_published_posts_per_month');
 
         $ws->shouldReceive('publishedPostsThisMonth')->andReturn($soloPostCap + 100);
-        // Comfortably under the monthly video cap (Solo: 5).
+        // Comfortably under the monthly video cap (Solo).
         $ws->shouldReceive('aiVideosThisMonth')->andReturn(2);
 
         $svc = new PlanCaps();
@@ -371,5 +371,112 @@ class PlanCapsTest extends TestCase
         $this->assertTrue($e->isDuplicateName());
         $this->assertFalse($e->isCapReached());
         $this->assertStringContainsString('The Bear Hug Cafe', $e->getMessage());
+    }
+
+    // ── Grandfathering — per-workspace snapshot wins over live config ────────
+    //
+    // Locked decision 2026-06-04: lowering caps in config must NOT strip
+    // allowance from an existing subscriber. PlanCaps reads a snapshot stored in
+    // workspaces.settings before falling back to config.
+
+    public function test_grandfather_snapshot_overrides_live_config_caps(): void
+    {
+        // A Solo workspace carrying an OLD snapshot (60 image / 5 video) must keep
+        // those numbers even though live Solo config is now lower (25 / 4).
+        $ws = new Workspace();
+        $ws->plan = 'solo';
+        $ws->settings = [
+            PlanCaps::SNAPSHOT_SETTINGS_KEY => [
+                'max_brands' => 1,
+                'max_ai_image_posts_per_month' => 60,
+                'max_published_posts_per_month' => 65,
+                'max_ai_videos_per_month' => 5,
+            ],
+        ];
+
+        $caps = (new PlanCaps())->capsFor($ws);
+
+        $this->assertSame(60, $caps['max_ai_image_posts_per_month']);
+        $this->assertSame(65, $caps['max_published_posts_per_month']);
+        $this->assertSame(5, $caps['max_ai_videos_per_month']);
+
+        // And it really is the snapshot, not config (config is now lower).
+        $this->assertGreaterThan(
+            (int) config('billing.plans.solo.caps.max_ai_videos_per_month'),
+            $caps['max_ai_videos_per_month'],
+            'snapshot video allowance should exceed the new lower live config',
+        );
+    }
+
+    public function test_no_snapshot_falls_back_to_live_config_caps(): void
+    {
+        $ws = new Workspace();
+        $ws->plan = 'solo';
+        $ws->settings = null; // brand-new / never snapshotted
+
+        $caps = (new PlanCaps())->capsFor($ws);
+
+        $this->assertSame(
+            (int) config('billing.plans.solo.caps.max_ai_videos_per_month'),
+            $caps['max_ai_videos_per_month'],
+        );
+    }
+
+    public function test_incomplete_snapshot_is_ignored_and_falls_back_to_config(): void
+    {
+        // A partial/garbage snapshot must NOT half-apply — the whole snapshot is
+        // rejected and we fall through to live config.
+        $ws = new Workspace();
+        $ws->plan = 'solo';
+        $ws->settings = [
+            PlanCaps::SNAPSHOT_SETTINGS_KEY => [
+                'max_brands' => 1,
+                // missing the other three keys
+            ],
+        ];
+
+        $caps = (new PlanCaps())->capsFor($ws);
+
+        $this->assertSame(
+            (int) config('billing.plans.solo.caps.max_published_posts_per_month'),
+            $caps['max_published_posts_per_month'],
+        );
+    }
+
+    public function test_snapshot_caps_for_reads_live_config_not_existing_snapshot(): void
+    {
+        // snapshotCapsFor() is what the provisioner writes at signup — it must
+        // reflect CURRENT config (the new numbers), so a brand-new Solo signup
+        // gets the new 25/4 allowance snapshotted.
+        $caps = (new PlanCaps())->snapshotCapsFor('solo');
+
+        $this->assertSame((int) config('billing.plans.solo.caps.max_brands'), $caps['max_brands']);
+        $this->assertSame((int) config('billing.plans.solo.caps.max_ai_image_posts_per_month'), $caps['max_ai_image_posts_per_month']);
+        $this->assertSame((int) config('billing.plans.solo.caps.max_ai_videos_per_month'), $caps['max_ai_videos_per_month']);
+    }
+
+    // ── Enterprise — null caps mean unlimited, never Solo fallback ───────────
+
+    public function test_enterprise_plan_has_unlimited_caps_not_solo_fallback(): void
+    {
+        // config: enterprise.caps = null. PlanCaps must treat that as unlimited,
+        // NOT fall back to the restrictive Solo tier (which the unknown-plan path
+        // does). An Enterprise customer must never be throttled to Solo limits.
+        $ws = new Workspace();
+        $ws->plan = 'enterprise';
+
+        $caps = (new PlanCaps())->capsFor($ws);
+
+        $this->assertGreaterThan(1_000_000, $caps['max_brands']);
+        $this->assertGreaterThan(1_000_000, $caps['max_published_posts_per_month']);
+        $this->assertGreaterThan(1_000_000, $caps['max_ai_videos_per_month']);
+    }
+
+    public function test_enterprise_is_a_contact_tier_with_null_caps_in_config(): void
+    {
+        $this->assertTrue((bool) config('billing.plans.enterprise.is_contact'));
+        $this->assertNull(config('billing.plans.enterprise.caps'));
+        // Enterprise must NOT be self-serve checkoutable.
+        $this->assertNotContains('enterprise', \App\Http\Controllers\SignupController::ALLOWED_PLANS);
     }
 }

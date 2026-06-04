@@ -259,15 +259,23 @@
            /signup picker can NEVER drift. Edit prices in config, not here. --}}
       @php $tiers = \App\Http\Controllers\SignupController::tiersFromConfig(); @endphp
       @foreach ($tiers as $t)
-        <div class="rvl" style="grid-column: span 4; padding: 36px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); {{ ($t['highlight'] ?? false) ? 'border: 2px solid var(--ink); transform: translateY(-12px);' : '' }}">
+        <div class="rvl" style="grid-column: span 3; padding: 32px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); {{ ($t['highlight'] ?? false) ? 'border: 2px solid var(--ink); transform: translateY(-12px);' : '' }}">
           <strong style="font-family: var(--sans); font-size: 22px; letter-spacing: -0.015em; color: var(--ink);">{{ $t['name'] }}</strong>
           <div style="margin-top: 18px; display: flex; align-items: baseline; gap: 6px;">
-            <span style="font-family: var(--sans); font-weight: 500; font-size: 56px; letter-spacing: -0.04em; color: var(--ink);">{{ $t['price'] }}</span>
+            <span style="font-family: var(--sans); font-weight: 500; font-size: {{ ($t['is_contact'] ?? false) ? '44px' : '52px' }}; letter-spacing: -0.04em; color: var(--ink);">{{ $t['price'] }}</span>
+            @if ($t['unit'] !== '')
             <span style="font-size: 14px; color: var(--mute);">{{ $t['unit'] }}</span>
+            @endif
           </div>
+          @if (! ($t['is_contact'] ?? false))
           <div style="margin-top: 6px; font-size: 12px; color: var(--mute); font-family: var(--mono);">
             or RM {{ number_format($t['annual_myr']) }}/year &middot; save RM {{ number_format($t['annual_savings_myr']) }} (2 months free)
           </div>
+          @else
+          <div style="margin-top: 6px; font-size: 12px; color: var(--mute); font-family: var(--mono);">
+            bespoke pricing &middot; scoped to your operation
+          </div>
+          @endif
           <ul style="margin-top: 24px; list-style: none; padding: 0; display: flex; flex-direction: column; gap: 10px;">
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>{{ $t['brands'] }}</li>
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>{{ $t['posts'] }}</li>
@@ -279,7 +287,7 @@
             <li style="display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2);"><span style="width: 4px; height: 4px; border-radius: 50%; background: var(--primary);"></span>Tiered autonomy (green/amber)</li>
           </ul>
           <p style="margin-top: 20px; font-size: 13px; color: var(--ink-2); line-height: 1.5; font-style: italic;">{{ $t['best'] }}</p>
-          <a href="{{ url('/signup/' . $t['key']) }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">Subscribe now <span class="arrow">&rarr;</span></a>
+          <a href="{{ $t['cta_url'] }}" class="btn {{ ($t['highlight'] ?? false) ? 'btn-primary' : 'btn-outline' }}" style="margin-top: 24px; width: 100%; justify-content: center;">{{ $t['cta_label'] }} <span class="arrow">&rarr;</span></a>
         </div>
       @endforeach
     </div>

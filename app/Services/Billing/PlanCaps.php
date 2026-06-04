@@ -28,6 +28,27 @@ class PlanCaps
     public const RESULT_PLAN_UNKNOWN = 'plan_unknown';
 
     /**
+     * Where the per-workspace grandfathered cap snapshot lives inside
+     * workspaces.settings (JSON). Written once at signup by SignupProvisioner so
+     * a later cap change in config/billing.php never strips allowance from an
+     * existing subscriber. Reading order in capsFor(): snapshot → live config.
+     */
+    public const SNAPSHOT_SETTINGS_KEY = 'plan_caps_snapshot';
+
+    /**
+     * The four cap keys that make up a plan's allowance. Single list so the
+     * snapshot writer, the reader, and the backfill command can't drift.
+     *
+     * @var list<string>
+     */
+    public const CAP_KEYS = [
+        'max_brands',
+        'max_ai_image_posts_per_month',
+        'max_published_posts_per_month',
+        'max_ai_videos_per_month',
+    ];
+
+    /**
      * @return array{
      *   max_brands:int,
      *   max_ai_image_posts_per_month:int,
@@ -46,11 +67,32 @@ class PlanCaps
     public function capsFor(Workspace $workspace): array
     {
         $plan = (string) ($workspace->plan ?? 'solo');
+
+        // 1) GRANDFATHER: a per-workspace snapshot wins over live config so a
+        //    cap change in config/billing.php never strips allowance from an
+        //    existing subscriber (locked decision 2026-06-04). The snapshot is
+        //    written at signup; existing workspaces were backfilled. We require
+        //    all four cap keys to be present-and-numeric before trusting it, so
+        //    a partial/garbage snapshot can't half-apply.
+        $snapshot = $this->validSnapshot($workspace);
+        if ($snapshot !== null) {
+            return $snapshot;
+        }
+
+        // 2) No snapshot → read the live plan config.
         $caps = config("billing.plans.{$plan}.caps");
 
-        // Defensive default — if a workspace ends up on an unknown plan we
-        // fall back to Solo caps rather than PHP_INT_MAX (which would be
-        // the safe-for-user but expensive-for-us default).
+        // 2a) ENTERPRISE (or any tier) with caps explicitly null = "no fixed
+        //     plan caps". Treat as unlimited — an Enterprise customer must NEVER
+        //     be silently throttled to Solo limits. (eiaaw_internal sets its own
+        //     PHP_INT_MAX caps array and so takes the normal path below.)
+        if ($caps === null && config("billing.plans.{$plan}") !== null) {
+            return $this->unlimitedCaps();
+        }
+
+        // 2b) Defensive default — if a workspace ends up on a genuinely unknown
+        //     plan we fall back to Solo caps rather than PHP_INT_MAX (which would
+        //     be the safe-for-user but expensive-for-us default).
         if (! is_array($caps)) {
             $caps = config('billing.plans.solo.caps', []);
         }
@@ -62,9 +104,84 @@ class PlanCaps
 
         return [
             'max_brands' => $val('max_brands', 1),
-            'max_ai_image_posts_per_month' => $val('max_ai_image_posts_per_month', 60),
-            'max_published_posts_per_month' => $val('max_published_posts_per_month', 65),
-            'max_ai_videos_per_month' => $val('max_ai_videos_per_month', 5),
+            'max_ai_image_posts_per_month' => $val('max_ai_image_posts_per_month', 25),
+            'max_published_posts_per_month' => $val('max_published_posts_per_month', 29),
+            'max_ai_videos_per_month' => $val('max_ai_videos_per_month', 4),
+        ];
+    }
+
+    /**
+     * The caps that should be SNAPSHOTTED for a workspace right now, from the
+     * live plan config. This is what SignupProvisioner writes into
+     * workspaces.settings at signup (so the customer is locked to the numbers
+     * that were live the day they paid) and what the backfill command writes for
+     * existing workspaces. It deliberately reads CONFIG, never an existing
+     * snapshot, so it always reflects the current catalog.
+     *
+     * Enterprise / null-cap plans return unlimited — provisioning an Enterprise
+     * workspace should snapshot unlimited unless the operator overrides per deal.
+     *
+     * @return array{max_brands:int, max_ai_image_posts_per_month:int, max_published_posts_per_month:int, max_ai_videos_per_month:int}
+     */
+    public function snapshotCapsFor(string $plan): array
+    {
+        $caps = config("billing.plans.{$plan}.caps");
+
+        if ($caps === null && config("billing.plans.{$plan}") !== null) {
+            return $this->unlimitedCaps();
+        }
+
+        if (! is_array($caps)) {
+            $caps = config('billing.plans.solo.caps', []);
+        }
+
+        $solo = config('billing.plans.solo.caps', []);
+        $val = static fn (string $k, $default) => (int) ($caps[$k] ?? $solo[$k] ?? $default);
+
+        return [
+            'max_brands' => $val('max_brands', 1),
+            'max_ai_image_posts_per_month' => $val('max_ai_image_posts_per_month', 25),
+            'max_published_posts_per_month' => $val('max_published_posts_per_month', 29),
+            'max_ai_videos_per_month' => $val('max_ai_videos_per_month', 4),
+        ];
+    }
+
+    /**
+     * Read + validate the per-workspace cap snapshot. Returns the four-key cap
+     * array when a complete, numeric snapshot exists; null otherwise (so the
+     * caller falls through to live config). A snapshot missing any key or
+     * carrying a non-numeric value is rejected wholesale — we never half-apply.
+     *
+     * @return array{max_brands:int, max_ai_image_posts_per_month:int, max_published_posts_per_month:int, max_ai_videos_per_month:int}|null
+     */
+    private function validSnapshot(Workspace $workspace): ?array
+    {
+        $settings = $workspace->settings;
+        $snapshot = is_array($settings) ? ($settings[self::SNAPSHOT_SETTINGS_KEY] ?? null) : null;
+
+        if (! is_array($snapshot)) {
+            return null;
+        }
+
+        $out = [];
+        foreach (self::CAP_KEYS as $key) {
+            if (! array_key_exists($key, $snapshot) || ! is_numeric($snapshot[$key])) {
+                return null; // incomplete/garbage → ignore the whole snapshot
+            }
+            $out[$key] = (int) $snapshot[$key];
+        }
+
+        return $out;
+    }
+
+    /** @return array{max_brands:int, max_ai_image_posts_per_month:int, max_published_posts_per_month:int, max_ai_videos_per_month:int} */
+    private function unlimitedCaps(): array
+    {
+        return [
+            'max_brands' => PHP_INT_MAX,
+            'max_ai_image_posts_per_month' => PHP_INT_MAX,
+            'max_published_posts_per_month' => PHP_INT_MAX,
+            'max_ai_videos_per_month' => PHP_INT_MAX,
         ];
     }
 
