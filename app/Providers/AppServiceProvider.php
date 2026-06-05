@@ -6,8 +6,10 @@ use App\Listeners\EnsureUserHasWorkspace;
 use App\Models\Workspace;
 use App\Services\Metricool\AccountGrowthService;
 use App\Services\Metricool\MetricoolClient;
+use App\Services\Secrets\SecretsHealer;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Cashier\Cashier;
 
@@ -43,6 +45,18 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Event::listen(Login::class, EnsureUserHasWorkspace::class);
+
+        // SELF-HEAL poisoned workers before each queued job. A long-lived Railway
+        // worker that booted during an Infisical flap keeps unresolved secret://
+        // handles in config for its whole life, failing every job that needs that
+        // secret (Resend ApiKeyIsMissing, Metricool "not configured", …) until a
+        // redeploy. Re-resolving any leftover handles at job-start fixes mail,
+        // publishing, and any other secret-dependent job with no redeploy. Cheap
+        // no-op when everything is already resolved. See [[password_reset_mailer_pin]]
+        // / [[metricool_metrics_and_poll_bridge]].
+        Queue::before(function (): void {
+            SecretsHealer::ensureResolved();
+        });
 
         // Cashier's customer is the Workspace, not the User. EIAAW SMT
         // bills per workspace (flat brand-based pricing), so Stripe
