@@ -83,9 +83,58 @@ class SecretsHealer
             // Stripe→Cashier mirror must follow any Stripe re-resolution, same as
             // SecretsServiceProvider does at boot, so Cashier sees real keys.
             self::mirrorStripeToCashier();
+
+            // Rebuild any CACHED clients that captured the stale key at first
+            // resolution. Healing config alone is NOT enough for packages that
+            // bind their client as a SINGLETON reading config once — notably
+            // resend-laravel binds Resend\Contracts\Client as a singleton
+            // (config('resend.api_key') captured at first resolve) and the mail
+            // transport injects THAT instance. A worker that built the singleton
+            // before the heal keeps the missing key for life → ApiKeyIsMissing on
+            // every queued Resend send. Forgetting the bindings forces the next
+            // resolution to rebuild with the now-healed config. Also reset the
+            // mail+notification managers so the transport re-resolves the client.
+            self::forgetCachedClients();
         }
 
         return $healed;
+    }
+
+    /**
+     * Drop container singletons / resolved managers that may have captured a
+     * stale secret at first resolution, so they rebuild from healed config.
+     * Best-effort: forgetting an unbound id is a harmless no-op.
+     */
+    private static function forgetCachedClients(): void
+    {
+        $app = app();
+
+        // resend-laravel client singleton + its aliases.
+        foreach ([
+            \Resend\Contracts\Client::class,
+            \Resend\Client::class,
+            'resend',
+        ] as $id) {
+            try {
+                if ($app->bound($id) || $app->resolved($id)) {
+                    $app->forgetInstance($id);
+                }
+            } catch (\Throwable) {
+                // ignore — class may not exist in some envs
+            }
+        }
+
+        // The mail manager caches built mailers (incl. the resend transport that
+        // injected the old client). Drop it so the next Mail::mailer() rebuilds
+        // the transport against the rebuilt client. 'mail.manager' is Laravel's
+        // bound id; forgetting it is safe (lazily recreated on next use).
+        foreach (['mail.manager', 'mailer'] as $id) {
+            try {
+                $app->forgetInstance($id);
+            } catch (\Throwable) {
+                // ignore
+            }
+        }
     }
 
     /** Mirror resolved services.stripe.* into Cashier's own config block. */

@@ -106,4 +106,32 @@ class SecretsHealerTest extends TestCase
         $this->assertSame(0, SecretsHealer::ensureResolved(['services.resend.key']));
         $this->assertSame('secret://x/y/Z', config('services.resend.key'));
     }
+
+    public function test_healing_forgets_the_cached_resend_singleton(): void
+    {
+        // The real prod failure: resend-laravel binds Resend\Contracts\Client as a
+        // SINGLETON capturing the key at first resolve. A worker that built it
+        // against a poisoned config keeps ApiKeyIsMissing for life. After healing,
+        // SecretsHealer must FORGET that singleton so the next resolve rebuilds it.
+        config(['secrets.infisical.enabled' => true]);
+        config(['resend.api_key' => 'secret://x/y/RESEND']);
+
+        // Stand a sentinel instance in the container under the resend client id,
+        // standing in for the singleton a poisoned worker would have built.
+        $sentinel = new \stdClass();
+        $this->app->instance(\Resend\Contracts\Client::class, $sentinel);
+        $this->assertTrue($this->app->resolved(\Resend\Contracts\Client::class));
+
+        $this->bindResolver(fn (string $h) => 're_REAL_resolved_key');
+
+        SecretsHealer::ensureResolved(['resend.api_key']);
+
+        // After healing, the stale instance must have been forgotten — the
+        // container no longer reports it as resolved, so the next make() rebuilds
+        // against the healed config instead of returning the poisoned sentinel.
+        $this->assertFalse(
+            $this->app->resolved(\Resend\Contracts\Client::class),
+            'stale resend client singleton should be forgotten after heal',
+        );
+    }
 }
