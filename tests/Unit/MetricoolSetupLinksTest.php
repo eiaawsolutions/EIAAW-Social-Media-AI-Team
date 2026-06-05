@@ -8,10 +8,16 @@ use Tests\TestCase;
  * Guards the outbound links on the customer "Connect your social accounts"
  * wizard (metricool-setup.blade.php).
  *
- * Regression cover: "Manage connections" used to point at the hardcoded
- * /agency/platforms literal, which is NOT a real route (the Filament resource
- * lives at /agency/platform-connections) — so the button 404'd. It must resolve
- * via the real route name instead.
+ * History of the "Manage connections" button:
+ *   1. originally pointed at the hardcoded /agency/platforms literal → 404.
+ *   2. then pointed at the internal /agency/platform-connections Filament table
+ *      — a registered route, but the WRONG destination: customers can't manage
+ *      the real Metricool connection there, so the button felt dead to them.
+ *   3. now (2026-06-05): opens the brand's durable Metricool manage link in a
+ *      new tab when one is stored, else falls back to a "request a fresh link"
+ *      Livewire action — never a dead button. See MetricoolManageLinkTest for
+ *      the destination logic; this file guards the OTHER wizard links + the
+ *      setup gate that must stay open during onboarding.
  *
  * Pure source-inspection; DB-free.
  */
@@ -21,17 +27,6 @@ class MetricoolSetupLinksTest extends TestCase
     {
         return file_get_contents(
             resource_path('views/filament/agency/pages/metricool-setup.blade.php')
-        );
-    }
-
-    public function test_manage_connections_uses_the_real_platform_connections_route(): void
-    {
-        $src = $this->bladeSource();
-
-        $this->assertStringContainsString(
-            "route('filament.agency.resources.platform-connections.index'",
-            $src,
-            'Manage connections must link via the real platform-connections route name.'
         );
     }
 
@@ -49,12 +44,17 @@ class MetricoolSetupLinksTest extends TestCase
         );
     }
 
-    public function test_the_target_route_actually_exists(): void
+    public function test_manage_connections_no_longer_dead_ends_on_the_internal_table(): void
     {
-        // Sanity: the route name the button relies on is registered.
-        $this->assertNotNull(
-            app('router')->getRoutes()->getByName('filament.agency.resources.platform-connections.index'),
-            'The platform-connections index route must be registered for the link to resolve.'
+        $src = $this->bladeSource();
+
+        // Regression: the button must NOT point customers at the internal
+        // read-only platform-connections table — that is not where they manage
+        // the real Metricool connection, so it reads as "nothing happened".
+        $this->assertStringNotContainsString(
+            "route('filament.agency.resources.platform-connections.index'",
+            $src,
+            'Manage connections must go to Metricool (durable link) or the fresh-link fallback, not the internal table.'
         );
     }
 

@@ -68,7 +68,22 @@
                         </div>
                     @endif
                     <div class="ps-actions">
-                        <a href="{{ route('filament.agency.resources.platform-connections.index', ['brand' => $brand['id']]) }}" class="ps-cta ps-cta-ghost">Manage connections</a>
+                        {{-- "Manage connections" takes the customer to where they
+                             actually add/remove socials: their per-brand Metricool
+                             link. When we have a durable link, open it in a new
+                             tab. When we don't (never minted, or expired + cleared),
+                             fall back to requesting a fresh one — never a dead
+                             button. --}}
+                        @if (! empty($brand['manageUrl']))
+                            <a href="{{ $brand['manageUrl'] }}" target="_blank" rel="noopener noreferrer" class="ps-cta ps-cta-ghost">
+                                Manage connections <span aria-hidden="true">&#8599;</span>
+                            </a>
+                        @else
+                            <button type="button" wire:click="requestFreshLink({{ $brand['id'] }})" wire:loading.attr="disabled" class="ps-cta ps-cta-ghost">
+                                <span wire:loading.remove wire:target="requestFreshLink({{ $brand['id'] }})">Manage connections</span>
+                                <span wire:loading wire:target="requestFreshLink({{ $brand['id'] }})">Getting your link…</span>
+                            </button>
+                        @endif
                         <button type="button" wire:click="checkConnection({{ $brand['id'] }})" wire:loading.attr="disabled" class="ps-cta ps-cta-ghost">
                             <span wire:loading.remove wire:target="checkConnection({{ $brand['id'] }})">Re-check</span>
                             <span wire:loading wire:target="checkConnection({{ $brand['id'] }})">Checking…</span>

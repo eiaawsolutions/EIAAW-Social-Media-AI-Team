@@ -120,6 +120,17 @@ class BrandSendMetricoolLink extends Command
 
         $this->info("Sent connect-link to {$to} via '{$mailer}'.");
 
+        // Persist the share-link as the brand's DURABLE "manage connections"
+        // destination. Before this, the link was emailed once and forgotten, so
+        // the wizard's "Manage connections" button had nowhere to send the
+        // customer. Storing it here lets the button deep-link straight to
+        // Metricool. Always written on a successful send (even with --no-stamp,
+        // which only governs the link_sent state timestamp, not the URL we now
+        // know is live). The link is NOT a secret — a tokenised f.mtr.cool short
+        // link scoped to this one brand — so a plain column is correct.
+        $brand->forceFill(['metricool_connect_url' => $url])->save();
+        $this->info('Stored as the durable Manage-connections link for this brand.');
+
         if (! $this->option('no-stamp')) {
             $brand->forceFill(['metricool_connect_link_sent_at' => now()])->save();
             $this->info("Stamped metricool_connect_link_sent_at — brand state is now: {$brand->fresh()->metricoolSetupState()}.");

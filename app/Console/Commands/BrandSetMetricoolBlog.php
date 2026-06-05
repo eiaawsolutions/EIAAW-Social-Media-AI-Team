@@ -38,6 +38,7 @@ class BrandSetMetricoolBlog extends Command
     protected $signature = 'brand:set-metricool-blog
                             {brand? : Brand ID}
                             {blogId? : Metricool blogId (numeric, NOT a secret)}
+                            {--connect-url= : Store/refresh the durable per-brand Metricool manage link (https://f.mtr.cool/...) the wizard "Manage connections" button opens}
                             {--detect : Read /admin/profile and sync connected networks into platform_connections}
                             {--mark-link-sent : Stamp metricool_connect_link_sent_at (the share-link was given to the customer)}
                             {--clear : Unmap the brand from Metricool}
@@ -67,9 +68,23 @@ class BrandSetMetricoolBlog extends Command
                 'metricool_blog_id' => null,
                 'metricool_connect_link_sent_at' => null,
                 'metricool_connected_at' => null,
+                'metricool_connect_url' => null,
             ]);
             $this->info("Brand #{$brandId} unmapped from Metricool.");
             return self::SUCCESS;
+        }
+
+        // Store/refresh the durable Manage-connections link. Standalone option
+        // (not gated on a blogId arg) so an operator can refresh an expired
+        // share-link on an already-mapped brand without re-sending the email.
+        if (($connectUrl = $this->option('connect-url')) !== null) {
+            $connectUrl = trim((string) $connectUrl);
+            if (! filter_var($connectUrl, FILTER_VALIDATE_URL) || ! str_starts_with($connectUrl, 'https://')) {
+                $this->error("--connect-url must be a valid https:// URL (got '{$connectUrl}').");
+                return self::FAILURE;
+            }
+            $brand->update(['metricool_connect_url' => $connectUrl]);
+            $this->info("Brand #{$brandId}: durable Manage-connections link stored.");
         }
 
         if ($this->option('mark-link-sent')) {

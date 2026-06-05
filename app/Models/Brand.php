@@ -25,6 +25,7 @@ class Brand extends Model
         'metricool_blog_id',
         'metricool_connect_link_sent_at',
         'metricool_connected_at',
+        'metricool_connect_url',
         'config',
         'competitors',
         'competitor_intel_config',
@@ -73,6 +74,29 @@ class Brand extends Model
     {
         return ! empty($this->metricool_blog_id)
             && $this->metricool_connected_at !== null;
+    }
+
+    /**
+     * The durable per-brand Metricool "manage connections" link — where the
+     * customer goes to add/remove the actual social accounts at the source.
+     *
+     * Returns the stored share/manage link if it's a valid https URL, else null.
+     * Null means the wizard must fall back to the "request a fresh link" flow
+     * rather than dead-ending the "Manage connections" button. We never invent
+     * an app.metricool.com URL here — there is no per-customer login and the
+     * agency dashboard is shared across all tenants ([[metricool-multitenancy]]),
+     * so the only safe destination is this brand's own share-link.
+     */
+    public function metricoolManageUrl(): ?string
+    {
+        $url = trim((string) $this->metricool_connect_url);
+        if ($url === '') {
+            return null;
+        }
+
+        return (filter_var($url, FILTER_VALIDATE_URL) && str_starts_with($url, 'https://'))
+            ? $url
+            : null;
     }
 
     public function workspace(): BelongsTo
