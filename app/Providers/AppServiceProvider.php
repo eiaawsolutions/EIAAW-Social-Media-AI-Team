@@ -24,6 +24,20 @@ class AppServiceProvider extends ServiceProvider
             AccountGrowthService::class,
             fn () => new AccountGrowthService(MetricoolClient::fromConfig()),
         );
+
+        // Pin Filament's password-reset notification to the DELIVERABLE mailer.
+        // Filament's RequestPasswordReset page resolves
+        // Filament\Auth\Notifications\ResetPassword from the container and calls
+        // $user->notify() directly (bypassing User::sendPasswordResetNotification),
+        // and that notification rides the DEFAULT mailer — which is `log` on prod,
+        // so reset links were silently dropped (the Bear Hug lockout). Binding the
+        // base id to our PinnedResetPassword subclass makes every Filament reset
+        // email ride Resend instead. The $url parameter Filament passes is honored
+        // (PinnedResetPassword extends Filament's notification, which sets $url).
+        $this->app->bind(
+            \Filament\Auth\Notifications\ResetPassword::class,
+            fn ($app, array $params) => new \App\Notifications\PinnedResetPassword(...$params),
+        );
     }
 
     public function boot(): void

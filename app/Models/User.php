@@ -88,35 +88,18 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
     }
 
     /**
-     * Send the password-reset email on the PINNED deliverable transport, never
-     * the default mailer.
+     * Password-reset delivery is pinned to the Resend mailer at the NOTIFICATION
+     * level, not here.
      *
-     * WHY: prod runs MAIL_MAILER=log (the default mailer is a no-op), and only
-     * the operational mailers are pinned to Resend (welcome credentials, cap
-     * warnings — see App\Support\MailTransport). Laravel's stock password-reset
-     * notification routes through the DEFAULT mailer, so a customer who hit
-     * "forgot password" got a reset link written to the log file and never to
-     * their inbox — the exact silent-drop class this codebase keeps tripping on
-     * ([[queued_mail_verify_at_provider]], [[resend_mail_wiring]]). This was the
-     * real cause of the Bear Hug "can't log in" report: her account was intact;
-     * she just had no deliverable way to (re)set a password.
-     *
-     * We force the notification onto MailTransport::welcomeMailer() (Resend). If
-     * that transport can't deliver we throw rather than pretend — a reset link
-     * that silently vanishes is worse than a loud failure the operator can see.
+     * The live reset flow is Filament's RequestPasswordReset page, which resolves
+     * Filament\Auth\Notifications\ResetPassword from the container, sets its $url,
+     * and calls $user->notify() DIRECTLY — it never calls this method. So we pin
+     * delivery by binding that notification id to App\Notifications\PinnedResetPassword
+     * (rides Resend) in AppServiceProvider. Overriding this method instead would
+     * miss the real page AND can't build Filament's reset URL from a bare broker
+     * context (RouteNotFoundException: password.reset). Left as the framework
+     * default deliberately. See [[queued_mail_verify_at_provider]].
      */
-    public function sendPasswordResetNotification(#[\SensitiveParameter] $token): void
-    {
-        $mailer = \App\Support\MailTransport::welcomeMailer();
-
-        // Refuse to "send" a reset link into a no-op transport — a silently
-        // vanished reset link is worse than a loud failure the operator sees.
-        if ($reason = \App\Support\MailTransport::cannotDeliverReason($mailer)) {
-            throw new \RuntimeException("Password reset cannot be delivered: {$reason}");
-        }
-
-        $this->notify(new \App\Notifications\PinnedResetPassword($token));
-    }
 
     public function canAccessPanel(Panel $panel): bool
     {
