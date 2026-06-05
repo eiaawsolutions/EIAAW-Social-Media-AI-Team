@@ -36,6 +36,16 @@ class PlanCaps
     public const SNAPSHOT_SETTINGS_KEY = 'plan_caps_snapshot';
 
     /**
+     * Where a bespoke Enterprise workspace's agreed MONTHLY price (whole MYR) is
+     * stored inside workspaces.settings. Written by EnterpriseProvisioner from
+     * the negotiated figure. Enterprise has no catalog price (config price_myr=0),
+     * so this is the only record of what the customer agreed to pay. Not yet wired
+     * into CostMonitor MRR (deliberate follow-up) — stored now so it's available
+     * when that's switched on.
+     */
+    public const ENTERPRISE_PRICE_SETTINGS_KEY = 'enterprise_agreed_price_myr';
+
+    /**
      * The four cap keys that make up a plan's allowance. Single list so the
      * snapshot writer, the reader, and the backfill command can't drift.
      *

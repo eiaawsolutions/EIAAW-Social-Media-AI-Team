@@ -20,6 +20,10 @@ class EnterpriseEnquiry extends Model
         'message',
         'ip_hash', 'user_agent', 'referer',
         'status', 'handled_at',
+        // Provisioning + invoice (invoice-based Enterprise deals).
+        'agreed_brands', 'agreed_image_posts', 'agreed_video_posts', 'agreed_price_myr',
+        'stripe_invoice_id', 'stripe_invoice_url', 'invoice_status', 'invoice_paid_at',
+        'provisioned_workspace_id',
     ];
 
     protected function casts(): array
@@ -28,6 +32,17 @@ class EnterpriseEnquiry extends Model
             'brands_needed' => 'integer',
             'videos_per_month' => 'integer',
             'handled_at' => 'datetime',
+            'agreed_brands' => 'integer',
+            'agreed_image_posts' => 'integer',
+            'agreed_video_posts' => 'integer',
+            'agreed_price_myr' => 'integer',
+            'invoice_paid_at' => 'datetime',
+            'provisioned_workspace_id' => 'integer',
         ];
+    }
+
+    public function provisionedWorkspace(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(Workspace::class, 'provisioned_workspace_id');
     }
 }

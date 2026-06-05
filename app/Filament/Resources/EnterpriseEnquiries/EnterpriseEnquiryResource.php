@@ -96,7 +96,25 @@ class EnterpriseEnquiryResource extends Resource
                 Tables\Columns\TextColumn::make('message')
                     ->wrap()
                     ->limit(60)
-                    ->tooltip(fn (EnterpriseEnquiry $r) => $r->message),
+                    ->tooltip(fn (EnterpriseEnquiry $r) => $r->message)
+                    ->toggleable(),
+                Tables\Columns\TextColumn::make('agreed_price_myr')
+                    ->label('Agreed')
+                    ->placeholder('—')
+                    ->formatStateUsing(fn (?int $state) => $state ? 'RM ' . number_format($state) . '/mo' : null)
+                    ->alignEnd()
+                    ->toggleable(),
+                Tables\Columns\TextColumn::make('invoice_status')
+                    ->label('Invoice')
+                    ->badge()
+                    ->placeholder('—')
+                    ->color(fn (?string $state) => match ($state) {
+                        'paid' => 'success',
+                        'sent' => 'warning',
+                        'void' => 'gray',
+                        'draft' => 'info',
+                        default => 'gray',
+                    }),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
                     ->color(fn (string $state) => match ($state) {
@@ -116,6 +134,58 @@ class EnterpriseEnquiryResource extends Resource
                 ]),
             ])
             ->recordActions([
+                \Filament\Actions\Action::make('provisionAndInvoice')
+                    ->label('Provision & invoice')
+                    ->icon('heroicon-o-rocket-launch')
+                    ->color('success')
+                    // Only before a workspace exists for this deal — keeps the
+                    // action idempotent at the UI level too (the service is
+                    // idempotent regardless).
+                    ->visible(fn (EnterpriseEnquiry $r) => $r->provisioned_workspace_id === null)
+                    ->modalHeading(fn (EnterpriseEnquiry $r) => "Provision Enterprise — {$r->company}")
+                    ->modalDescription('Creates a bespoke enterprise workspace (inactive) and emails the customer a one-off Stripe invoice. The workspace activates automatically when the invoice is paid. No recurring subscription is created.')
+                    ->modalSubmitActionLabel('Provision + send invoice')
+                    ->schema([
+                        \Filament\Forms\Components\TextInput::make('brands')
+                            ->label('Brands')
+                            ->numeric()->required()->minValue(1)->default(10),
+                        \Filament\Forms\Components\TextInput::make('image_posts')
+                            ->label('AI image posts / month')
+                            ->numeric()->required()->minValue(0)->default(300),
+                        \Filament\Forms\Components\TextInput::make('video_posts')
+                            ->label('AI 15-sec video posts / month')
+                            ->numeric()->required()->minValue(0)->default(48),
+                        \Filament\Forms\Components\TextInput::make('price_myr')
+                            ->label('Agreed price (RM / month)')
+                            ->numeric()->required()->minValue(1)
+                            ->helperText('Bespoke monthly figure. A one-off Stripe invoice for this amount is sent now; re-invoice each term.'),
+                    ])
+                    ->action(function (EnterpriseEnquiry $r, array $data): void {
+                        try {
+                            app(\App\Services\Billing\EnterpriseProvisioner::class)->provisionAndInvoice($r, [
+                                'brands' => (int) $data['brands'],
+                                'image_posts' => (int) $data['image_posts'],
+                                'video_posts' => (int) $data['video_posts'],
+                                'price_myr' => (int) $data['price_myr'],
+                            ]);
+                            \Filament\Notifications\Notification::make()
+                                ->title('Enterprise provisioned + invoice sent')
+                                ->body('Workspace created (inactive). It activates when the customer pays the Stripe invoice.')
+                                ->success()->send();
+                        } catch (\Throwable $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Provisioning failed')
+                                ->body($e->getMessage())
+                                ->danger()->persistent()->send();
+                        }
+                    }),
+                \Filament\Actions\Action::make('openInvoice')
+                    ->label('Open invoice')
+                    ->icon('heroicon-o-document-currency-dollar')
+                    ->color('info')
+                    ->visible(fn (EnterpriseEnquiry $r) => ! empty($r->stripe_invoice_url))
+                    ->url(fn (EnterpriseEnquiry $r) => $r->stripe_invoice_url)
+                    ->openUrlInNewTab(),
                 \Filament\Actions\Action::make('view')
                     ->label('View')
                     ->icon('heroicon-o-eye')

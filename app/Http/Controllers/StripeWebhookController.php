@@ -186,6 +186,15 @@ class StripeWebhookController extends CashierWebhookController
             case 'customer.subscription.created':
             case 'customer.subscription.updated':
             case 'invoice.payment_succeeded':
+                // ENTERPRISE: a one-off invoice (metadata.intent=enterprise) has NO
+                // subscription, so it must NOT go through syncWorkspaceFromCashier
+                // (which expects a Cashier subscription row and would warn+skip).
+                // Activate the bespoke workspace directly and stop. Idempotent.
+                if ($eventType === 'invoice.payment_succeeded'
+                    && $this->activateEnterpriseIfInvoicePaid($payload, $workspace)
+                ) {
+                    break;
+                }
                 $this->syncWorkspaceFromCashier($workspace, $eventType);
                 break;
 
@@ -306,5 +315,58 @@ class StripeWebhookController extends CashierWebhookController
 
         $workspace->update($updates);
         Log::info("Workspace {$workspace->slug} synced from Cashier on {$eventType}: status={$newStatus}, trial_ends_at=" . ($sub->trial_ends_at?->toIso8601String() ?? 'null'));
+    }
+
+    /**
+     * Activate a bespoke ENTERPRISE workspace when its one-off invoice is paid.
+     *
+     * Enterprise has no subscription — it's a single Stripe Invoice carrying
+     * metadata.intent=enterprise (set by EnterpriseProvisioner). When that invoice
+     * is paid, Stripe fires invoice.payment_succeeded with the same metadata; we
+     * flip the workspace to 'active' and stamp the matching enterprise_enquiries
+     * row (invoice_status=paid). Returns true when this WAS an enterprise invoice
+     * (so the caller skips the subscription-sync path), false otherwise.
+     *
+     * Idempotent: re-running on an already-active workspace is a harmless no-op
+     * (Stripe may redeliver; subscription_events also dedupes upstream).
+     */
+    private function activateEnterpriseIfInvoicePaid(array $payload, Workspace $workspace): bool
+    {
+        $invoice = $payload['data']['object'] ?? [];
+        $intent = $invoice['metadata']['intent'] ?? null;
+
+        if ($intent !== 'enterprise') {
+            return false; // not an enterprise invoice — let the normal path run
+        }
+
+        // Only act when the invoice is genuinely paid (defensive: the event name
+        // already implies it, but the object carries the authoritative flag).
+        $isPaid = ($invoice['paid'] ?? false) === true
+            || ($invoice['status'] ?? null) === 'paid';
+
+        if (! $isPaid) {
+            Log::info("Stripe webhook: enterprise invoice for workspace {$workspace->slug} not marked paid yet — skipping activation.");
+            return true; // it IS enterprise; just nothing to activate yet
+        }
+
+        if ($workspace->subscription_status !== 'active') {
+            $workspace->update([
+                'subscription_status' => 'active',
+                'suspended_at' => null,
+                'suspended_reason' => null,
+            ]);
+            Log::info("Workspace {$workspace->slug} ACTIVATED via paid enterprise invoice.");
+        }
+
+        // Stamp the deal record (best-effort; the workspace activation above is
+        // the load-bearing effect).
+        $invoiceId = $invoice['id'] ?? null;
+        if ($invoiceId) {
+            \App\Models\EnterpriseEnquiry::where('stripe_invoice_id', $invoiceId)
+                ->whereNull('invoice_paid_at')
+                ->update(['invoice_status' => 'paid', 'invoice_paid_at' => now(), 'status' => 'qualified']);
+        }
+
+        return true;
     }
 }
