@@ -35,6 +35,26 @@ use Illuminate\Support\Facades\Log;
 class SecretsHealer
 {
     /**
+     * Config-path → source OS-env-var holding the `secret://` handle. Used to
+     * recover a handle when config was baked EMPTY by a flapped boot-time
+     * config:cache (config() returns '' so there's no handle to re-resolve in
+     * place). Railway always injects these as real env vars, and getenv()
+     * returns them even under cached config (env() does not). Keep this in sync
+     * with config/services.php + config/resend.php for the secrets that are
+     * load-bearing for QUEUED jobs (mail + publishing). Other secrets self-heal
+     * only from a leftover in-config handle, which is sufficient for them.
+     *
+     * @var array<string,string>
+     */
+    private const PATH_ENV_SOURCE = [
+        'resend.api_key' => 'RESEND_KEY',
+        'services.resend.key' => 'RESEND_KEY',
+        'services.metricool.api_token' => 'METRICOOL_API_TOKEN',
+        'services.anthropic.api_key' => 'ANTHROPIC_API_KEY',
+        'services.fal.api_key' => 'FAL_API_KEY',
+    ];
+
+    /**
      * Re-resolve any still-unresolved secret:// handles among the given config
      * paths (defaults to the full secrets.resolve allow-list). Returns the number
      * of paths healed this call (0 = nothing to do, the common case).
@@ -53,23 +73,38 @@ class SecretsHealer
         foreach ($paths as $path) {
             $current = config($path);
 
-            // Only act on a leftover handle. A resolved value, a plain env value,
-            // or a genuinely-absent secret (null) we leave alone — re-resolving a
-            // null would be pointless and an empty string isn't necessarily a
-            // boot flap (could be legitimately unset in this env).
-            if (! is_string($current) || ! str_starts_with($current, 'secret://')) {
+            // Already a real value (resolved or plain) → nothing to do.
+            if (is_string($current) && $current !== '' && ! str_starts_with($current, 'secret://')) {
                 continue;
             }
 
+            // The handle to resolve. Two recovery cases:
+            //   (a) config still holds a `secret://` handle (boot left it raw), OR
+            //   (b) config is EMPTY/NULL — the worst case on a Railway worker whose
+            //       boot-time `php artisan config:cache` baked an EMPTY value after
+            //       an Infisical flap. config() now returns '' (NOT a handle), so we
+            //       MUST recover the original handle from the OS env var, which
+            //       Railway always injects (getenv() returns it even under cached
+            //       config, unlike env()). Without this, an empty-config worker can
+            //       never self-heal and every queued Resend/Metricool job fails for
+            //       the container's whole life. See the path→env map below.
+            $handle = (is_string($current) && str_starts_with($current, 'secret://'))
+                ? $current
+                : self::handleFromEnv($path);
+
+            if ($handle === null) {
+                continue; // genuinely no handle to resolve for this path
+            }
+
             try {
-                $resolved = app(InfisicalResolver::class)->resolve($current);
+                $resolved = app(InfisicalResolver::class)->resolve($handle);
                 if (is_string($resolved) && $resolved !== '' && ! str_starts_with($resolved, 'secret://')) {
                     config([$path => $resolved]);
                     $healed++;
                 }
             } catch (\Throwable $e) {
-                // Infisical still down — leave the handle, let the dependent
-                // feature's own guard take over. Don't throw into the worker.
+                // Infisical still down — leave it, let the dependent feature's own
+                // guard take over. Don't throw into the worker.
                 Log::warning('SecretsHealer: re-resolve failed; leaving handle in place.', [
                     'config_path' => $path,
                     'error' => $e->getMessage(),
@@ -135,6 +170,27 @@ class SecretsHealer
                 // ignore
             }
         }
+    }
+
+    /**
+     * Recover the original `secret://` handle for a config path from its source
+     * OS env var (Railway-injected; readable via getenv() even under cached
+     * config). Returns the handle string, or null if there's no mapping or the
+     * env var isn't a secret:// handle (e.g. local dev with a raw value).
+     */
+    private static function handleFromEnv(string $path): ?string
+    {
+        $envVar = self::PATH_ENV_SOURCE[$path] ?? null;
+        if ($envVar === null) {
+            return null;
+        }
+
+        $raw = getenv($envVar);
+        if (! is_string($raw) || ! str_starts_with($raw, 'secret://')) {
+            return null;
+        }
+
+        return $raw;
     }
 
     /** Mirror resolved services.stripe.* into Cashier's own config block. */

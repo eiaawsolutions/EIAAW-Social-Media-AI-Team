@@ -107,6 +107,46 @@ class SecretsHealerTest extends TestCase
         $this->assertSame('secret://x/y/Z', config('services.resend.key'));
     }
 
+    public function test_recovers_handle_from_env_when_config_is_empty(): void
+    {
+        // The real worker case: boot-time config:cache baked an EMPTY value after
+        // an Infisical flap, so config() returns '' (NOT a secret:// handle). The
+        // healer must recover the original handle from the OS env var (getenv) and
+        // resolve THAT — otherwise an empty-config worker can never self-heal.
+        config(['secrets.infisical.enabled' => true]);
+        config(['resend.api_key' => '']); // cached-empty, the poison state
+
+        // RESEND_KEY is the source env var for resend.api_key (PATH_ENV_SOURCE).
+        putenv('RESEND_KEY=secret://eiaaw-all-projects/prod/RESEND_API');
+
+        $this->bindResolver(function (string $h): string {
+            // Must be invoked with the ENV-recovered handle, not the empty config.
+            \PHPUnit\Framework\Assert::assertSame('secret://eiaaw-all-projects/prod/RESEND_API', $h);
+            return 're_RECOVERED_FROM_ENV';
+        });
+
+        $healed = SecretsHealer::ensureResolved(['resend.api_key']);
+
+        $this->assertSame(1, $healed);
+        $this->assertSame('re_RECOVERED_FROM_ENV', config('resend.api_key'));
+
+        putenv('RESEND_KEY'); // unset to avoid leaking into other tests
+    }
+
+    public function test_empty_config_with_no_env_source_is_left_alone(): void
+    {
+        // A path with no PATH_ENV_SOURCE mapping and empty config = genuinely
+        // unset; the healer must NOT invent a handle or call the resolver.
+        config(['secrets.infisical.enabled' => true]);
+        config(['some.unmapped.secret' => '']);
+
+        $this->bindResolver(function (): string {
+            $this->fail('resolver must not run for an unmapped empty path');
+        });
+
+        $this->assertSame(0, SecretsHealer::ensureResolved(['some.unmapped.secret']));
+    }
+
     public function test_healing_forgets_the_cached_resend_singleton(): void
     {
         // The real prod failure: resend-laravel binds Resend\Contracts\Client as a
