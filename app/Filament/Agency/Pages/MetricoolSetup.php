@@ -196,6 +196,21 @@ class MetricoolSetup extends Page
         $ws = $this->workspace;
         $customerEmail = (string) (optional($ws?->owner)->email ?: optional(auth()->user())->email);
 
+        // One-click deep-link into the HQ onboarding console, focused on this
+        // brand's card (its paste-box + Send button). The /admin panel is
+        // super-admin-only (User::canAccessPanel), so the panel gate is the real
+        // authz — the brand id is not a secret. Falls back to a plain instruction
+        // if URL generation ever fails (e.g. route cache mid-deploy).
+        $adminLink = null;
+        try {
+            $adminLink = \App\Filament\Pages\MetricoolOnboarding::getUrl(
+                ['brand' => $brand->id],
+                panel: 'admin',
+            );
+        } catch (\Throwable $e) {
+            Log::warning('MetricoolSetup: could not build onboarding deep-link', ['error' => $e->getMessage()]);
+        }
+
         // Notify HQ to mint + send a fresh link. This is the whole flow now —
         // there is no customer-facing re-send of a (stale) stored link.
         try {
@@ -205,15 +220,19 @@ class MetricoolSetup extends Page
             $body = sprintf(
                 "Brand #%d (%s) in workspace #%d (%s) clicked \"Manage connections\" — send them a FRESH Metricool connect link.\n\n"
                 . "Customer email: %s\n\n"
-                . "Metricool connect-links expire after ~71h, so mint a new one each time:\n"
-                . "  1. In Metricool → open this brand → Connections → Share icon → Create link (blogId %s).\n"
-                . "  2. Store + email it to the customer in one step:\n"
+                . "FASTEST (one click — no SSH):\n"
+                . "  1. Open the HQ console (focused on this brand):\n"
+                . "       %s\n"
+                . "  2. In Metricool → open this brand → Connections → Share icon → Create link (blogId %s).\n"
+                . "  3. Paste the link into the brand's box and click \"Store & send\". Done.\n\n"
+                . "OR via the terminal:\n"
                 . "       php artisan brand:send-metricool-link %d <newUrl>\n",
                 $brand->id,
                 $brand->name,
                 $ws?->id,
                 $ws?->slug,
                 $customerEmail ?: '(no email on file)',
+                $adminLink ?: '(open /admin → Platform onboarding)',
                 $brand->metricool_blog_id ?: '(not mapped)',
                 $brand->id,
             );

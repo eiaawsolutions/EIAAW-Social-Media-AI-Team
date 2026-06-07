@@ -6,6 +6,7 @@ use App\Models\Brand;
 use App\Models\Workspace;
 use App\Services\Metricool\MetricoolClient;
 use App\Services\Metricool\MetricoolConnectionService;
+use App\Services\Metricool\MetricoolConnectLinkSender;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Support\Facades\Log;
@@ -48,6 +49,28 @@ class MetricoolOnboarding extends Page
     protected string $view = 'filament.pages.metricool-onboarding';
 
     public const METRICOOL_APP_URL = 'https://app.metricool.com/';
+
+    /**
+     * Per-brand paste-box for the Metricool connect-link, keyed by brand id.
+     * Bound from the blade so the operator pastes the link straight into the
+     * brand's card and clicks Send — no SSH, no artisan, no copying ids.
+     *
+     * @var array<int, string>
+     */
+    public array $connectUrlInputs = [];
+
+    /**
+     * Brand to scroll-to / highlight, taken from ?brand=N on the URL. The HQ
+     * "fresh link request" email deep-links here with the requesting brand so
+     * the operator lands on the exact card to action.
+     */
+    public ?int $focusBrandId = null;
+
+    public function mount(): void
+    {
+        $brand = (int) request()->integer('brand');
+        $this->focusBrandId = $brand > 0 ? $brand : null;
+    }
 
     public static function canAccess(): bool
     {
@@ -236,6 +259,59 @@ class MetricoolOnboarding extends Page
                 count($result['networks']),
                 implode(', ', $result['networks']),
             ))
+            ->success()
+            ->send();
+    }
+
+    /**
+     * One-click "Store & send to customer": the operator pastes the Metricool
+     * connect-link they just minted into the brand's card and clicks Send. This
+     * is the whole automation win for the "fresh link request" flow — it does
+     * exactly what `brand:send-metricool-link` does (store the durable link,
+     * email the customer via the pinned Resend mailer, stamp link_sent) but from
+     * the browser, deep-linked straight from the HQ request email. No SSH, no
+     * artisan, no copying brand ids.
+     *
+     * Delegates to MetricoolConnectLinkSender so it shares the command's exact
+     * guards (valid https, delivering transport, synchronous send, stamp only
+     * after a confirmed send) — the UI can never silently diverge from the CLI.
+     */
+    public function sendConnectLink(int $brandId): void
+    {
+        $brand = Brand::find($brandId);
+        if (! $brand) {
+            Notification::make()->title('Brand not found')->danger()->send();
+            return;
+        }
+
+        $url = trim((string) ($this->connectUrlInputs[$brandId] ?? ''));
+        if ($url === '') {
+            Notification::make()
+                ->title('Paste the connect-link first')
+                ->body('Mint it in Metricool → Connections → Share → Create link, then paste it into this brand\'s box.')
+                ->warning()
+                ->send();
+            return;
+        }
+
+        $result = app(MetricoolConnectLinkSender::class)->send($brand, $url);
+
+        if (! $result['ok']) {
+            Notification::make()
+                ->title('Couldn\'t send')
+                ->body($result['message'])
+                ->danger()
+                ->persistent()
+                ->send();
+            return;
+        }
+
+        // Clear the box on success so the card visibly resets.
+        $this->connectUrlInputs[$brandId] = '';
+
+        Notification::make()
+            ->title('Sent to the customer 🎉')
+            ->body($result['message'] . ' Brand state: ' . ($result['state'] ?? 'link_sent') . '.')
             ->success()
             ->send();
     }
