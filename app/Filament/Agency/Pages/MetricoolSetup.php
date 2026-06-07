@@ -2,7 +2,6 @@
 
 namespace App\Filament\Agency\Pages;
 
-use App\Mail\MetricoolConnectLink;
 use App\Models\Brand;
 use App\Models\Workspace;
 use App\Services\Metricool\MetricoolClient;
@@ -44,7 +43,7 @@ class MetricoolSetup extends Page
 
     public ?Workspace $workspace = null;
 
-    /** @var array<int, array{id:int,name:string,state:string,blogId:?string,manageUrl:?string,networks:array<int,string>}> */
+    /** @var array<int, array{id:int,name:string,state:string,blogId:?string,networks:array<int,string>}> */
     public array $brands = [];
 
     /**
@@ -99,9 +98,6 @@ class MetricoolSetup extends Page
                 'name' => $b->name,
                 'state' => $b->metricoolSetupState(),
                 'blogId' => $b->metricool_blog_id,
-                // The durable Metricool manage link (or null → wizard shows the
-                // "request a fresh link" fallback instead of a dead button).
-                'manageUrl' => $b->metricoolManageUrl(),
                 // Dedupe by platform: a brand can hold more than one active
                 // connection per network (e.g. a personal profile + a business
                 // page on the same platform). The wizard shows one chip per
@@ -178,22 +174,17 @@ class MetricoolSetup extends Page
     }
 
     /**
-     * Fallback for the "Manage connections" button when the brand has no durable
-     * Metricool manage link stored (never minted, or the operator cleared it).
-     * This is the expiry/missing-link safety net the destination decision called
-     * for — the button must NEVER dead-end.
+     * "Manage connections" handler. ALWAYS requests a FRESH connect link rather
+     * than re-using a stored one (admin-driven model — Amos 2026-06-07).
      *
-     * Behaviour:
-     *   - If a stored link exists, re-email it to the customer immediately
-     *     (Resend-pinned, sent synchronously so a transport failure surfaces —
-     *     [[queued-mail-verify-at-provider]]), AND notify HQ that a refresh was
-     *     requested (the stored link may have expired).
-     *   - If no link exists, just notify HQ to mint one (the connected card only
-     *     shows this when manageUrl is null, so this is the genuine "needs a
-     *     fresh link" path).
-     *
-     * Either way the customer gets a clear "we're on it" confirmation rather
-     * than a button that does nothing.
+     * Why never re-send the stored link: Metricool connect-links are hard-capped
+     * at ~71h with NO non-expiring variant (verified — the only permanent option
+     * is "Shared Brands", which requires the customer to make a Metricool account
+     * and was explicitly declined to keep the "no extra logins" promise). So any
+     * stored link is almost always expired by the time a customer clicks; sending
+     * it would land them on a dead Metricool page. Instead we notify HQ to mint a
+     * fresh 71h link and send it via brand:send-metricool-link. The customer gets
+     * a clear "we're on it" confirmation — never a dead button, never a stale link.
      */
     public function requestFreshLink(int $brandId): void
     {
@@ -204,53 +195,26 @@ class MetricoolSetup extends Page
 
         $ws = $this->workspace;
         $customerEmail = (string) (optional($ws?->owner)->email ?: optional(auth()->user())->email);
-        $stored = $brand->metricoolManageUrl();
-        $emailed = false;
 
-        // Re-send the stored link to the customer if we have one and a real
-        // recipient + a delivering transport. We reuse the exact mailable the
-        // operator command uses so the customer gets the same branded email.
-        if ($stored !== null && filter_var($customerEmail, FILTER_VALIDATE_EMAIL)) {
-            $customerMailer = (string) (config('mail.cap_warning.mailer', 'resend') ?: 'resend');
-            if ($this->transportDelivers($customerMailer)) {
-                try {
-                    Mail::mailer($customerMailer)
-                        ->to($customerEmail)
-                        ->send(new MetricoolConnectLink($ws, $brand, $stored));
-                    $emailed = true;
-                } catch (\Throwable $e) {
-                    Log::error('MetricoolSetup: re-send of stored connect-link failed', [
-                        'brand_id' => $brandId,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-        }
-
-        // Always notify HQ — a fresh-link request implies the customer couldn't
-        // get into Metricool, which usually means the share-link expired and HQ
-        // must mint a new one.
+        // Notify HQ to mint + send a fresh link. This is the whole flow now —
+        // there is no customer-facing re-send of a (stale) stored link.
         try {
             $hqMailer = (string) config('mail.support_enquiry.mailer', 'resend');
             $hqTo = (string) (config('mail.support_enquiry.to') ?: 'eiaawsolutions@gmail.com');
             $operatorEmail = (string) (config('mail.support_enquiry.from_address') ?: 'noreply@eiaawsolutions.com');
             $body = sprintf(
-                "Brand #%d (%s) in workspace #%d (%s) requested a FRESH Metricool connect/manage link.\n\n"
-                . "Stored link on file: %s\n"
-                . "Re-sent to customer (%s): %s\n\n"
-                . "If the stored link has expired (Metricool share-links last ~71h), mint a new one:\n"
-                . "  1. In Metricool → Connections → Share, generate a fresh connect-link for blogId %s.\n"
-                . "  2. Store + email it in one step:  php artisan brand:send-metricool-link %d <newUrl>\n"
-                . "     (or just store it:  php artisan brand:set-metricool-blog %d --connect-url=<newUrl>)\n",
+                "Brand #%d (%s) in workspace #%d (%s) clicked \"Manage connections\" — send them a FRESH Metricool connect link.\n\n"
+                . "Customer email: %s\n\n"
+                . "Metricool connect-links expire after ~71h, so mint a new one each time:\n"
+                . "  1. In Metricool → open this brand → Connections → Share icon → Create link (blogId %s).\n"
+                . "  2. Store + email it to the customer in one step:\n"
+                . "       php artisan brand:send-metricool-link %d <newUrl>\n",
                 $brand->id,
                 $brand->name,
                 $ws?->id,
                 $ws?->slug,
-                $stored ?: '(none stored)',
-                $customerEmail ?: '(no email)',
-                $emailed ? 'yes' : 'no',
+                $customerEmail ?: '(no email on file)',
                 $brand->metricool_blog_id ?: '(not mapped)',
-                $brand->id,
                 $brand->id,
             );
             Mail::mailer($hqMailer)->raw($body, function ($m) use ($operatorEmail, $hqTo, $brand) {
@@ -265,37 +229,12 @@ class MetricoolSetup extends Page
             ]);
         }
 
-        if ($emailed) {
-            Notification::make()
-                ->title('Fresh link on its way 📬')
-                ->body('We\'ve emailed your connect link to ' . $customerEmail . '. Open it to manage your social accounts, then come back and click "Re-check".')
-                ->success()
-                ->send();
-        } else {
-            Notification::make()
-                ->title('We\'re on it')
-                ->body('We\'ve asked our team to send you a fresh link to manage your social accounts — usually within 1 business day. Need it sooner? Email eiaawsolutions@gmail.com.')
-                ->success()
-                ->send();
-        }
-    }
-
-    /**
-     * True if the named mailer's transport actually delivers (not log/array).
-     * Mirrors BrandSendMetricoolLink's guard — we never claim a send through a
-     * no-op transport.
-     */
-    private function transportDelivers(string $mailer): bool
-    {
-        $transport = (string) config("mail.mailers.{$mailer}.transport", $mailer);
-        if (in_array($transport, ['log', 'array'], true)) {
-            return false;
-        }
-        if ($transport === 'resend') {
-            return ! empty(config('services.resend.key')) && ! empty(config('resend.api_key'));
-        }
-
-        return true;
+        Notification::make()
+            ->title('We\'re on it')
+            ->body('We\'ll send a fresh link to manage your social accounts to ' . ($customerEmail ?: 'your email')
+                . ' shortly — usually within 1 business day. Need it sooner? Email eiaawsolutions@gmail.com.')
+            ->success()
+            ->send();
     }
 
     /**
