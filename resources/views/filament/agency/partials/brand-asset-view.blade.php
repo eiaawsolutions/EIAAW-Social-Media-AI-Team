@@ -1,6 +1,12 @@
 @php
     /** @var \App\Models\BrandAsset $asset */
     $isVideo = $asset->media_type === 'video';
+    $url = $asset->displayUrl();
+    // Single-record context (a modal) — a disk stat here is fine. If the bytes
+    // are gone (e.g. uploaded to an ephemeral disk that was wiped on redeploy)
+    // show an honest placeholder instead of a broken-image glyph.
+    $hasBytes = $url !== null && $asset->bytesAvailable();
+    $placeholderId = 'asset-missing-' . $asset->id;
 @endphp
 
 <div style="font-family: 'Inter', sans-serif; line-height: 1.5;">
@@ -11,15 +17,34 @@
         @endif
     </div>
 
-    @if ($isVideo)
-        <video src="{{ $asset->public_url }}"
-               controls playsinline
-               style="max-width: 100%; max-height: 480px; border-radius: 10px; border: 1px solid #D9CFBC; display: block; background: #000; margin-bottom: 14px;"></video>
-    @else
-        <img src="{{ $asset->public_url }}"
-             alt="{{ $asset->original_filename }}"
-             style="max-width: 100%; max-height: 480px; border-radius: 10px; border: 1px solid #D9CFBC; display: block; margin-bottom: 14px;" />
+    @if ($url !== null && $hasBytes)
+        @if ($isVideo)
+            <video src="{{ $url }}"
+                   controls playsinline
+                   onerror="document.getElementById('{{ $placeholderId }}').style.display='flex'; this.style.display='none';"
+                   style="max-width: 100%; max-height: 480px; border-radius: 10px; border: 1px solid #D9CFBC; display: block; background: #000; margin-bottom: 14px;"></video>
+        @else
+            <img src="{{ $url }}"
+                 alt="{{ $asset->original_filename }}"
+                 onerror="document.getElementById('{{ $placeholderId }}').style.display='flex'; this.style.display='none';"
+                 style="max-width: 100%; max-height: 480px; border-radius: 10px; border: 1px solid #D9CFBC; display: block; margin-bottom: 14px;" />
+        @endif
     @endif
+
+    {{-- Honest placeholder: shown up-front when the bytes are gone, OR swapped
+         in by the onerror handler above if the URL 404s at render time. --}}
+    <div id="{{ $placeholderId }}"
+         style="{{ ($url !== null && $hasBytes) ? 'display: none;' : 'display: flex;' }} flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px; min-height: 200px; padding: 28px 24px; border-radius: 10px; border: 1px dashed #D9CFBC; background: #FAF7F2; margin-bottom: 14px;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#B59B6B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="9" cy="9" r="2"></circle>
+            <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path>
+        </svg>
+        <div style="font-size: 14px; font-weight: 600; color: #2A3438;">Preview unavailable</div>
+        <div style="font-size: 12.5px; color: #6B7A7F; max-width: 320px;">
+            This asset’s file is no longer in storage, so it can’t be shown. Please re-upload it from the Asset library and we’ll keep it from here.
+        </div>
+    </div>
 
     @if ($asset->description)
         <div style="font-size: 14px; color: #2A3438; margin-bottom: 12px;">{{ $asset->description }}</div>

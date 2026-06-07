@@ -245,6 +245,28 @@ class ManageBrandAssets extends ManageRecords
     {
         @set_time_limit(300);
 
+        // Durability guard: refuse to accept an upload we know won't survive.
+        // On a stateless production container the local `public` disk is wiped
+        // every redeploy, so a "successful" upload there silently disappears and
+        // the preview breaks (this is exactly what stranded Bear Hug's assets).
+        // Fail loudly with an operator-actionable message instead. Object
+        // storage (R2) clears this guard.
+        $disk = $this->preferredDisk();
+        if (! self::storageIsDurable($disk)) {
+            \Illuminate\Support\Facades\Log::error('brand-asset upload blocked: non-durable storage', [
+                'disk' => $disk,
+                'driver' => config("filesystems.disks.{$disk}.driver"),
+                'env' => app()->environment(),
+            ]);
+            Notification::make()
+                ->title('Uploads are temporarily unavailable')
+                ->body('Asset storage isn’t configured for durable hosting yet, so we’ve paused uploads to avoid losing your files. Our team has been alerted and will enable it shortly.')
+                ->danger()
+                ->persistent()
+                ->send();
+            return;
+        }
+
         $intent = $data['usage_intent'] ?? BrandAsset::INTENT_GENERAL;
 
         if ($intent === BrandAsset::INTENT_CUSTOMISED) {
@@ -395,7 +417,39 @@ class ManageBrandAssets extends ManageRecords
     /** R2 if env is configured, else local public disk. */
     private function preferredDisk(): string
     {
+        return self::resolvePreferredDisk();
+    }
+
+    /**
+     * The disk brand-asset uploads land on: R2 when it's configured, else the
+     * local `public` disk. Static + shared so the upload form, persistence, and
+     * the durability guard all agree on one answer.
+     *
+     * Durability note: the local `public` disk is NOT durable on a stateless
+     * container (Railway wipes storage/app/public on every redeploy), so files
+     * uploaded there vanish and previews break. R2 is the only durable option in
+     * production — see storageIsDurable() + the guard in persistAsset().
+     */
+    public static function resolvePreferredDisk(): string
+    {
         return config('filesystems.disks.r2.bucket') ? 'r2' : 'public';
+    }
+
+    /**
+     * Is the chosen disk safe to persist customer uploads to in this
+     * environment? Object storage (s3/r2 driver) always is. The local disks are
+     * only durable outside production — on a production stateless container they
+     * are ephemeral, which is the exact failure that wiped Bear Hug's assets.
+     */
+    public static function storageIsDurable(string $disk): bool
+    {
+        $driver = config("filesystems.disks.{$disk}.driver");
+        if ($driver === 's3') {
+            return true;
+        }
+
+        // local/public driver — durable only when NOT a stateless production box.
+        return ! app()->environment('production');
     }
 
     /** @return array<string, string> platform enum => label */
