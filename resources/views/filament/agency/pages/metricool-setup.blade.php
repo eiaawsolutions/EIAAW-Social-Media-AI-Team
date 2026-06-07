@@ -68,22 +68,18 @@
                         </div>
                     @endif
                     <div class="ps-actions">
-                        {{-- "Manage connections" takes the customer to where they
-                             actually add/remove socials: their per-brand Metricool
-                             link. When we have a durable link, open it in a new
-                             tab. When we don't (never minted, or expired + cleared),
-                             fall back to requesting a fresh one — never a dead
-                             button. --}}
-                        @if (! empty($brand['manageUrl']))
-                            <a href="{{ $brand['manageUrl'] }}" target="_blank" rel="noopener noreferrer" class="ps-cta ps-cta-ghost">
-                                Manage connections <span aria-hidden="true">&#8599;</span>
-                            </a>
-                        @else
-                            <button type="button" wire:click="requestFreshLink({{ $brand['id'] }})" wire:loading.attr="disabled" class="ps-cta ps-cta-ghost">
-                                <span wire:loading.remove wire:target="requestFreshLink({{ $brand['id'] }})">Manage connections</span>
-                                <span wire:loading wire:target="requestFreshLink({{ $brand['id'] }})">Getting your link…</span>
-                            </button>
-                        @endif
+                        {{-- "Manage connections" ALWAYS requests a fresh connect
+                             link (admin-driven model — Amos 2026-06-07). Metricool
+                             connect-links are hard-capped at 71h, so we never
+                             deep-link to a stored link: it would be expired by the
+                             time most customers click. Instead every click triggers
+                             the fresh-link flow (emails the customer + pings HQ to
+                             mint a new 71h link), so customers always get a working
+                             link, never an expired-link page. --}}
+                        <button type="button" wire:click="requestFreshLink({{ $brand['id'] }})" wire:loading.attr="disabled" class="ps-cta ps-cta-ghost">
+                            <span wire:loading.remove wire:target="requestFreshLink({{ $brand['id'] }})">Manage connections</span>
+                            <span wire:loading wire:target="requestFreshLink({{ $brand['id'] }})">Getting your link…</span>
+                        </button>
                         <button type="button" wire:click="checkConnection({{ $brand['id'] }})" wire:loading.attr="disabled" class="ps-cta ps-cta-ghost">
                             <span wire:loading.remove wire:target="checkConnection({{ $brand['id'] }})">Re-check</span>
                             <span wire:loading wire:target="checkConnection({{ $brand['id'] }})">Checking…</span>

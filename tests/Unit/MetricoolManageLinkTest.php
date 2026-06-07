@@ -76,27 +76,30 @@ class MetricoolManageLinkTest extends TestCase
         );
     }
 
-    public function test_blade_opens_the_manage_url_in_a_new_tab_when_present(): void
+    public function test_blade_manage_connections_always_requests_a_fresh_link(): void
     {
         $src = $this->bladeSource();
 
-        $this->assertStringContainsString("\$brand['manageUrl']", $src,
-            'The blade must branch on the per-brand manageUrl.');
-        $this->assertStringContainsString('target="_blank"', $src,
-            'The Metricool manage link must open in a new tab (the customer keeps the wizard open to Re-check).');
-        $this->assertStringContainsString('rel="noopener noreferrer"', $src,
-            'External links must carry rel="noopener noreferrer".');
-    }
-
-    public function test_blade_falls_back_to_request_fresh_link_when_absent(): void
-    {
-        $src = $this->bladeSource();
-
+        // Admin-driven model: every click requests a FRESH link via the Livewire
+        // action — we never deep-link to a stored (stale, ~71h-expired) link.
         $this->assertStringContainsString('wire:click="requestFreshLink(', $src,
-            'When no manage link is stored, the button must trigger the requestFreshLink fallback — never a dead link.');
+            'Manage connections must always trigger requestFreshLink — never a stored deep-link.');
     }
 
-    // ---- Page: the fallback action ---------------------------------------
+    public function test_blade_does_not_deep_link_to_a_stored_metricool_url(): void
+    {
+        $src = $this->bladeSource();
+
+        // Regression: the stored-link deep-link path was removed because the
+        // link expires after ~71h and would land customers on a dead Metricool
+        // page. No external Metricool href, no manageUrl branch.
+        $this->assertStringNotContainsString("\$brand['manageUrl']", $src,
+            'The wizard must not branch on a stored manage link anymore.');
+        $this->assertStringNotContainsString('f.mtr.cool', $src,
+            'The wizard must not hardcode/deep-link a Metricool connect URL.');
+    }
+
+    // ---- Page: the fresh-link action -------------------------------------
 
     private function pageSource(): string
     {
@@ -107,38 +110,31 @@ class MetricoolManageLinkTest extends TestCase
     {
         $this->assertTrue(
             method_exists(\App\Filament\Agency\Pages\MetricoolSetup::class, 'requestFreshLink'),
-            'MetricoolSetup must expose requestFreshLink() as the Livewire fallback action.'
+            'MetricoolSetup must expose requestFreshLink() as the Manage-connections action.'
         );
     }
 
-    public function test_page_exposes_manage_url_per_brand(): void
-    {
-        $this->assertStringContainsString("'manageUrl' => \$b->metricoolManageUrl()", $this->pageSource(),
-            'refresh() must surface each brand\'s durable manage link to the view.');
-    }
-
-    public function test_fresh_link_send_is_synchronous_and_never_claims_a_noop_send(): void
+    public function test_fresh_link_does_not_resend_a_stored_stale_link_to_the_customer(): void
     {
         $src = $this->pageSource();
 
-        // Same delivery discipline as BrandSendMetricoolLink: synchronous send,
-        // and never report "emailed" through a log/array/keyless-resend transport.
-        $this->assertStringContainsString('->send(new MetricoolConnectLink(', $src,
-            'The fresh-link re-send must be synchronous so a transport failure is caught.');
-        $this->assertStringContainsString('transportDelivers(', $src,
-            'The page must gate the customer re-send on a delivering transport (no fake "sent").');
-        $this->assertStringContainsString("in_array(\$transport, ['log', 'array'], true)", $src,
-            'transportDelivers must treat log/array as non-delivering.');
+        // Under the admin-driven model the page must NOT email the customer a
+        // stored link (it would be expired). The customer-facing MetricoolConnectLink
+        // send was removed; HQ mints + sends a fresh one instead.
+        $this->assertStringNotContainsString('new MetricoolConnectLink(', $src,
+            'requestFreshLink must not re-send a stored connect link to the customer.');
     }
 
-    public function test_fresh_link_always_notifies_hq(): void
+    public function test_fresh_link_always_notifies_hq_via_pinned_mailer(): void
     {
         $src = $this->pageSource();
 
         $this->assertStringContainsString('Fresh connect-link request', $src,
-            'requestFreshLink must always notify HQ so an expired share-link gets re-minted.');
+            'requestFreshLink must notify HQ so a fresh ~71h link gets minted + sent.');
         $this->assertStringContainsString("config('mail.support_enquiry.mailer'", $src,
             'The HQ notification must use the pinned support_enquiry (Resend) mailer.');
+        $this->assertStringContainsString('brand:send-metricool-link', $src,
+            'The HQ email must tell the operator exactly how to mint + send the fresh link.');
     }
 
     // ---- Commands: operator can store the durable link -------------------
@@ -167,15 +163,10 @@ class MetricoolManageLinkTest extends TestCase
     //
     // The OTHER customer surface for the same link. The Platforms-page modal
     // ("Connect a social platform") must deep-link the customer to their own
-    // brand connect page exactly like the wizard does — and it must NOT render
-    // the runaway inline arrow SVG that previously blew up to fill the modal.
-
-    private function platformsPageSource(): string
-    {
-        return file_get_contents(app_path(
-            'Filament/Agency/Resources/PlatformConnections/Pages/ManagePlatformConnections.php'
-        ));
-    }
+    // brand connect page — under the admin-driven model it routes to Platform
+    // setup (where Manage connections requests a fresh link) rather than
+    // deep-linking a stored/stale link, and it must NOT render the runaway
+    // inline arrow SVG that previously blew up to fill the modal.
 
     private function modalSource(): string
     {
@@ -184,45 +175,21 @@ class MetricoolManageLinkTest extends TestCase
         );
     }
 
-    public function test_platforms_page_exposes_connect_link_via_the_model_accessor(): void
-    {
-        // connectLink() must delegate to Brand::metricoolManageUrl() (the same
-        // null-safe https validator the wizard uses) — never invent a URL.
-        $this->assertTrue(
-            method_exists(
-                \App\Filament\Agency\Resources\PlatformConnections\Pages\ManagePlatformConnections::class,
-                'connectLink'
-            ),
-            'ManagePlatformConnections must expose connectLink() to its modal.'
-        );
-        $this->assertStringContainsString('->metricoolManageUrl()', $this->platformsPageSource(),
-            'connectLink() must source the URL from the validated model accessor.');
-    }
-
-    public function test_modal_deep_links_to_the_connect_page_in_a_new_tab(): void
+    public function test_modal_routes_to_platform_setup_not_a_stored_deep_link(): void
     {
         $src = $this->modalSource();
 
-        $this->assertStringContainsString('$this->connectLink()', $src,
-            'The modal must read the per-brand connect link from the page.');
-        $this->assertStringContainsString('href="{{ $connectLink }}"', $src,
-            'The primary CTA must point at the customer\'s own connect link when present.');
-        $this->assertStringContainsString('target="_blank"', $src,
-            'The connect link must open in a new tab so the table stays open to Refresh.');
-        $this->assertStringContainsString('rel="noopener noreferrer"', $src,
-            'External links must carry rel="noopener noreferrer".');
-    }
-
-    public function test_modal_falls_back_to_platform_setup_when_no_link_stored(): void
-    {
-        $src = $this->modalSource();
-
-        // The else-branch keeps the original "Go to Platform setup" CTA so a
-        // brand with no stored link never dead-ends.
+        // Admin-driven model: the modal sends the customer to Platform setup,
+        // where Manage connections requests a FRESH link. It must NOT deep-link a
+        // stored (stale, ~71h-expired) link.
         $this->assertStringContainsString('Go to Platform setup', $src,
-            'With no connect link, the modal must still offer the Platform setup route.');
+            'The modal must offer the Platform setup route.');
         $this->assertStringContainsString('$setupUrl', $src,
-            'The fallback CTA must target the setup wizard URL.');
+            'The CTA must target the setup wizard URL.');
+        $this->assertStringNotContainsString('$connectLink', $src,
+            'The modal must not deep-link a stored connect link (it would be expired).');
+        $this->assertStringNotContainsString('f.mtr.cool', $src,
+            'The modal must not hardcode/deep-link a Metricool connect URL.');
     }
 
     public function test_modal_does_not_render_the_runaway_arrow_svg(): void

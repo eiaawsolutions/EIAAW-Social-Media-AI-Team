@@ -220,30 +220,16 @@ class ManagePlatformConnections extends ManageRecords
         return $wsId !== null && (int) $brand->workspace_id === (int) $wsId;
     }
 
-    /** Deep-link target for "go set up a platform" — the Metricool wizard. */
+    /**
+     * Deep-link target for "go set up a platform" — the Metricool wizard, where
+     * "Manage connections" requests a fresh connect link. The modal routes the
+     * customer here rather than deep-linking a stored link directly: Metricool
+     * connect-links expire after ~71h, so a fresh request each time avoids
+     * sending customers to an expired-link page (admin-driven model, Amos
+     * 2026-06-07).
+     */
     public function setupUrl(): string
     {
         return MetricoolSetup::getUrl();
-    }
-
-    /**
-     * The customer's OWN brand connect-link — the durable per-brand Metricool
-     * share-link (https://f.mtr.cool/...) where they actually add/edit their
-     * social accounts at the source. Stored on the brand by
-     * brand:send-metricool-link / brand:set-metricool-blog --connect-url and
-     * read back via Brand::metricoolManageUrl() (null-safe: returns null unless
-     * it's a valid https URL).
-     *
-     * Returns null when no link is stored yet — the modal then falls back to the
-     * Platform setup wizard ("request a fresh one") rather than dead-ending the
-     * arrow. We never invent an app.metricool.com URL: that dashboard is one
-     * shared agency account across all tenants and the customer has no login
-     * there, so the only safe customer destination is this brand's own link.
-     */
-    public function connectLink(): ?string
-    {
-        $brand = $this->resolveBrandForSync();
-
-        return $brand?->metricoolManageUrl();
     }
 }
