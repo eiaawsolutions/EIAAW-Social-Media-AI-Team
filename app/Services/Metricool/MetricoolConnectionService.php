@@ -117,21 +117,57 @@ class MetricoolConnectionService
         DB::transaction(function () use ($brand, $result, &$synced, &$seen) {
             foreach ($result['networks'] as $platform => $handle) {
                 $seen[] = $platform;
-                // Key the upsert on (brand_id, platform) ONLY — the business
-                // invariant is one active connection per network per brand.
-                // The platform_account_id (handle) is NOT part of the match key:
-                // Metricool reports a different handle than the legacy Blotato
-                // rows did (e.g. a Facebook page id vs the display name), so
-                // keying on it would never find the existing row and would
-                // insert a duplicate on every re-sync. Instead we update the
-                // handle in place as a value below.
-                $kept = PlatformConnection::updateOrCreate(
+
+                // ── Why this is a two-step (revoke-then-upsert) and not a single
+                //    updateOrCreate keyed on (brand, platform) ──────────────────
+                //
+                // The business invariant is "one ACTIVE connection per (brand,
+                // platform)". But the DB unique index is the THREE columns
+                // (brand_id, platform, platform_account_id) — see the brands
+                // migration. Those two facts pull in opposite directions, and
+                // each previous single-step attempt broke one of them:
+                //
+                //   • Keying updateOrCreate on the full 3-tuple → never matched a
+                //     legacy Blotato row (Metricool reports a different handle,
+                //     e.g. a Facebook page id vs the display name) → INSERTED a
+                //     duplicate on every re-sync (the chips-doubled bug).
+                //   • Keying updateOrCreate on (brand, platform) only → matches an
+                //     ARBITRARY same-(brand,platform) row (in practice the lowest
+                //     id, often a revoked legacy row) and rewrites its handle to
+                //     the new value — which collides with the SIBLING row that
+                //     already owns (brand, platform, newHandle) on the 3-col
+                //     index → SQLSTATE 23505, surfaced to the customer as
+                //     "Couldn't check right now" (the Re-check outage, 2026-06-07).
+                //
+                // The collision-proof shape: first clear every OTHER active row
+                // for this (brand, platform) — legacy Blotato rows AND a genuinely
+                // changed account both qualify — so nothing else can be holding
+                // the target handle as ACTIVE; then upsert keyed on the FULL
+                // 3-column key, which == the unique index. That match key can
+                // neither create a duplicate (the index guarantees it) nor
+                // collide (it IS the index), and it cleanly REACTIVATES a
+                // previously-revoked row when the same account reconnects.
+
+                // Step 1 — revoke any active row for this network that is NOT the
+                // handle Metricool currently reports (stale legacy/previous
+                // account). Leave an already-active matching-handle row alone.
+                PlatformConnection::query()
+                    ->where('brand_id', $brand->id)
+                    ->where('platform', $platform)
+                    ->where('platform_account_id', '!=', $handle)
+                    ->where('status', 'active')
+                    ->update(['status' => 'revoked']);
+
+                // Step 2 — upsert keyed on the full unique key (brand, platform,
+                // handle). Reuses the exact row for this account if it exists
+                // (reactivating it), else inserts. No duplicate, no collision.
+                PlatformConnection::updateOrCreate(
                     [
                         'brand_id' => $brand->id,
                         'platform' => $platform,
+                        'platform_account_id' => $handle,
                     ],
                     [
-                        'platform_account_id' => $handle,
                         'display_handle' => ltrim($handle, '@'),
                         // No per-account id in Metricool — targeting is by
                         // brand blogId + network. Keep blotato_account_id null.
@@ -145,18 +181,6 @@ class MetricoolConnectionService
                         'status' => 'active',
                     ],
                 );
-
-                // Self-heal pre-existing duplicates: if any OTHER active row
-                // exists for this (brand, platform) — e.g. a leftover legacy
-                // Blotato-era row from before the migration, which carries a
-                // non-null blotato_account_id and a different handle — revoke it
-                // so exactly one active connection per network survives.
-                PlatformConnection::query()
-                    ->where('brand_id', $brand->id)
-                    ->where('platform', $platform)
-                    ->whereKeyNot($kept->getKey())
-                    ->where('status', 'active')
-                    ->update(['status' => 'revoked']);
 
                 $synced++;
             }
