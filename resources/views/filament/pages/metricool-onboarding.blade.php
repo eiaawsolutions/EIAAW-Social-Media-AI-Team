@@ -162,7 +162,12 @@
             @else
                 <div class="bo-grid">
                     @foreach ($board['queue'] as $b)
-                        <div class="bo-card">
+                        <div class="bo-card" @if ($focusBrandId === $b['brand_id']) style="outline:2px solid #11766a; outline-offset:2px;" id="focus-brand" @endif>
+                            @if ($focusBrandId === $b['brand_id'])
+                                <div style="background:#e5f4f1; border:1px solid #11766a; color:#0b5c53; border-radius:8px; padding:8px 12px; font-size:12px; margin-bottom:12px;">
+                                    This customer just clicked <strong>Manage connections</strong> — mint a fresh link and send it below.
+                                </div>
+                            @endif
                             <div class="bo-ws-head">
                                 <div>
                                     <div class="bo-ws-name">
@@ -197,6 +202,36 @@
                                         onclick="(function(btn){const t=document.getElementById('cmd-{{ $b['brand_id'] }}-{{ $i }}').childNodes[0].textContent;navigator.clipboard.writeText(t).then(()=>{btn.textContent='Copied';setTimeout(()=>btn.textContent='Copy',1500);});})(this)"
                                     >Copy</button></div>
                             @endforeach
+
+                            {{-- One-click "Store & send" — paste the freshly minted
+                                 Metricool link and send it to the customer without
+                                 SSH/artisan. Only meaningful once the brand is mapped
+                                 (has a blogId); not_mapped brands need the map step
+                                 first, so the box is hidden there. --}}
+                            @if ($b['blog_id'])
+                                <div class="bo-cmd-label">Send a fresh connect-link to the customer</div>
+                                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+                                    <input
+                                        type="url"
+                                        wire:model="connectUrlInputs.{{ $b['brand_id'] }}"
+                                        placeholder="https://f.mtr.cool/…  (paste from Metricool → Connections → Share)"
+                                        style="flex:1; min-width:240px; padding:8px 12px; border:1px solid var(--gray-300,#d1d5db); border-radius:8px; font-family:ui-monospace,monospace; font-size:12.5px;"
+                                    />
+                                    <x-filament::button
+                                        size="sm"
+                                        color="primary"
+                                        wire:click="sendConnectLink({{ $b['brand_id'] }})"
+                                        wire:loading.attr="disabled"
+                                        wire:target="sendConnectLink({{ $b['brand_id'] }})"
+                                    >
+                                        <span wire:loading.remove wire:target="sendConnectLink({{ $b['brand_id'] }})">Store &amp; send</span>
+                                        <span wire:loading wire:target="sendConnectLink({{ $b['brand_id'] }})">Sending…</span>
+                                    </x-filament::button>
+                                </div>
+                                <div class="bo-step-desc" style="margin-top:6px;">
+                                    Stores it as this brand's link, emails the customer (Resend), and marks it sent — same as the command, one click.
+                                </div>
+                            @endif
 
                             <div style="margin-top: 14px; display:flex; gap:10px; flex-wrap:wrap;">
                                 <x-filament::button
