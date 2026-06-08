@@ -101,6 +101,58 @@
                 text-align: center;
                 margin: 8px 0 14px;
             }
+            .corpus-field-label {
+                display: block;
+                font-size: 12px; font-weight: 500;
+                letter-spacing: .01em; color: var(--eiaaw-ink-2);
+                margin: 14px 0 6px;
+            }
+            .corpus-input {
+                width: 100%;
+                padding: 10px 12px;
+                border: 1px solid var(--eiaaw-line);
+                border-radius: 9px;
+                font-size: 13.5px; line-height: 1.5;
+                font-family: inherit;
+                color: var(--eiaaw-ink);
+                background: var(--eiaaw-bg);
+            }
+            .corpus-input:focus {
+                outline: none;
+                border-color: var(--eiaaw-ink);
+                box-shadow: 0 0 0 3px var(--eiaaw-line-soft);
+            }
+            textarea.corpus-input { min-height: 72px; resize: vertical; }
+            .corpus-loc-row {
+                display: grid;
+                grid-template-columns: 1.2fr 1fr 1.4fr auto auto;
+                gap: 8px;
+                align-items: center;
+                margin-bottom: 8px;
+            }
+            @media (max-width: 720px) {
+                .corpus-loc-row { grid-template-columns: 1fr 1fr; }
+            }
+            .corpus-loc-primary {
+                display: inline-flex; align-items: center; gap: 6px;
+                font-size: 11px; color: var(--eiaaw-mute);
+                white-space: nowrap;
+            }
+            .corpus-loc-remove {
+                border: none; background: transparent;
+                color: var(--eiaaw-mute); cursor: pointer;
+                font-size: 18px; line-height: 1; padding: 4px 8px;
+                border-radius: 8px;
+            }
+            .corpus-loc-remove:hover { background: var(--eiaaw-line-soft); color: var(--eiaaw-ink); }
+            .corpus-add-loc {
+                display: inline-flex; align-items: center; gap: 6px;
+                font-size: 12px; color: var(--eiaaw-primary-dark);
+                background: transparent; border: 1px dashed var(--eiaaw-line);
+                border-radius: 999px; padding: 7px 14px; cursor: pointer;
+                margin-top: 4px;
+            }
+            .corpus-add-loc:hover { border-color: var(--eiaaw-primary); background: var(--eiaaw-primary-tint); }
         </style>
     @endpush
 
@@ -135,6 +187,77 @@
                     @else
                         · <strong>{{ $remaining }}</strong> to go
                     @endif
+                </div>
+            </div>
+
+            {{-- Business facts: operator-supplied locations + target audience.
+                 Authoritative ground truth injected above the AI voice. --}}
+            <div class="corpus-card">
+                <h3>Tell us about your business</h3>
+                <p class="lead">
+                    Where you operate and who you're trying to reach. The Writer and Strategist
+                    treat these as <strong>ground truth</strong> — they ground every caption and
+                    plan in these locations and this audience, overriding anything inferred from
+                    your website. Optional, but it sharpens the voice considerably.
+                </p>
+
+                <span class="corpus-field-label">Business locations</span>
+                @forelse ($locations as $i => $loc)
+                    <div class="corpus-loc-row" wire:key="loc-{{ $i }}">
+                        <input type="text" class="corpus-input"
+                               wire:model="locations.{{ $i }}.area"
+                               placeholder="City / area (e.g. Kuala Lumpur)">
+                        <input type="text" class="corpus-input"
+                               wire:model="locations.{{ $i }}.country"
+                               placeholder="Country">
+                        <input type="text" class="corpus-input"
+                               wire:model="locations.{{ $i }}.notes"
+                               placeholder="Notes (e.g. flagship outlet)">
+                        <label class="corpus-loc-primary">
+                            <input type="checkbox" wire:model="locations.{{ $i }}.is_primary">
+                            Primary
+                        </label>
+                        <button type="button" class="corpus-loc-remove"
+                                wire:click="removeLocation({{ $i }})"
+                                title="Remove location" aria-label="Remove location">&times;</button>
+                    </div>
+                @empty
+                    <p style="font-size:12.5px;color:var(--eiaaw-mute);margin:0 0 8px;">
+                        No locations yet — add the places your business operates from or serves.
+                    </p>
+                @endforelse
+                <button type="button" class="corpus-add-loc" wire:click="addLocation">
+                    <span aria-hidden="true">+</span> Add location
+                </button>
+
+                <label class="corpus-field-label" for="bf-audience-desc">Who is your target audience?</label>
+                <textarea id="bf-audience-desc" class="corpus-input"
+                          wire:model="audienceDescription"
+                          placeholder="e.g. Time-poor urban professionals 25–40 who treat good coffee as a daily ritual and discover places on Instagram."></textarea>
+
+                <label class="corpus-field-label" for="bf-audience-segments">Audience segments</label>
+                <input id="bf-audience-segments" type="text" class="corpus-input"
+                       wire:model="audienceSegmentsText"
+                       placeholder="Comma-separated, e.g. Young professionals, Remote workers, Café-hoppers">
+
+                <label class="corpus-field-label" for="bf-audience-geo">Geographic focus</label>
+                <input id="bf-audience-geo" type="text" class="corpus-input"
+                       wire:model="audienceGeoFocus"
+                       placeholder="e.g. Klang Valley, Malaysia">
+
+                <div style="margin-top: 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <button type="button"
+                            class="corpus-cta"
+                            wire:click="saveBrandFacts"
+                            wire:loading.attr="disabled"
+                            wire:target="saveBrandFacts">
+                        <span wire:loading.remove wire:target="saveBrandFacts">
+                            Save business details
+                            <span aria-hidden="true">→</span>
+                        </span>
+                        <span wire:loading wire:target="saveBrandFacts">Saving…</span>
+                    </button>
+                    <span class="corpus-tip">Applies to every future post — edit any time.</span>
                 </div>
             </div>
 

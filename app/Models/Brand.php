@@ -29,6 +29,8 @@ class Brand extends Model
         'config',
         'competitors',
         'competitor_intel_config',
+        'business_locations',
+        'audience_profile',
         'archived_at',
     ];
 
@@ -38,6 +40,8 @@ class Brand extends Model
             'config' => 'array',
             'competitors' => 'array',
             'competitor_intel_config' => 'array',
+            'business_locations' => 'array',
+            'audience_profile' => 'array',
             'archived_at' => 'datetime',
             'metricool_connect_link_sent_at' => 'datetime',
             'metricool_connected_at' => 'datetime',
@@ -173,6 +177,91 @@ class Brand extends Model
     protected function isArchived(): Attribute
     {
         return Attribute::get(fn () => $this->archived_at !== null);
+    }
+
+    /**
+     * Render the operator-supplied business facts (locations + target audience)
+     * as a prompt block the Writer and Strategist inject ABOVE brand-style.md.
+     *
+     * These are AUTHORITATIVE — operator-entered ground truth that overrides the
+     * AI-synthesised voice. They survive every voice re-synthesis (they live on
+     * the brands row, not the versioned brand_styles row), so the agents always
+     * see the latest facts the operator entered, even after an onboarding refresh.
+     *
+     * Returns '' when no facts are set, so an un-enriched brand produces a prompt
+     * that is byte-identical to the pre-feature behaviour (no empty headers, no
+     * "(none)" noise for the model to misread).
+     */
+    public function brandFactsBlock(): string
+    {
+        return self::renderBrandFactsBlock(
+            (array) ($this->business_locations ?? []),
+            (array) ($this->audience_profile ?? []),
+        );
+    }
+
+    /**
+     * Pure renderer — no DB, no model state. Kept static + side-effect-free so it
+     * is the single source of truth for both agents and is unit-testable without
+     * a database (the test suite runs DB-free; see BrandCreateAtomicityTest).
+     *
+     * @param  array<int, array<string, mixed>>  $locations  business_locations rows
+     * @param  array<string, mixed>              $audience   audience_profile object
+     */
+    public static function renderBrandFactsBlock(array $locations, array $audience): string
+    {
+        $sections = [];
+
+        $locationLines = [];
+        foreach ($locations as $loc) {
+            if (! is_array($loc)) {
+                continue;
+            }
+            $area = trim((string) ($loc['area'] ?? ''));
+            $country = trim((string) ($loc['country'] ?? ''));
+            $label = trim(implode(', ', array_filter([$area, $country])));
+            if ($label === '') {
+                continue;
+            }
+            if (! empty($loc['is_primary'])) {
+                $label .= ' (primary)';
+            }
+            $notes = trim((string) ($loc['notes'] ?? ''));
+            if ($notes !== '') {
+                $label .= ' — '.$notes;
+            }
+            $locationLines[] = '- '.$label;
+        }
+        if ($locationLines !== []) {
+            $sections[] = "## Business locations\n".implode("\n", $locationLines);
+        }
+
+        $audienceLines = [];
+        $description = trim((string) ($audience['description'] ?? ''));
+        if ($description !== '') {
+            $audienceLines[] = $description;
+        }
+        $segments = array_values(array_filter(array_map(
+            fn ($s) => trim((string) $s),
+            (array) ($audience['segments'] ?? []),
+        ), fn ($s) => $s !== ''));
+        if ($segments !== []) {
+            $audienceLines[] = 'Segments: '.implode(', ', $segments);
+        }
+        $geo = trim((string) ($audience['geo_focus'] ?? ''));
+        if ($geo !== '') {
+            $audienceLines[] = 'Geographic focus: '.$geo;
+        }
+        if ($audienceLines !== []) {
+            $sections[] = "## Target audience\n".implode("\n", $audienceLines);
+        }
+
+        if ($sections === []) {
+            return '';
+        }
+
+        return "# Business facts (operator-supplied — authoritative; honour these over inferred voice)\n"
+            .implode("\n\n", $sections);
     }
 
     /** Default lane for a platform (or global default if no platform-specific row). */

@@ -390,6 +390,7 @@ class WriterAgent extends BaseAgent
         $similarBlock = $this->renderSimilarBlock($similar);
         $researchBlock = $this->renderResearchBrief($entry);
         $creativeLines = $this->renderCreativeIntent($entry);
+        $factsBlock = $this->renderBrandFacts($brand);
 
         $priorBody = (string) ($redraftContext['prior_body'] ?? '');
         $failures = $redraftContext['failures'] ?? [];
@@ -433,8 +434,7 @@ PRIOR_DRAFT
 - Format: {$entry->format}
 - Objective: {$entry->objective}
 - Visual direction: {$entry->visual_direction}{$creativeLines}
-{$researchBlock}
-# brand-style.md (single source of truth)
+{$researchBlock}{$factsBlock}# brand-style.md (single source of truth)
 {$brandStyleMd}
 
 # Top similar prior posts (for voice grounding — DO cite if your phrasing borrows from them)
@@ -444,11 +444,24 @@ Now produce the fixed JSON object per the schema. Only write the JSON.
 MSG;
     }
 
+    /**
+     * Operator-supplied business facts (locations + audience), rendered above
+     * brand-style.md so they ground the caption. Empty string when unset — and
+     * we add the trailing blank line ONLY when there's content, so an
+     * un-enriched brand's prompt is byte-identical to the pre-feature version.
+     */
+    private function renderBrandFacts(Brand $brand): string
+    {
+        $block = $brand->brandFactsBlock();
+        return $block === '' ? '' : $block."\n\n";
+    }
+
     private function buildUserMessage(Brand $brand, string $brandStyleMd, CalendarEntry $entry, array $similar, string $platform): string
     {
         $similarBlock = $this->renderSimilarBlock($similar);
         $researchBlock = $this->renderResearchBrief($entry);
         $creativeLines = $this->renderCreativeIntent($entry);
+        $factsBlock = $this->renderBrandFacts($brand);
 
         return <<<MSG
 BRAND: {$brand->name}
@@ -461,8 +474,7 @@ PLATFORM: {$platform}
 - Format: {$entry->format}
 - Objective: {$entry->objective}
 - Visual direction: {$entry->visual_direction}{$creativeLines}
-{$researchBlock}
-# brand-style.md (single source of truth)
+{$researchBlock}{$factsBlock}# brand-style.md (single source of truth)
 {$brandStyleMd}
 
 # Top similar prior posts (for voice grounding — DO cite if your phrasing borrows from them)

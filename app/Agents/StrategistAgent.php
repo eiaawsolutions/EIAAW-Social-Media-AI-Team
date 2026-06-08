@@ -202,6 +202,9 @@ class StrategistAgent extends BaseAgent
             ? "\n# Competitor signals (last 30 days)\n".$competitorBlock."\n"
             : '';
 
+        $factsBlock = $brand->brandFactsBlock();
+        $factsSection = $factsBlock === '' ? '' : "\n".$factsBlock."\n";
+
         return <<<MSG
 BRAND: {$brand->name}
 INDUSTRY: {$brand->industry}
@@ -214,7 +217,7 @@ ACTIVE PLATFORMS: {$platformList}
 
 # Format mix targets
 {$formatLines}
-{$competitorSection}
+{$competitorSection}{$factsSection}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 

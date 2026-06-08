@@ -59,9 +59,59 @@ class BrandCorpusSeed extends Page
     public ?int $brand = null;
     public string $pasteText = '';
 
+    /**
+     * Operator-supplied business facts state (locations + target audience).
+     * Hydrated from the brand on mount, persisted by saveBrandFacts(). These
+     * enrich the brand voice the Writer + Strategist reason over — they're
+     * authoritative ground truth injected ABOVE the AI-synthesised
+     * brand-style.md (see Brand::brandFactsBlock).
+     *
+     * @var array<int, array{area: string, country: string, is_primary: bool, notes: string}>
+     */
+    public array $locations = [];
+
+    public string $audienceDescription = '';
+    public string $audienceSegmentsText = '';
+    public string $audienceGeoFocus = '';
+
     public function mount(): void
     {
         $this->brand = request()->integer('brand') ?: null;
+        $this->hydrateBrandFacts();
+    }
+
+    /** Load the resolved brand's stored facts into the form state. */
+    public function hydrateBrandFacts(): void
+    {
+        $brand = $this->resolveBrand();
+        if (! $brand) {
+            return;
+        }
+
+        $this->locations = array_values(array_map(fn ($l) => [
+            'area' => (string) ($l['area'] ?? ''),
+            'country' => (string) ($l['country'] ?? ''),
+            'is_primary' => (bool) ($l['is_primary'] ?? false),
+            'notes' => (string) ($l['notes'] ?? ''),
+        ], (array) ($brand->business_locations ?? [])));
+
+        $audience = (array) ($brand->audience_profile ?? []);
+        $this->audienceDescription = (string) ($audience['description'] ?? '');
+        $this->audienceSegmentsText = implode(', ', (array) ($audience['segments'] ?? []));
+        $this->audienceGeoFocus = (string) ($audience['geo_focus'] ?? '');
+    }
+
+    /** Add a blank location row to the repeater. */
+    public function addLocation(): void
+    {
+        $this->locations[] = ['area' => '', 'country' => '', 'is_primary' => false, 'notes' => ''];
+    }
+
+    /** Remove a location row by index. */
+    public function removeLocation(int $index): void
+    {
+        unset($this->locations[$index]);
+        $this->locations = array_values($this->locations);
     }
 
     public function resolveBrand(): ?Brand
@@ -265,6 +315,86 @@ class BrandCorpusSeed extends Page
                 BrandCorpusItem::where('brand_id', $brand->id)->count(),
                 $this->readinessThreshold(),
             ))
+            ->success()
+            ->send();
+    }
+
+    /**
+     * Persist the operator-supplied business facts (locations + target audience)
+     * onto the brand. Stored on the brands row (not brand_styles), so they
+     * survive every voice re-synthesis and are always the freshest facts the
+     * Writer + Strategist see. Empty rows/fields are dropped so an unfilled
+     * form clears cleanly to NULL rather than storing noise.
+     */
+    public function saveBrandFacts(): void
+    {
+        $brand = $this->resolveBrand();
+        if (! $brand) {
+            Notification::make()->title('No brand to update')->danger()->send();
+            return;
+        }
+
+        // Locations: keep only rows with at least an area or country.
+        $locations = [];
+        foreach ($this->locations as $row) {
+            $area = trim((string) ($row['area'] ?? ''));
+            $country = trim((string) ($row['country'] ?? ''));
+            if ($area === '' && $country === '') {
+                continue;
+            }
+            $locations[] = [
+                'area' => mb_substr($area, 0, 120),
+                'country' => mb_substr($country, 0, 80),
+                'is_primary' => (bool) ($row['is_primary'] ?? false),
+                'notes' => mb_substr(trim((string) ($row['notes'] ?? '')), 0, 200),
+            ];
+        }
+
+        // Exactly one primary: if the operator flagged several, keep the first;
+        // if none and there's at least one row, promote the first.
+        $primarySeen = false;
+        foreach ($locations as $i => $loc) {
+            if ($loc['is_primary'] && ! $primarySeen) {
+                $primarySeen = true;
+            } elseif ($loc['is_primary']) {
+                $locations[$i]['is_primary'] = false;
+            }
+        }
+        if (! $primarySeen && $locations !== []) {
+            $locations[0]['is_primary'] = true;
+        }
+
+        // Audience: split segments on commas, trim, drop empties, cap at 12.
+        $segments = collect(preg_split('/[,\n]+/', $this->audienceSegmentsText) ?: [])
+            ->map(fn ($s) => mb_substr(trim((string) $s), 0, 60))
+            ->filter(fn ($s) => $s !== '')
+            ->unique()
+            ->take(12)
+            ->values()
+            ->all();
+
+        $description = mb_substr(trim($this->audienceDescription), 0, 600);
+        $geoFocus = mb_substr(trim($this->audienceGeoFocus), 0, 160);
+
+        $audience = array_filter([
+            'description' => $description,
+            'segments' => $segments,
+            'geo_focus' => $geoFocus,
+        ], fn ($v) => $v !== '' && $v !== []);
+
+        $brand->update([
+            'business_locations' => $locations !== [] ? $locations : null,
+            'audience_profile' => $audience !== [] ? $audience : null,
+        ]);
+
+        // Re-normalise local state from what we persisted (collapses cleared rows).
+        $this->hydrateBrandFacts();
+
+        app(SetupReadiness::class)->invalidate($brand);
+
+        Notification::make()
+            ->title('Business details saved')
+            ->body('The Writer and Strategist will now ground every post in these locations and audience.')
             ->success()
             ->send();
     }
