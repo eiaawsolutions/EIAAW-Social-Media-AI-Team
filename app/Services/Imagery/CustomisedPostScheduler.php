@@ -116,6 +116,14 @@ class CustomisedPostScheduler
             [
                 'period_starts_on' => now()->startOfMonth()->toDateString(),
                 'period_ends_on' => now()->addYear()->endOfMonth()->toDateString(),
+                // pillar_mix + format_mix are NOT NULL (the Strategist agent fills
+                // them for generated calendars). This reusable "Customised posts"
+                // calendar is operator-driven and carries NO pillar/format strategy
+                // — each post is authored directly — so we store empty mixes rather
+                // than violate the constraint (SQLSTATE 23502). platform_mix is
+                // nullable and left null. Casts serialise these to JSON.
+                'pillar_mix' => [],
+                'format_mix' => [],
                 'status' => 'approved',
             ],
         );
