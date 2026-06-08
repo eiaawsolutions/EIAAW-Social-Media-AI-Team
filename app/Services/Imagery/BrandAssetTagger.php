@@ -48,7 +48,10 @@ class BrandAssetTagger
             'tags' => $tags,
         ]);
 
-        $this->embedTagged($asset);
+        // Best-effort during tagging: a missing embedding still leaves a tagged
+        // asset. The explicit editor flow calls reembed() directly and DOES
+        // surface failures (see BrandAssetEditor).
+        $this->reembedSafely($asset);
     }
 
     /**
@@ -140,17 +143,34 @@ class BrandAssetTagger
             'tags' => $tags,
         ]);
 
-        $this->embedTagged($asset);
+        $this->reembedSafely($asset);
     }
 
-    private function embedTagged(BrandAsset $asset): void
+    /**
+     * Re-embed an asset from its CURRENT description + tags — embed only, NO
+     * Claude vision call. This is what the description editor needs after an
+     * operator edits the text: the picker's semantic match must follow the new
+     * words, but re-running vision (tag()) would be a needless cost and could
+     * overwrite the operator's edit. Re-throws on failure so the editor page
+     * can surface it; the tagging flow wraps this in reembedSafely().
+     */
+    public function reembed(BrandAsset $asset): void
     {
         $tagBlob = trim(($asset->description ?? '') . "\nTags: " . implode(', ', $asset->tags ?? []));
-        if ($tagBlob === '') return;
+        if ($tagBlob === '') {
+            return;
+        }
 
+        $vector = $this->embeddings->embed($tagBlob, $asset->brand, $asset->brand?->workspace);
+        $asset->update(['embedding' => $vector]);
+    }
+
+    /** Best-effort wrapper used by the tagging paths — a failed embed must not
+     *  lose a freshly-tagged asset. The editor flow calls reembed() directly. */
+    private function reembedSafely(BrandAsset $asset): void
+    {
         try {
-            $vector = $this->embeddings->embed($tagBlob, $asset->brand, $asset->brand?->workspace);
-            $asset->update(['embedding' => $vector]);
+            $this->reembed($asset);
         } catch (\Throwable $e) {
             Log::warning('BrandAssetTagger: embedding failed', [
                 'asset_id' => $asset->id,

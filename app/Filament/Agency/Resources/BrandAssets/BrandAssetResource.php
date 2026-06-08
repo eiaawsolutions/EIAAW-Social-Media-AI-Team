@@ -125,6 +125,16 @@ class BrandAssetResource extends Resource
                     ->modalContent(fn (BrandAsset $r) => view('filament.agency.partials.brand-asset-view', [
                         'asset' => $r,
                     ])),
+                // Direct edit + AI assist for the description + tags. Opens the
+                // dedicated BrandAssetEditor page; on save it re-embeds (embed
+                // only — NO Claude vision, unlike "Re-tag") so the picker matches
+                // the new words.
+                \Filament\Actions\Action::make('editDescription')
+                    ->label('Edit / AI assist')
+                    ->icon('heroicon-o-pencil-square')
+                    ->color('primary')
+                    ->visible(fn (BrandAsset $r) => $r->archived_at === null)
+                    ->url(fn (BrandAsset $r) => \App\Filament\Agency\Pages\BrandAssetEditor::getUrl(['asset' => $r->id])),
                 \Filament\Actions\Action::make('toggleApproved')
                     ->label(fn (BrandAsset $r) => $r->brand_approved ? 'Mark not approved' : 'Mark approved')
                     ->icon('heroicon-o-check-badge')

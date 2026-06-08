@@ -229,6 +229,21 @@ class DraftResource extends Resource
                         'draft' => $r,
                     ])),
 
+                // Direct edit + AI assist (chat reword + quick presets). Opens
+                // the dedicated DraftEditor page; on save the draft resets to
+                // compliance_pending and Compliance re-runs. Same editable-status
+                // set the editor enforces (it 403s on anything else). 'scheduled'
+                // is excluded — resetting a queued post to compliance_pending
+                // would strand it.
+                Action::make('aiEdit')
+                    ->label('Edit / AI assist')
+                    ->icon('heroicon-o-pencil-square')
+                    ->color('primary')
+                    ->visible(fn (Draft $r) => in_array($r->status, [
+                        'awaiting_approval', 'compliance_failed', 'compliance_pending', 'approved',
+                    ], true))
+                    ->url(fn (Draft $r) => \App\Filament\Agency\Pages\DraftEditor::getUrl(['draft' => $r->id])),
+
                 Action::make('approve')
                     ->label('Approve')
                     ->icon('heroicon-o-check-circle')
