@@ -37,13 +37,38 @@ class CustomisedNarrativeWriter
         'pinterest' => 400,
     ];
 
+    /**
+     * Draft a caption from an asset already persisted to a disk (post-submit).
+     * Reads the bytes off the disk, then delegates to the shared image path.
+     */
     public function draftFor(Brand $brand, string $disk, string $relativePath, string $platform): string
+    {
+        $imageBytes = $this->readImage($disk, $relativePath);
+        $mediaType = Storage::disk($disk)->mimeType($relativePath) ?: 'image/jpeg';
+
+        return $this->draftFromImage($brand, $imageBytes, $mediaType, $platform);
+    }
+
+    /**
+     * Draft a caption from raw image bytes already in hand. This is what the
+     * Asset-library "Generate with AI writer" hint action uses: at click time
+     * the upload is still a Livewire TemporaryUploadedFile (the form hasn't been
+     * submitted, so no final disk path exists yet) — the action reads the temp
+     * bytes directly and passes them here. Pass $imageBytes = null for a video
+     * (no frame) to get a voice-only draft.
+     */
+    public function draftForUpload(Brand $brand, ?string $imageBytes, string $mimeType, string $platform): string
+    {
+        return $this->draftFromImage($brand, $imageBytes, $mimeType ?: 'image/jpeg', $platform);
+    }
+
+    /** Shared core: build the prompt + vision call from in-hand bytes + mime. */
+    private function draftFromImage(Brand $brand, ?string $imageBytes, string $mediaType, string $platform): string
     {
         $platform = strtolower(trim($platform)) ?: 'instagram';
         $target = self::PLATFORM_TARGET_CHARS[$platform] ?? 500;
 
-        $imageBytes = $this->readImage($disk, $relativePath);
-        $mediaType = Storage::disk($disk)->mimeType($relativePath) ?: 'image/jpeg';
+        $mediaType = $mediaType ?: 'image/jpeg';
 
         // Video assets: there is no frame to send to vision here. Fall back to a
         // voice-only prompt anchored on the brand + platform (the operator can

@@ -23,6 +23,7 @@ use Filament\Resources\Pages\ManageRecords;
 use Filament\Schemas\Components\Utilities\Set;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
 
 class ManageBrandAssets extends ManageRecords
 {
@@ -193,9 +194,17 @@ class ManageBrandAssets extends ManageRecords
                     return;
                 }
 
+                // FileUpload state is keyed by UUID (not 0..n) and — crucially —
+                // BEFORE the form is submitted the value is a Livewire
+                // TemporaryUploadedFile, NOT a final disk path. This hint action
+                // runs mid-form, so saveUploadedFiles() hasn't moved the file to
+                // its `brand-assets/...` home yet. Passing the temp path to a disk
+                // read found nothing → the writer got no image → the model said
+                // "no image is showing". So read the FIRST file robustly and, when
+                // it's still a temp upload, hand its BYTES straight to the writer.
                 $files = $get('files') ?: [];
                 if (! is_array($files)) $files = [$files];
-                $firstFile = $files[0] ?? null;
+                $firstFile = $files !== [] ? reset($files) : null;
                 if (! $firstFile) {
                     Notification::make()
                         ->title('Upload the file first')
@@ -209,12 +218,25 @@ class ManageBrandAssets extends ManageRecords
                 $platform = $platforms[0] ?? 'instagram';
 
                 try {
-                    $narrative = app(CustomisedNarrativeWriter::class)->draftFor(
-                        brand: $brand,
-                        disk: $this->preferredDisk(),
-                        relativePath: (string) $firstFile,
-                        platform: $platform,
-                    );
+                    if ($firstFile instanceof TemporaryUploadedFile) {
+                        // Pre-submit: read the temp upload's bytes + mime directly.
+                        $bytes = $firstFile->get();
+                        $mime = $firstFile->getMimeType() ?: 'image/jpeg';
+                        $narrative = app(CustomisedNarrativeWriter::class)->draftForUpload(
+                            brand: $brand,
+                            imageBytes: is_string($bytes) && strlen($bytes) > 100 ? $bytes : null,
+                            mimeType: $mime,
+                            platform: $platform,
+                        );
+                    } else {
+                        // Already a stored relative path (e.g. re-opened form).
+                        $narrative = app(CustomisedNarrativeWriter::class)->draftFor(
+                            brand: $brand,
+                            disk: $this->preferredDisk(),
+                            relativePath: (string) $firstFile,
+                            platform: $platform,
+                        );
+                    }
                 } catch (\Throwable $e) {
                     Notification::make()
                         ->title('AI writer could not draft')
