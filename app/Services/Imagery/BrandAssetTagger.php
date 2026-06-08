@@ -4,8 +4,7 @@ namespace App\Services\Imagery;
 
 use App\Models\BrandAsset;
 use App\Services\Embeddings\EmbeddingService;
-use Anthropic\Anthropic;
-use Illuminate\Support\Facades\Http;
+use Anthropic\Client;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -65,14 +64,16 @@ class BrandAssetTagger
         $base64 = base64_encode($imageBytes);
         $mediaType = $asset->mime_type ?: 'image/jpeg';
 
-        $client = Anthropic::factory()
-            ->withApiKey((string) config('services.anthropic.api_key'))
-            ->make();
+        $client = new Client(
+            apiKey: (string) config('services.anthropic.api_key'),
+        );
 
-        $response = $client->messages()->create([
-            'model' => (string) config('services.anthropic.cheap_model', 'claude-haiku-4-5-20251001'),
-            'max_tokens' => 400,
-            'messages' => [[
+        // anthropic-ai/sdk v0.17: named params (camelCase), `->messages->create`
+        // as a property. Same SDK shape as App\Services\Llm\LlmGateway.
+        $response = $client->messages->create(
+            maxTokens: 400,
+            model: (string) config('services.anthropic.cheap_model', 'claude-haiku-4-5-20251001'),
+            messages: [[
                 'role' => 'user',
                 'content' => [
                     [
@@ -89,10 +90,21 @@ class BrandAssetTagger
                     ],
                 ],
             ]],
-        ]);
+        );
 
-        $text = $response->content[0]->text ?? '';
-        return $this->parseClaudeResponse($text);
+        return $this->parseClaudeResponse($this->extractText($response));
+    }
+
+    /** Concatenate the text blocks from a messages.create response. */
+    private function extractText(object $response): string
+    {
+        $out = '';
+        foreach ($response->content ?? [] as $block) {
+            if (($block->type ?? null) === 'text') {
+                $out .= $block->text ?? '';
+            }
+        }
+        return $out;
     }
 
     /**

@@ -2,7 +2,7 @@
 
 namespace App\Services\Imagery;
 
-use Anthropic\Anthropic;
+use Anthropic\Client;
 use App\Models\Brand;
 use Illuminate\Support\Facades\Storage;
 
@@ -82,19 +82,35 @@ SYS;
                 . "\n\nReturn ONLY the caption text.",
         ];
 
-        $client = Anthropic::factory()
-            ->withApiKey((string) config('services.anthropic.api_key'))
-            ->make();
+        $client = new Client(
+            apiKey: (string) config('services.anthropic.api_key'),
+        );
 
-        $response = $client->messages()->create([
-            'model' => (string) config('services.anthropic.default_model', 'claude-sonnet-4-6'),
-            'max_tokens' => 700,
-            'system' => $system,
-            'messages' => [['role' => 'user', 'content' => $content]],
-        ]);
+        // anthropic-ai/sdk v0.17: named params (camelCase keys), `->messages->create`
+        // (property, not method). Mirrors App\Services\Llm\LlmGateway — the same SDK
+        // version this whole codebase standardised on. The previous package's fluent
+        // factory builder did not exist here and fatalled at runtime (the "AI writer
+        // could not draft" outage).
+        $response = $client->messages->create(
+            maxTokens: 700,
+            model: (string) config('services.anthropic.default_model', 'claude-sonnet-4-6'),
+            system: $system,
+            messages: [['role' => 'user', 'content' => $content]],
+        );
 
-        $text = $response->content[0]->text ?? '';
-        return $this->clean($text);
+        return $this->clean($this->extractText($response));
+    }
+
+    /** Concatenate the text blocks from a messages.create response. */
+    private function extractText(object $response): string
+    {
+        $out = '';
+        foreach ($response->content ?? [] as $block) {
+            if (($block->type ?? null) === 'text') {
+                $out .= $block->text ?? '';
+            }
+        }
+        return $out;
     }
 
     private function readImage(string $disk, string $relativePath): ?string
