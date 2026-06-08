@@ -142,11 +142,69 @@ final class ImageCreativeDirection
     }
 
     /**
+     * Layout brief for a TEXT-FREE poster BACKGROUND. The headline + points are
+     * NOT rendered by the image model — they are drawn programmatically by
+     * {@see \App\Services\Branding\InfographicComposer} (FFmpeg drawtext), which
+     * guarantees exact spelling. Diffusion models garble dense text no matter
+     * how forcefully the prompt says "spell exactly" — so we generate only the
+     * canvas here and typeset the words ourselves on top.
+     *
+     * The model is asked for an empty designed surface: a clean band at the top
+     * (where the title bar will be composited) and a calm field below (where the
+     * numbered list will be drawn) — with ZERO letters anywhere.
+     */
+    public static function posterBackgroundDirective(): string
+    {
+        return implode(' ', [
+            'Design a clean, modern social-media POSTER BACKGROUND — a designed graphic surface, NOT a photograph.',
+            'CRITICAL: render ABSOLUTELY NO TEXT of any kind — no letters, words, numbers, headlines, list items, captions, labels, logos or watermarks. The text is added separately afterwards; any text you draw is a defect.',
+            'Compose it as an EMPTY editorial layout: a calm solid or softly-textured field with generous negative space, a slightly distinct horizontal band across the top ~15% (a header zone) and an open lower area where a vertical list will sit.',
+            'Keep it minimal and high-contrast-friendly so dark text reads cleanly on top: soft flat colour, gentle gradient or fine paper grain — no busy illustrations, no central focal subject, no icons, no UI mockups, no people, no charts with numbers.',
+            'Leave the whole surface uncluttered. Premium magazine-explainer feel, like a blank designed card waiting for its copy.',
+        ]);
+    }
+
+    /**
+     * Layout brief for a TEXT-FREE multi-panel infographic BACKGROUND: the title
+     * bar, panel cards and footer banner are drawn programmatically afterwards
+     * by {@see \App\Services\Branding\InfographicComposer}. The model only paints
+     * the empty designed scaffold — no words, no bullets, no numbers — so the
+     * composited text is always perfectly spelled.
+     *
+     * @param  int  $panelCount  drives the grid hint so the empty cards line up
+     *                           with where the composer will draw the copy.
+     */
+    public static function infographicBackgroundDirective(int $panelCount): string
+    {
+        $grid = match (true) {
+            $panelCount <= 2 => 'two empty panel cards',
+            $panelCount === 3 => 'three empty panel cards in an even arrangement',
+            $panelCount === 4 => 'a clean 2x2 grid of four empty panel cards',
+            $panelCount <= 6 => 'an even grid of '.$panelCount.' empty panel cards (2 columns)',
+            default => 'an even multi-column grid of empty panel cards',
+        };
+
+        return implode(' ', [
+            'Design a premium, modern SOCIAL-MEDIA INFOGRAPHIC BACKGROUND — an empty designed scaffold, NOT a photograph, NOT a single illustration.',
+            'CRITICAL: render ABSOLUTELY NO TEXT of any kind — no headings, bullets, numbers, captions, labels, logos or watermarks anywhere. All copy is composited on top afterwards; any text you draw is a defect.',
+            'Layout, top to bottom: (1) a solid horizontal title-bar band across the very top ~13%; (2) '.$grid.', each a clean rounded blank card with subtle separation and padding; (3) a solid horizontal banner band across the bottom ~9%.',
+            'The cards must be EMPTY — flat fill or the faintest texture, optionally a tiny simple decorative icon glyph in a corner, but NO words and NO mini-charts with numbers. Keep strong contrast so dark text reads on the cards and light text reads on the coloured bands.',
+            'Editorial/business-explainer aesthetic — flat vector style, cohesive limited palette, generous padding, consistent alignment. Not clip-art chaos, not a meme, not a photo collage. Leave safe-zone margins.',
+        ]);
+    }
+
+    /**
      * Layout brief for a Nano-Banana-rendered summary poster. Unlike the photo
      * path this DELIBERATELY asks the model to render legible text (the title +
      * points), so it must NOT be combined with the no-text clauses. The poster
      * content (title + points) is distilled by PosterContentWriter and injected
      * by the caller via {@see self::posterContentBlock()}.
+     *
+     * @deprecated Superseded by {@see self::posterBackgroundDirective()} +
+     *   {@see \App\Services\Branding\InfographicComposer}. Diffusion text
+     *   rendering garbles dense copy ("Step 3"→"Step 33", "outreach"→"outrech");
+     *   the composer draws the text programmatically instead. Retained as the
+     *   rollback path behind config('services.branding.compose_infographics').
      */
     public static function posterDirective(): string
     {
@@ -220,6 +278,11 @@ final class ImageCreativeDirection
      * 2-3 short bullet points), and a single-line takeaway footer. Deliberately
      * asks the model to render legible text, so it must NOT be combined with
      * the no-text clauses.
+     *
+     * @deprecated Superseded by {@see self::infographicBackgroundDirective()} +
+     *   {@see \App\Services\Branding\InfographicComposer}. The image model can't
+     *   spell at panel density; the composer typesets the copy programmatically.
+     *   Retained as the rollback path behind config('services.branding.compose_infographics').
      *
      * @param  int  $panelCount  drives the grid hint (2x2 for 4, etc.)
      */

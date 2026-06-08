@@ -8,6 +8,7 @@ use App\Models\BrandAsset;
 use App\Models\Draft;
 use App\Services\Blotato\BlotatoClient;
 use App\Services\Branding\BrandImageStamper;
+use App\Services\Branding\InfographicComposer;
 use App\Services\Branding\PosterContentWriter;
 use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
@@ -49,6 +50,17 @@ use InvalidArgumentException;
 class DesignerAgent extends BaseAgent
 {
     protected array $requiredStages = ['brand_style'];
+
+    /**
+     * Set by buildPrompt() when the chosen path is a poster/infographic that
+     * must have its text drawn PROGRAMMATICALLY (InfographicComposer) on the
+     * generated text-free background. Read once in handle() after generation,
+     * then it drives the FFmpeg drawtext compose step. Null for the photo path
+     * and for the legacy "model renders text" rollback.
+     *
+     * @var array{kind:string,title:string,points?:array<int,string>,panels?:array<int,array{heading:string,bullets:array<int,string>}>,footer?:string}|null
+     */
+    private ?array $pendingCompose = null;
 
     /**
      * Per-image cost lookup keyed by FAL model id. Defaults to schnell
@@ -96,6 +108,10 @@ class DesignerAgent extends BaseAgent
         if (! $draft) {
             return AgentResult::fail('Draft not found.');
         }
+
+        // Reset any compose payload from a prior run on this instance (agents are
+        // resolved fresh per call today, but this keeps handle() re-entrant).
+        $this->pendingCompose = null;
 
         // Already has an asset? No-op (idempotent). Re-running is allowed
         // if the user explicitly clears asset_url (e.g. "regenerate image").
@@ -203,6 +219,23 @@ class DesignerAgent extends BaseAgent
         $isPoster = FalAiClient::modelUsesAspectRatio($generated['model'])
             && (ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)
                 || ImageCreativeDirection::isInfographicFormat($entry?->format, $entry?->pillar, $entry?->visual_direction));
+
+        // POSTER / INFOGRAPHIC composition: the generated image is a TEXT-FREE
+        // background; draw the headline + panels/points PROGRAMMATICALLY on top
+        // (exact spelling — the diffusion model garbles dense text). Soft-fail:
+        // if FFmpeg/font/compose breaks, publish the raw background rather than
+        // no media (a bare designed background still beats an image-less post).
+        if ($isPoster && $this->pendingCompose !== null) {
+            try {
+                $brandedLocalPath = $this->composePosterArtifact($brand, $draft, $falUrl, $this->pendingCompose);
+            } catch (\Throwable $e) {
+                Log::warning('DesignerAgent: infographic compose failed; falling back to raw background', [
+                    'draft_id' => $draft->id,
+                    'error' => $e->getMessage(),
+                ]);
+                $brandedLocalPath = null;
+            }
+        }
 
         // EIAAW house brand: stamp the FAL still with a Claude-distilled
         // positive quote + logo + "Powered by EIAAW Solutions" tag. Soft-fail:
@@ -472,7 +505,9 @@ class DesignerAgent extends BaseAgent
             && ImageCreativeDirection::isInfographicFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)) {
             $infographic = $this->buildInfographicPrompt($brand, $draft);
             if ($infographic !== null) {
-                return $infographic;
+                $this->pendingCompose = $infographic['compose'];
+
+                return $infographic['prompt'];
             }
             // null = couldn't build >= 2 panels → fall through.
         }
@@ -485,7 +520,9 @@ class DesignerAgent extends BaseAgent
             && ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)) {
             $posterPrompt = $this->buildPosterPrompt($brand, $draft);
             if ($posterPrompt !== null) {
-                return $posterPrompt;
+                $this->pendingCompose = $posterPrompt['compose'];
+
+                return $posterPrompt['prompt'];
             }
             // null = couldn't distil enough points → fall through to photo.
         }
@@ -581,37 +618,71 @@ class DesignerAgent extends BaseAgent
     }
 
     /**
-     * Build a SUMMARY-POSTER prompt: a designed graphic whose headline + key
-     * points are rendered as legible text by the (text-capable) model. Returns
-     * null when the draft can't be distilled into enough points — the caller
-     * then falls back to the normal photo prompt rather than shipping an empty
-     * poster.
+     * Build a SUMMARY-POSTER descriptor. When composition is on (default), the
+     * prompt asks the model for a TEXT-FREE poster background and the descriptor
+     * carries a `compose` payload so handle() draws the headline + points
+     * programmatically (exact spelling). When off (rollback), the prompt bakes
+     * the text in via the legacy directive and `compose` is null.
+     *
+     * Returns null when the draft can't be distilled into enough points — the
+     * caller then falls back to the normal photo prompt.
+     *
+     * @return array{prompt:string, compose:?array{kind:string,title:string,points:array<int,string>}}|null
      */
-    private function buildPosterPrompt(Brand $brand, Draft $draft): ?string
+    private function buildPosterPrompt(Brand $brand, Draft $draft): ?array
     {
         $content = app(PosterContentWriter::class)->distil($draft, $brand);
         if (count($content['points']) < 3) {
             return null;
         }
 
-        return sprintf(
-            'Summary poster for the brand "%s" on %s. %s %s %s',
-            $brand->name,
-            ucfirst($draft->platform),
-            ImageCreativeDirection::posterDirective(),
-            $this->posterBrandStyle($brand),
-            ImageCreativeDirection::posterContentBlock($content['title'], $content['points']),
-        );
+        if ($this->composeText()) {
+            $prompt = sprintf(
+                'Poster background for the brand "%s" on %s. %s %s',
+                $brand->name,
+                ucfirst($draft->platform),
+                ImageCreativeDirection::posterBackgroundDirective(),
+                $this->posterBrandStyle($brand),
+            );
+
+            return [
+                'prompt' => $prompt,
+                'compose' => [
+                    'kind' => 'poster',
+                    'title' => $content['title'],
+                    'points' => $content['points'],
+                ],
+            ];
+        }
+
+        // Legacy rollback: model renders the text itself.
+        return [
+            'prompt' => sprintf(
+                'Summary poster for the brand "%s" on %s. %s %s %s',
+                $brand->name,
+                ucfirst($draft->platform),
+                ImageCreativeDirection::posterDirective(),
+                $this->posterBrandStyle($brand),
+                ImageCreativeDirection::posterContentBlock($content['title'], $content['points']),
+            ),
+            'compose' => null,
+        ];
     }
 
     /**
-     * Build a MULTI-PANEL INFOGRAPHIC prompt: title bar + labelled panels (each
-     * with bullets + a mini-illustration hint) + footer takeaway, rendered as
-     * legible text by the text-capable model. Returns null when fewer than 2
-     * panels can be distilled — the caller then falls through to the simple
-     * poster or photo path.
+     * Build a MULTI-PANEL INFOGRAPHIC descriptor. When composition is on
+     * (default), the prompt asks for a TEXT-FREE panel-grid background and the
+     * descriptor carries a `compose` payload (title + panels + footer) so
+     * handle() typesets every word programmatically — guaranteed correct
+     * spelling, which the diffusion model cannot deliver at panel density. When
+     * off (rollback), the legacy directive bakes the text into the prompt.
+     *
+     * Returns null when fewer than 2 panels can be distilled — the caller then
+     * falls through to the simple poster or photo path.
+     *
+     * @return array{prompt:string, compose:?array{kind:string,title:string,panels:array<int,array{heading:string,bullets:array<int,string>}>,footer:string}}|null
      */
-    private function buildInfographicPrompt(Brand $brand, Draft $draft): ?string
+    private function buildInfographicPrompt(Brand $brand, Draft $draft): ?array
     {
         $content = app(PosterContentWriter::class)->distilPanels($draft, $brand);
         $panels = $content['panels'];
@@ -619,13 +690,106 @@ class DesignerAgent extends BaseAgent
             return null;
         }
 
-        return sprintf(
-            'Infographic poster for the brand "%s" on %s. %s %s %s',
-            $brand->name,
-            ucfirst($draft->platform),
-            ImageCreativeDirection::infographicDirective(count($panels)),
-            $this->posterBrandStyle($brand),
-            ImageCreativeDirection::infographicContentBlock($content['title'], $panels, $content['footer']),
+        if ($this->composeText()) {
+            $prompt = sprintf(
+                'Infographic background for the brand "%s" on %s. %s %s',
+                $brand->name,
+                ucfirst($draft->platform),
+                ImageCreativeDirection::infographicBackgroundDirective(count($panels)),
+                $this->posterBrandStyle($brand),
+            );
+
+            return [
+                'prompt' => $prompt,
+                'compose' => [
+                    'kind' => 'infographic',
+                    'title' => $content['title'],
+                    'panels' => $panels,
+                    'footer' => $content['footer'],
+                ],
+            ];
+        }
+
+        // Legacy rollback: model renders the panel text itself.
+        return [
+            'prompt' => sprintf(
+                'Infographic poster for the brand "%s" on %s. %s %s %s',
+                $brand->name,
+                ucfirst($draft->platform),
+                ImageCreativeDirection::infographicDirective(count($panels)),
+                $this->posterBrandStyle($brand),
+                ImageCreativeDirection::infographicContentBlock($content['title'], $panels, $content['footer']),
+            ),
+            'compose' => null,
+        ];
+    }
+
+    /** Whether infographic/poster text is drawn programmatically (default) vs
+     *  baked in by the image model (rollback). */
+    private function composeText(): bool
+    {
+        return (bool) config('services.branding.compose_infographics', true)
+            && (bool) config('services.branding.enabled', true);
+    }
+
+    /**
+     * The brand's primary accent as a 6-hex string (no #) for the composer's
+     * title bar / footer / rules. EIAAW house brand → deep teal; clients → their
+     * own first palette colour; null when neither is available (composer then
+     * uses its deep-teal default).
+     */
+    private function composerAccent(Brand $brand): ?string
+    {
+        if (EiaawBrandLock::appliesTo($brand)) {
+            return '11766A'; // deep teal — references/eiaaw-design-system.md
+        }
+
+        $style = $brand->currentStyle;
+        if ($style && is_array($style->palette)) {
+            foreach ($style->palette as $entry) {
+                $hex = is_string($entry) ? $entry : ($entry['hex'] ?? null);
+                $hex = is_string($hex) ? ltrim($hex, '#') : '';
+                if (preg_match('/^[0-9A-Fa-f]{6}$/', $hex) === 1) {
+                    return strtoupper($hex);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Draw the poster/infographic copy on the text-free background via
+     * InfographicComposer and return the local path to the composed JPEG.
+     * Throws on any compose failure (caller soft-falls to the raw background).
+     *
+     * @param  array{kind:string,title?:string,points?:array<int,string>,panels?:array<int,array{heading:string,bullets:array<int,string>}>,footer?:string}  $compose
+     */
+    private function composePosterArtifact(Brand $brand, Draft $draft, string $backgroundUrl, array $compose): string
+    {
+        $composer = InfographicComposer::fromConfig();
+        $accent = $this->composerAccent($brand);
+        $opts = $accent !== null ? ['accent' => $accent] : [];
+
+        if (($compose['kind'] ?? '') === 'infographic') {
+            return $composer->composeInfographic(
+                backgroundImageUrl: $backgroundUrl,
+                title: (string) ($compose['title'] ?? ''),
+                panels: is_array($compose['panels'] ?? null) ? $compose['panels'] : [],
+                footer: (string) ($compose['footer'] ?? ''),
+                platform: $draft->platform,
+                draftId: $draft->id,
+                opts: $opts,
+            );
+        }
+
+        return $composer->composePoster(
+            backgroundImageUrl: $backgroundUrl,
+            title: (string) ($compose['title'] ?? ''),
+            points: is_array($compose['points'] ?? null) ? $compose['points'] : [],
+            platform: $draft->platform,
+            draftId: $draft->id,
+            opts: $opts,
         );
     }
 

@@ -102,6 +102,32 @@ class SummaryPosterTest extends TestCase
         $this->assertStringContainsStringIgnoringCase('exact', $d);
     }
 
+    public function test_poster_background_directive_forbids_all_text(): void
+    {
+        // The composition path asks the model for a TEXT-FREE background; the
+        // headline + points are drawn programmatically afterwards. This is the
+        // guarantee that prevents the model from garbling baked-in copy.
+        $d = ImageCreativeDirection::posterBackgroundDirective();
+        $this->assertStringContainsStringIgnoringCase('no text', $d);
+        $this->assertStringContainsStringIgnoringCase('background', $d);
+        // It must NOT instruct the model to render the words (the old failure).
+        $this->assertStringNotContainsStringIgnoringCase('render the words exactly', $d);
+        $this->assertStringNotContainsStringIgnoringCase('spelled exactly', $d);
+    }
+
+    public function test_infographic_background_directive_forbids_all_text_and_keeps_grid(): void
+    {
+        $d = ImageCreativeDirection::infographicBackgroundDirective(4);
+        // Empty scaffold with the right grid, but zero words.
+        $this->assertStringContainsStringIgnoringCase('no text', $d);
+        $this->assertStringContainsStringIgnoringCase('2x2', $d);
+        $this->assertStringContainsStringIgnoringCase('empty', $d);
+        $this->assertStringContainsStringIgnoringCase('title-bar', $d);
+        // The composer draws the headings/bullets — the model must not.
+        $this->assertStringNotContainsStringIgnoringCase('bullets exactly', $d);
+        $this->assertStringNotContainsStringIgnoringCase('render every heading', $d);
+    }
+
     public function test_infographic_content_block_lays_out_panels_in_order(): void
     {
         $block = ImageCreativeDirection::infographicContentBlock(

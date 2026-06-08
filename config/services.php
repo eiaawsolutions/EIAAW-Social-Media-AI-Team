@@ -118,6 +118,15 @@ return [
         // Hard cap on FFmpeg subprocess wall time so a stuck encode doesn't
         // exhaust the worker's job timeout.
         'ffmpeg_timeout_seconds' => (int) env('BRANDING_FFMPEG_TIMEOUT', 90),
+        // Infographic/poster text is drawn PROGRAMMATICALLY (FFmpeg drawtext via
+        // InfographicComposer) on a text-free AI background — diffusion models
+        // garble dense baked-in text ("Step 3"→"Step 33", "outreach"→"outrech").
+        // Set false to roll back to the legacy "ask Nano Banana to render the
+        // words" path (ImageCreativeDirection::poster/infographicDirective).
+        'compose_infographics' => (bool) env('BRANDING_COMPOSE_INFOGRAPHICS', true),
+        // Separate (larger) wall-time cap for the multi-block infographic
+        // filtergraph, which draws far more text blocks than the quote stamp.
+        'infographic_timeout_seconds' => (int) env('BRANDING_INFOGRAPHIC_TIMEOUT', 120),
     ],
 
     'voyage' => [
