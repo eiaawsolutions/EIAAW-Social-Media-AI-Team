@@ -47,7 +47,16 @@ class BrandAssetResource extends Resource
                     ->label('Preview')
                     ->size(64)
                     ->square()
-                    ->defaultImageUrl(fn () => null),
+                    // Honest fallback for rows whose file is gone (empty URL OR a
+                    // URL that 404s). defaultImageUrl covers the empty-state; the
+                    // onerror swaps the same tile in when the bytes are missing,
+                    // so the operator never sees a browser broken-image glyph.
+                    // A per-row disk stat would be N network hits in a table, so
+                    // we rely on the client-side fallback here, not bytesAvailable().
+                    ->defaultImageUrl(fn () => self::previewPlaceholderDataUri())
+                    ->extraImgAttributes([
+                        'onerror' => "this.onerror=null;this.src='" . self::previewPlaceholderDataUri() . "';",
+                    ]),
                 Tables\Columns\TextColumn::make('media_type')
                     ->badge()
                     ->color(fn (string $state) => $state === 'video' ? 'info' : 'success'),
@@ -245,6 +254,30 @@ class BrandAssetResource extends Resource
         return Brand::where('workspace_id', $workspaceId)
             ->whereNull('archived_at')
             ->exists();
+    }
+
+    /**
+     * A small inline "preview unavailable" tile, as a self-contained data URI so
+     * it needs no asset pipeline and renders even offline. Used as the table
+     * thumbnail fallback for rows whose file is empty or has 404'd (e.g. an
+     * asset whose bytes were wiped from a non-durable disk). Keeps the operator
+     * from ever seeing a browser broken-image glyph. Palette matches the EIAAW
+     * sand/teal tokens used across the Agency panel.
+     */
+    protected static function previewPlaceholderDataUri(): string
+    {
+        $svg = <<<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="8" fill="#FAF7F2" stroke="#D9CFBC"/>
+  <g fill="none" stroke="#B59B6B" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="18" y="18" width="28" height="28" rx="3"/>
+    <circle cx="27" cy="27" r="3"/>
+    <path d="M46 39 38 31a3 3 0 0 0-4.2 0L22 43"/>
+  </g>
+</svg>
+SVG;
+
+        return 'data:image/svg+xml;base64,' . base64_encode($svg);
     }
 
     /**

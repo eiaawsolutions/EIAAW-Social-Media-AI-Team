@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\Storage;
 use Pgvector\Laravel\HasNeighbors;
 use Pgvector\Laravel\Vector;
 
@@ -59,6 +60,47 @@ class BrandAsset extends Model
 
     public function isImage(): bool { return $this->media_type === 'image'; }
     public function isVideo(): bool { return $this->media_type === 'video'; }
+
+    /**
+     * Does the underlying file still exist on its storage disk?
+     *
+     * Brand assets uploaded to a non-durable disk (the local `public` disk on a
+     * stateless Railway container) are wiped on every redeploy, leaving a row
+     * whose `public_url` is well-formed but whose bytes are gone. Previewing
+     * such an asset renders a broken-image glyph. This lets a caller detect the
+     * missing-bytes case and show an honest placeholder instead.
+     *
+     * NOTE: this performs a disk stat (a remote HEAD on S3/R2). It is cheap for
+     * a single record (a modal preview) but MUST NOT be called per-row in a
+     * table render — that would be N network round-trips. Callers in list
+     * contexts should rely on the URL + a client-side onerror fallback instead.
+     */
+    public function bytesAvailable(): bool
+    {
+        if (! $this->storage_disk || ! $this->storage_path) {
+            return false;
+        }
+        try {
+            return Storage::disk($this->storage_disk)->exists($this->storage_path);
+        } catch (\Throwable) {
+            // Disk misconfigured / unreachable — treat as unavailable rather
+            // than throw inside a view. The placeholder is the safe default.
+            return false;
+        }
+    }
+
+    /**
+     * A URL safe to drop into an <img>/<video> src, or null when there is
+     * nothing displayable. Returns null for a blank/whitespace `public_url`
+     * so callers can branch to a placeholder instead of emitting `src=""`
+     * (which browsers resolve to the current page and render as broken).
+     */
+    public function displayUrl(): ?string
+    {
+        $url = trim((string) ($this->public_url ?? ''));
+
+        return $url !== '' ? $url : null;
+    }
 
     public function isCustomised(): bool { return $this->usage_intent === self::INTENT_CUSTOMISED; }
     public function isGeneral(): bool { return $this->usage_intent !== self::INTENT_CUSTOMISED; }

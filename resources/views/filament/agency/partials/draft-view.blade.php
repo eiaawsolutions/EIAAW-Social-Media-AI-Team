@@ -12,26 +12,39 @@
     </div>
 
     @php
-        $assetUrl = (string) ($draft->asset_url ?? '');
+        $assetUrl = trim((string) ($draft->asset_url ?? ''));
         $isVideo = $assetUrl !== '' && (
             str_ends_with(strtolower($assetUrl), '.mp4')
             || str_ends_with(strtolower($assetUrl), '.mov')
             || str_ends_with(strtolower($assetUrl), '.webm')
             || str_contains($assetUrl, '/video/')
         );
+        $draftPlaceholderId = 'draft-asset-missing-' . $draft->id;
     @endphp
-    @if ($assetUrl !== '' && $isVideo)
+    @if ($assetUrl !== '')
         <div style="margin-bottom: 14px;">
-            <video src="{{ $assetUrl }}"
-                   controls
-                   playsinline
-                   style="max-width: 100%; max-height: 480px; border-radius: 10px; border: 1px solid #D9CFBC; display: block; background: #000;"></video>
-        </div>
-    @elseif ($assetUrl !== '')
-        <div style="margin-bottom: 14px;">
-            <img src="{{ $assetUrl }}"
-                 alt="Draft asset"
-                 style="max-width: 100%; max-height: 420px; border-radius: 10px; border: 1px solid #D9CFBC; display: block;" />
+            @if ($isVideo)
+                <video src="{{ $assetUrl }}"
+                       controls
+                       playsinline
+                       onerror="document.getElementById('{{ $draftPlaceholderId }}').style.display='flex'; this.style.display='none';"
+                       style="max-width: 100%; max-height: 480px; border-radius: 10px; border: 1px solid #D9CFBC; display: block; background: #000;"></video>
+            @else
+                <img src="{{ $assetUrl }}"
+                     alt="Draft asset"
+                     onerror="document.getElementById('{{ $draftPlaceholderId }}').style.display='flex'; this.style.display='none';"
+                     style="max-width: 100%; max-height: 420px; border-radius: 10px; border: 1px solid #D9CFBC; display: block;" />
+            @endif
+            <div id="{{ $draftPlaceholderId }}"
+                 style="display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; min-height: 160px; padding: 24px; border-radius: 10px; border: 1px dashed #D9CFBC; background: #FAF7F2;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#B59B6B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                    <circle cx="9" cy="9" r="2"></circle>
+                    <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"></path>
+                </svg>
+                <div style="font-size: 13px; font-weight: 600; color: #2A3438;">Media preview unavailable</div>
+                <div style="font-size: 12px; color: #6B7A7F;">The post text below is unaffected.</div>
+            </div>
         </div>
     @endif
 
