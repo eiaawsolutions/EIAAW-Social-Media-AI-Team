@@ -218,6 +218,18 @@ return [
         'user_id' => env('METRICOOL_USER_ID'),       // numeric account id (non-secret)
         'base_url' => env('METRICOOL_BASE_URL', 'https://app.metricool.com/api'),
         'request_timeout' => (int) env('METRICOOL_REQUEST_TIMEOUT', 30),
+
+        // Growth-dashboard guardrails (the /agency/performance page). That page
+        // does up to ~13 SERIAL Metricool calls inside the web request to build
+        // the followers + impressions timelines; with the publish-path default
+        // (30s × retry 2 ≈ 90s/call) a single slow network blows past PHP's
+        // max_execution_time and the page 500s with an uncatchable fatal. So the
+        // synchronous render uses a SHORT per-call timeout and an overall
+        // wall-clock BUDGET: once spent, remaining networks degrade to an
+        // honest "couldn't reach Metricool" tile and the page still renders.
+        // Workers (collector/publisher/probes) keep request_timeout, untouched.
+        'growth_call_timeout' => (int) env('METRICOOL_GROWTH_CALL_TIMEOUT', 6),  // seconds per network call
+        'growth_time_budget' => (int) env('METRICOOL_GROWTH_TIME_BUDGET', 18),   // seconds total, under PHP's 30s ceiling
     ],
 
     // ─── Billing ────────────────────────────────────────────────────

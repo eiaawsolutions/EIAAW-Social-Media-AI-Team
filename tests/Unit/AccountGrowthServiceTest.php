@@ -123,6 +123,10 @@ class AccountGrowthServiceTest extends TestCase
         // on its publish date — NOT the account timelines endpoint. Instagram's
         // impression field is impressionsTotal (verified in metricool-field-map).
         Http::fake([
+            // Followers (timelines) runs first — stub it to 404 so this
+            // impressions-focused test stays hermetic and doesn't make real
+            // network calls (which would also burn the growth time budget).
+            'app.metricool.com/api/v2/analytics/timelines*' => Http::response(['status' => 'BAD_REQUEST'], 404),
             'app.metricool.com/api/v2/analytics/posts/instagram*' => Http::response([
                 'data' => [
                     ['dateTime' => '2026-05-01T10:00:00+0000', 'impressionsTotal' => 500],
@@ -149,6 +153,9 @@ class AccountGrowthServiceTest extends TestCase
         // string). The bucketing must dig into .dateTime, not cast the array to a
         // string (which silently lumped everything onto one bogus bucket + warned).
         Http::fake([
+            // Stub the timelines (followers) endpoint so this impressions test
+            // stays hermetic — see the note in the sibling test above.
+            'app.metricool.com/api/v2/analytics/timelines*' => Http::response(['status' => 'BAD_REQUEST'], 404),
             'app.metricool.com/api/v2/analytics/posts/instagram*' => Http::response([
                 'data' => [
                     ['publishedAt' => ['dateTime' => '2026-05-10T06:00:00', 'timezone' => 'Europe/Madrid'], 'impressionsTotal' => 400],
@@ -174,6 +181,8 @@ class AccountGrowthServiceTest extends TestCase
         // impressions for this brand; page-impressions API 500s). Per the
         // Truthfulness Contract it must read 'not_available', never a number.
         Http::fake([
+            // Stub timelines (followers, runs first) to keep this test hermetic.
+            'app.metricool.com/api/v2/analytics/timelines*' => Http::response(['status' => 'BAD_REQUEST'], 404),
             'app.metricool.com/api/v2/analytics/posts/*' => Http::response(['data' => []], 200),
         ]);
 
@@ -266,6 +275,49 @@ class AccountGrowthServiceTest extends TestCase
 
         $this->assertNull($out['blog_id']);
         $this->assertFalse($out['followers']['has_data']);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * REGRESSION (prod 500 on /agency/performance, 2026-06-10): the page does up
+     * to ~13 SERIAL Metricool calls inside the web request; with the publish-path
+     * timeout (30s × retry 2) a few slow networks pushed the request past PHP's
+     * 30s max_execution_time → uncatchable fatal → 500. The fix is a wall-clock
+     * BUDGET: once exhausted, remaining networks are NOT called — they degrade to
+     * an 'error' tile and the page still renders. With the budget pinned to ~0,
+     * the deadline trips before the first call, so ZERO HTTP calls go out and
+     * every network reads 'error' (never a crash, never a fabricated number).
+     */
+    public function test_time_budget_halts_calls_and_renders_an_error_tile(): void
+    {
+        config(['services.metricool.growth_time_budget' => 0]); // deadline = now → trips immediately
+        Http::fake([
+            // If ANY call leaked through, fail loudly rather than silently pass.
+            '*' => Http::response(['data' => []], 200),
+        ]);
+
+        $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
+
+        // The page still renders a full payload (no exception) …
+        $this->assertFalse($out['followers']['has_data']);
+        $this->assertFalse($out['impressions']['has_data']);
+
+        // … with every followers network honestly marked 'error' (out of budget),
+        // and NOT a fabricated zero or 'ok' tile.
+        foreach ($out['followers']['networks'] as $net) {
+            $this->assertSame('error', $net['status'], 'followers/' . $net['network'] . " should degrade to 'error' under an exhausted budget");
+            $this->assertNull($net['headline']);
+        }
+
+        // Impressions: networks with an impression metric degrade to 'error';
+        // LinkedIn (impression_fields=null) stays 'not_available' as before — the
+        // budget check sits AFTER that structural skip, so it isn't reclassified.
+        $li = collect($out['impressions']['networks'])->firstWhere('network', 'linkedin');
+        $this->assertSame('not_available', $li['status']);
+        $ig = collect($out['impressions']['networks'])->firstWhere('network', 'instagram');
+        $this->assertSame('error', $ig['status']);
+
+        // The whole point: not a single blocking Metricool call was made.
         Http::assertNothingSent();
     }
 }
