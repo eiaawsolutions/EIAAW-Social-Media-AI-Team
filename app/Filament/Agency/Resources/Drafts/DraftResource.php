@@ -86,11 +86,20 @@ class DraftResource extends Resource
                     ->color('gray')
                     ->size('sm')
                     ->sortable(),
-                Tables\Columns\ImageColumn::make('asset_url')
+                // asset_url is the PUBLISHABLE media — for video drafts that's an
+                // .mp4, which an <img> can't render (the empty-box in the list).
+                // displayThumbnailUrl() resolves an IMAGE: the asset itself when
+                // it's an image, else the most recent keyframe from asset_urls.
+                // A video with no keyframe falls through to the placeholder.
+                Tables\Columns\ImageColumn::make('thumbnail')
                     ->label('Image')
+                    ->state(fn (Draft $r) => $r->displayThumbnailUrl())
                     ->size(56)
                     ->square()
-                    ->defaultImageUrl(fn () => null),
+                    ->defaultImageUrl(fn (Draft $r) => $r->hasVideoAsset()
+                        ? 'data:image/svg+xml;base64,'.base64_encode(self::videoPlaceholderSvg())
+                        : null)
+                    ->tooltip(fn (Draft $r) => $r->hasVideoAsset() ? 'Video attached' : null),
                 Tables\Columns\TextColumn::make('platform')
                     ->badge()
                     ->color(fn (string $state) => match ($state) {
@@ -433,13 +442,36 @@ class DraftResource extends Resource
                     ])
                     ->action(function (Draft $r, array $data): void {
                         @set_time_limit(300);
+                        // Durable trace so a "my upload didn't reflect" report is
+                        // diagnosable. The action's only output was a transient
+                        // toast — when an operator dismisses/misses it, nothing
+                        // recorded WHY asset_url stayed unchanged (the #361 case).
+                        $logCtx = [
+                            'draft_id' => $r->id,
+                            'brand_id' => $r->brand_id,
+                            'platform' => $r->platform,
+                            'source' => $data['source'] ?? null,
+                            'has_upload' => ! empty($data['upload_file']),
+                            'user_id' => auth()->id(),
+                        ];
                         try {
                             $note = self::applyManualMedia($r, $data);
                         } catch (MediaComplianceException $e) {
+                            Log::warning('replaceMedia: rejected by compliance', $logCtx + [
+                                'media_type' => $e->mediaType,
+                                'violations' => array_map(
+                                    fn (array $v) => $v['reason'] ?? '',
+                                    $e->violations,
+                                ),
+                            ]);
                             self::sendMediaComplianceFailure($e);
 
                             return;
                         } catch (\Throwable $e) {
+                            Log::error('replaceMedia: apply failed', $logCtx + [
+                                'error' => $e->getMessage(),
+                                'exception' => $e::class,
+                            ]);
                             Notification::make()
                                 ->title('Could not apply media')
                                 ->body(substr($e->getMessage(), 0, 240))
@@ -448,6 +480,10 @@ class DraftResource extends Resource
 
                             return;
                         }
+                        Log::info('replaceMedia: applied', $logCtx + [
+                            'asset_url' => $r->fresh()?->asset_url,
+                            'note' => $note,
+                        ]);
                         Notification::make()
                             ->title('Media applied')
                             ->body($note)
@@ -845,6 +881,18 @@ class DraftResource extends Resource
     }
 
     /**
+     * Inline placeholder shown in the drafts list for a video draft that has no
+     * still keyframe to thumbnail. A play-glyph on a neutral tile — makes it
+     * obvious the row HAS media (it's a video) rather than showing an empty box.
+     */
+    private static function videoPlaceholderSvg(): string
+    {
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56">'
+            .'<rect width="56" height="56" rx="8" fill="#e5e7eb"/>'
+            .'<path d="M23 19l16 9-16 9z" fill="#6b7280"/></svg>';
+    }
+
+    /**
      * Apply operator-chosen media to a draft. Two source paths converge on the
      * same persistence step:
      *
@@ -853,11 +901,12 @@ class DraftResource extends Resource
      *             resolve a public URL, and (optionally) register it as a
      *             BrandAsset so it's reusable + gets vision-tagged.
      *
-     * Both then re-host through THIS WORKSPACE'S Blotato account so /v2/posts
-     * accepts the media at publish time (Blotato rejects external mediaUrls,
-     * and media is scoped to the uploading account — see DesignerAgent for the
-     * cross-tenant rationale). Finally we persist asset_url + push the new URL
-     * (and its source) into the asset_urls history.
+     * Both then make the URL publish-ready via makePublishableMediaUrl()
+     * (PROVIDER-AWARE): under Metricool (the default) the durable source URL is
+     * passed through and the Publisher normalises it at publish; under Blotato
+     * (rollback) it's re-hosted through this workspace's Blotato account. Finally
+     * we persist asset_url + push the new URL (and its source) into the
+     * asset_urls history.
      *
      * Returns a short human note for the success toast.
      */
@@ -911,8 +960,8 @@ class DraftResource extends Resource
                 $cleanup();
             }
 
-            $blotatoUrl = self::rehostOnBlotato($brand, $sourceUrl);
-            self::persistDraftMedia($draft, $blotatoUrl, [$blotatoUrl, $sourceUrl]);
+            $publishableUrl = self::makePublishableMediaUrl($brand, $sourceUrl);
+            self::persistDraftMedia($draft, $publishableUrl, [$publishableUrl, $sourceUrl]);
             $asset->recordUse();
 
             return sprintf(
@@ -957,7 +1006,7 @@ class DraftResource extends Resource
             $cleanup();
         }
 
-        $blotatoUrl = self::rehostOnBlotato($brand, $sourceUrl);
+        $publishableUrl = self::makePublishableMediaUrl($brand, $sourceUrl);
 
         $savedNote = '';
         if (! empty($data['save_to_library'])) {
@@ -987,7 +1036,7 @@ class DraftResource extends Resource
             $savedNote = ' · saved to library';
         }
 
-        self::persistDraftMedia($draft, $blotatoUrl, [$blotatoUrl, $sourceUrl]);
+        self::persistDraftMedia($draft, $publishableUrl, [$publishableUrl, $sourceUrl]);
 
         return sprintf('Uploaded %s attached%s%s.', $mediaType, $savedNote, $compNote);
     }
@@ -1190,14 +1239,32 @@ class DraftResource extends Resource
     }
 
     /**
-     * Re-host a media URL through the brand's workspace Blotato account so it's
-     * publishable. Per the per-workspace-isolation invariant we always use
-     * forWorkspace(), never fromConfig().
+     * Make an operator-supplied media URL publish-ready. PROVIDER-AWARE — mirrors
+     * DesignerAgent::rehostMedia(), the resolved [[designer-metricool-gap-resolved]]
+     * pattern:
+     *
+     *   metricool → return the durable source URL unchanged. The Publisher owns
+     *               media normalisation (MetricoolPublisher::submit() calls
+     *               normalizeMedia() on each URL at publish), and Metricool-only
+     *               workspaces have NO Blotato handle — forcing a Blotato re-host
+     *               here is exactly what silently fails the manual-replace path
+     *               for those workspaces. So we don't.
+     *   blotato   → re-host now through THIS workspace's Blotato account (the
+     *               legacy rollback path). Per the per-workspace-isolation
+     *               invariant we always use forWorkspace(), never fromConfig().
+     *
+     * The source URL must already be durable (R2/public upload or a library
+     * asset's public_url), so it survives until the publisher fetches it.
      */
-    private static function rehostOnBlotato(Brand $brand, string $url): string
+    private static function makePublishableMediaUrl(Brand $brand, string $url): string
     {
         if (! $brand->workspace) {
-            throw new \RuntimeException('Brand has no workspace — cannot resolve Blotato account.');
+            throw new \RuntimeException('Brand has no workspace — cannot resolve publishing account.');
+        }
+
+        $provider = strtolower((string) config('services.publishing.provider', 'metricool')) ?: 'metricool';
+        if ($provider !== 'blotato') {
+            return $url;
         }
 
         return BlotatoClient::forWorkspace($brand->workspace)

@@ -92,4 +92,58 @@ class Draft extends Model
     {
         return in_array($this->status, ['compliance_pending', 'compliance_failed', 'awaiting_approval']);
     }
+
+    /**
+     * File extensions we treat as video when classifying a media URL. Query
+     * strings and fragments are stripped before matching.
+     */
+    private const VIDEO_EXTENSIONS = ['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'];
+
+    /**
+     * Whether a media URL points at a video file (by extension). Used to decide
+     * whether asset_url can be rendered in an <img> thumbnail.
+     */
+    public static function urlIsVideo(?string $url): bool
+    {
+        if (! $url) {
+            return false;
+        }
+        $path = parse_url($url, PHP_URL_PATH) ?: $url;
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+
+        return in_array($ext, self::VIDEO_EXTENSIONS, true);
+    }
+
+    /** True when the draft's primary asset is a video. */
+    public function hasVideoAsset(): bool
+    {
+        return self::urlIsVideo($this->asset_url);
+    }
+
+    /**
+     * A URL safe to render inside an <img> thumbnail.
+     *
+     * asset_url is the PUBLISHABLE media — for video drafts that's an .mp4,
+     * which an <img> can't display (the empty-box bug in the drafts list). So:
+     *   - asset_url is an image            → use it
+     *   - asset_url is a video             → fall back to the most recent IMAGE
+     *                                        in asset_urls (the keyframe the
+     *                                        Designer/Video agents store)
+     *   - neither                          → null (caller shows a placeholder)
+     */
+    public function displayThumbnailUrl(): ?string
+    {
+        if ($this->asset_url && ! self::urlIsVideo($this->asset_url)) {
+            return $this->asset_url;
+        }
+
+        $history = is_array($this->asset_urls) ? $this->asset_urls : [];
+        foreach (array_reverse($history) as $url) {
+            if (is_string($url) && $url !== '' && ! self::urlIsVideo($url)) {
+                return $url;
+            }
+        }
+
+        return null;
+    }
 }
