@@ -18,7 +18,6 @@ use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\FalContentPolicyException;
 use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
 
 /**
@@ -423,13 +422,16 @@ class VideoAgent extends BaseAgent
             }
         }
 
-        // Publish branded video to public disk so Blotato can fetch it.
+        // Publish branded video to the DURABLE disk (R2 in prod, local public
+        // for dev) so the draft preview AND Metricool's publish-time normalize
+        // fetch both resolve. Hard-coding the local `public` disk here was the
+        // same [[brand-asset-storage-ephemeral]] trap as DesignerAgent — Railway
+        // wipes that disk and has no storage:link, so the /storage/ URL 404'd.
         $urlForBlotato = $falUrl;
         if ($brandedLocalPath !== null && is_file($brandedLocalPath)) {
             try {
-                $publicRelPath = 'branding/' . $draft->id . '-' . substr(md5(uniqid('', true)), 0, 12) . '.mp4';
-                Storage::disk('public')->put($publicRelPath, file_get_contents($brandedLocalPath));
-                $urlForBlotato = rtrim((string) config('app.url'), '/') . '/storage/' . $publicRelPath;
+                $relPath = 'branding/' . $draft->id . '-' . substr(md5(uniqid('', true)), 0, 12) . '.mp4';
+                $urlForBlotato = $this->publishArtifact($brandedLocalPath, $relPath);
                 @unlink($brandedLocalPath);
             } catch (\Throwable $e) {
                 Log::warning('VideoAgent: failed to publish branded video; falling back to FAL URL', [
