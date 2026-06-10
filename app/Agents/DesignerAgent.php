@@ -18,7 +18,6 @@ use App\Services\Imagery\FalAccountLockedException;
 use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
@@ -282,16 +281,20 @@ class DesignerAgent extends BaseAgent
         }
 
         // If we successfully stamped a branded version, publish it to the
-        // public disk and use that URL for Blotato. Branded image lives at
-        // <APP_URL>/storage/branding/<draftid>-<random>.jpg — discoverable
-        // only by direct path, served once to Blotato then garbage-collected
-        // by the existing storage:link cleanup job.
+        // DURABLE disk (R2 in prod, local public for dev) and use that URL as
+        // the media source. The branded image lives at
+        // <R2_PUBLIC_URL>/branding/<draftid>-<random>.jpg — durably served at
+        // smt-assets.eiaawsolutions.com, so the draft preview AND Metricool's
+        // publish-time normalize fetch both succeed. Hard-coding the local
+        // `public` disk here was the [[brand-asset-storage-ephemeral]] bug's
+        // second occurrence: Railway wipes that disk and has no storage:link,
+        // so the /storage/ URL 404'd ("Media preview unavailable") and
+        // regenerating only re-wrote the same dead URL.
         $urlForBlotato = $falUrl;
         if ($brandedLocalPath !== null && is_file($brandedLocalPath)) {
             try {
-                $publicRelPath = 'branding/'.$draft->id.'-'.substr(md5(uniqid('', true)), 0, 12).'.jpg';
-                Storage::disk('public')->put($publicRelPath, file_get_contents($brandedLocalPath));
-                $urlForBlotato = rtrim((string) config('app.url'), '/').'/storage/'.$publicRelPath;
+                $relPath = 'branding/'.$draft->id.'-'.substr(md5(uniqid('', true)), 0, 12).'.jpg';
+                $urlForBlotato = $this->publishArtifact($brandedLocalPath, $relPath);
                 @unlink($brandedLocalPath);
             } catch (\Throwable $e) {
                 Log::warning('DesignerAgent: failed to publish branded image; falling back to FAL URL', [
