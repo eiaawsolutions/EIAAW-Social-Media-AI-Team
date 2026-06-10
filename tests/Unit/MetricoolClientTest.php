@@ -289,8 +289,10 @@ class MetricoolClientTest extends TestCase
     }
 
     /**
-     * Invalid metric for a network (400), not-connected (404), or upstream 500
-     * must degrade that one network to not-found — never blow up the board.
+     * Invalid metric for a network (400), not-connected (403 "There is no
+     * <network> connection for blog" / 404), or upstream 500 must degrade that one
+     * network to not-found — never blow up the board. 403 added 2026-06-10 after
+     * X/Twitter returned it live for an unconnected network on the HQ brand.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('nonFatalStatusProvider')]
     public function test_account_timeline_treats_non_2xx_as_not_found_not_error(int $status): void
@@ -311,9 +313,26 @@ class MetricoolClientTest extends TestCase
     {
         return [
             'invalid metric (400)' => [400],
+            'not connected (403)' => [403],
             'not connected (404)' => [404],
             'upstream error (500)' => [500],
         ];
+    }
+
+    public function test_post_analytics_treats_403_no_connection_as_not_found(): void
+    {
+        // Metricool returns 403 "There is no twitter connection for blog: N" for a
+        // network the brand hasn't connected — same meaning as 404, must NOT throw.
+        Http::fake([
+            'app.metricool.com/api/v2/analytics/posts/twitter*' => Http::response(
+                ['status' => 'FORBIDDEN', 'code' => '403', 'detail' => 'There is no twitter connection for blog: 123'], 403
+            ),
+        ]);
+
+        $result = $this->client()->postAnalytics(123, '2026-05-01', '2026-05-30', 'twitter');
+
+        $this->assertFalse($result['found']);
+        $this->assertSame(403, $result['status']);
     }
 
     public function test_account_timeline_picks_the_matching_metric_series(): void

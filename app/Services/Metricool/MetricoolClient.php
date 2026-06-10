@@ -228,8 +228,12 @@ class MetricoolClient
         $client = $timeoutOverride !== null ? $this->client($timeoutOverride, retries: 1) : $this->client();
         $response = $client->get('/v2/analytics/posts/' . urlencode($network), $query);
 
-        if ($response->status() === 404) {
-            return ['found' => false, 'status' => 404, 'body' => $response->json()];
+        // 404 (no analytics for this network) or 403 ("There is no <network>
+        // connection for blog") both mean: this network isn't connected for this
+        // brand → found=false, the caller renders 'not_available'. 403 verified
+        // live 2026-06-10 for X/Twitter on a brand that hasn't connected it.
+        if (in_array($response->status(), [403, 404], true)) {
+            return ['found' => false, 'status' => $response->status(), 'body' => $response->json()];
         }
         $this->throwIfError($response, "postAnalytics({$network})");
 
@@ -392,10 +396,14 @@ class MetricoolClient
         $client = $timeoutOverride !== null ? $this->client($timeoutOverride, retries: 1) : $this->client();
         $response = $client->get('/v2/analytics/timelines', $query);
 
-        // Not-connected (404), invalid metric for this network (400), or an
-        // upstream 500 → this network simply has no series; don't blow up the
-        // whole board. Only a truly unexpected status throws.
-        if (in_array($response->status(), [400, 404, 500], true)) {
+        // Not-connected (404 or 403 "There is no <network> connection for blog"),
+        // invalid metric for this network (400), or an upstream 500 → this network
+        // simply has no series; don't blow up the whole board. Only a truly
+        // unexpected status throws. 403 verified live 2026-06-10: Metricool returns
+        // it for a network the brand hasn't connected (e.g. X/Twitter) — that's a
+        // connect-state signal identical to the 404s, NOT a transient error, so it
+        // must read 'not_available' (not connected), never 'error' (temporarily down).
+        if (in_array($response->status(), [400, 403, 404, 500], true)) {
             return ['found' => false, 'status' => $response->status(), 'points' => []];
         }
         $this->throwIfError($response, "getAccountTimeline({$network}/{$metric})");
