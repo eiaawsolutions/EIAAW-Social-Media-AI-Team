@@ -56,6 +56,13 @@
             .perf-net-na .na { font-size: 9.5px; line-height: 1.25; opacity: .85; margin-top: 2px; }
             .perf-chart-box { position: relative; height: 240px; background: white; border: 1px solid var(--eiaaw-line); border-radius: 12px; padding: 10px; }
             .perf-growth-note { font-family: var(--eiaaw-mono); font-size: 10.5px; letter-spacing: .04em; color: var(--eiaaw-mute); margin-top: 8px; }
+            /* Calm, on-brand outage notice (warm paper, NOT a red/amber alert) shown
+               when Metricool analytics is unreachable — reassures rather than alarms. */
+            .perf-growth-outage { display: flex; gap: 12px; align-items: flex-start; background: white; border: 1px dashed var(--eiaaw-line); border-radius: 12px; padding: 16px 18px; }
+            .perf-growth-outage .ico { font-size: 18px; line-height: 1.3; color: #11766A; flex: none; }
+            .perf-growth-outage .msg { font-size: 13px; line-height: 1.5; color: var(--eiaaw-ink-2); }
+            .perf-growth-outage .msg strong { display: block; color: var(--eiaaw-ink); font-weight: 600; margin-bottom: 2px; }
+            .perf-growth-outage .msg em { font-style: normal; font-weight: 600; color: var(--eiaaw-ink-2); }
         </style>
     @endpush
 
@@ -76,9 +83,29 @@
 
         {{-- ── Account growth (followers + impressions over time, per network) ── --}}
         @if ($g['brand'] !== null && $g['data'] !== null)
+            @php
+                // Metricool down RIGHT NOW = every attempted network on BOTH dimensions
+                // errored (reachable=false on both). Distinct from "this brand has no
+                // networks connected" (which is not_available, reachable=true). In an
+                // outage we collapse the wall of red tiles into ONE calm banner — the
+                // real post metrics below are unaffected and stay fully visible.
+                $growthUnreachable = ($g['data']['followers']['reachable'] ?? true) === false
+                    && ($g['data']['impressions']['reachable'] ?? true) === false;
+            @endphp
             <div class="perf-growth">
                 <div class="perf-section-title">Account growth · live from Metricool</div>
 
+                @if ($growthUnreachable)
+                    <div class="perf-growth-outage" role="status">
+                        <span class="ico" aria-hidden="true">⟳</span>
+                        <div class="msg">
+                            <strong>Metricool analytics is temporarily slow to respond.</strong>
+                            Your followers and impressions history is safe and will reappear
+                            automatically — there’s nothing to do on your end. Use
+                            <em>Refresh growth</em> to retry now. Your post counts below are unaffected.
+                        </div>
+                    </div>
+                @else
                 @foreach (['followers', 'impressions'] as $dimKey)
                     @php($dim = $g['data'][$dimKey])
                     <div class="perf-growth-block">
@@ -106,7 +133,7 @@
                                         <span class="na">
                                             @switch($net['status'])
                                                 @case('not_available') Not connected / not on plan @break
-                                                @case('error') Couldn’t reach Metricool @break
+                                                @case('error') Temporarily unavailable @break
                                                 @default No data in this window
                                             @endswitch
                                         </span>
@@ -147,6 +174,7 @@
                 <div class="perf-growth-note">
                     {{ $g['brand']['name'] }} · blogId {{ $g['brand']['blog_id'] }} · impressions summed from per-post analytics · cached ~5&nbsp;min (use “Refresh growth”) · real readings only, networks we can’t read are marked plainly
                 </div>
+                @endif {{-- /growthUnreachable --}}
             </div>
         @elseif (! $g['configured'])
             {{-- Metricool not wired in this env — quiet, no scary banner on the customer page --}}

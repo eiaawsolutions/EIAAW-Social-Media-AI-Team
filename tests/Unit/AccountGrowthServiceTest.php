@@ -317,7 +317,57 @@ class AccountGrowthServiceTest extends TestCase
         $ig = collect($out['impressions']['networks'])->firstWhere('network', 'instagram');
         $this->assertSame('error', $ig['status']);
 
+        // Every ATTEMPTED network errored → reachable=false on both dimensions.
+        // This is the signal the Performance view uses to collapse the wall of red
+        // tiles into ONE calm "Metricool temporarily unavailable" banner.
+        $this->assertFalse($out['followers']['reachable']);
+        $this->assertFalse($out['impressions']['reachable']);
+
         // The whole point: not a single blocking Metricool call was made.
         Http::assertNothingSent();
+    }
+
+    /**
+     * reachable=true when Metricool ANSWERS — even if some networks aren't
+     * connected (not_available) or have no data. "Some networks unconnected" must
+     * NOT read as an outage; the per-network tiles render normally, no banner.
+     */
+    public function test_reachable_true_when_some_networks_answer(): void
+    {
+        // Instagram followers reports; every other timeline + all post analytics
+        // are unconnected/empty. Followers has a real 'ok' → reachable. Impressions
+        // returns empty bodies (no_data, not error) → also reachable.
+        $this->fakeTimelines([
+            'Followers' => ['2026-05-30' => 7],
+        ]);
+        // fakeTimelines only stubs /timelines; also stub /posts so impressions
+        // calls don't hit the network. Empty data => no_data, not error.
+        Http::fake([
+            'app.metricool.com/api/v2/analytics/timelines*' => function ($request) {
+                parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $q);
+                return ($q['metric'] ?? '') === 'Followers'
+                    ? Http::response($this->series('Followers', ['2026-05-30' => 7]), 200)
+                    : Http::response(['status' => 'BAD_REQUEST'], 404);
+            },
+            'app.metricool.com/api/v2/analytics/posts/*' => Http::response(['data' => []], 200),
+        ]);
+
+        $out = (new AccountGrowthService($this->client()))->forBrand($this->brand(), 30);
+
+        $this->assertTrue($out['followers']['reachable'], 'followers answered (IG ok) → reachable');
+        $this->assertTrue($out['impressions']['reachable'], 'impressions answered (empty, not errored) → reachable');
+    }
+
+    /**
+     * Unmapped/unwired brand → empty scaffold → reachable=true (not an outage),
+     * so the view shows its connect/empty state, never the outage banner.
+     */
+    public function test_empty_scaffold_is_reachable_not_an_outage(): void
+    {
+        $svc = new AccountGrowthService(null); // unconfigured
+        $out = $svc->forBrand($this->brand(), 30);
+
+        $this->assertTrue($out['followers']['reachable']);
+        $this->assertTrue($out['impressions']['reachable']);
     }
 }
