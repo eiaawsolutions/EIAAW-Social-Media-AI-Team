@@ -395,12 +395,26 @@ class AccountGrowthService
         }
         unset($row);
 
+        // Reachability signal for the view: distinguish "Metricool is down right
+        // now" from "these networks just aren't connected". A network is
+        // 'not_available' when it's structurally unconnected (we never called it);
+        // it's 'error' when a call was ATTEMPTED and failed/timed-out or was
+        // skipped because the time budget was spent. So if every network we
+        // actually tried came back 'error', Metricool was unreachable for this
+        // dimension → the page shows ONE calm banner instead of a wall of red
+        // tiles. When nothing was even attempted (all not_available), that's not
+        // an outage, just an unconnected brand.
+        $attempted = array_filter($networks, static fn ($n) => $n['status'] !== 'not_available');
+        $allAttemptedErrored = count($attempted) > 0
+            && count(array_filter($attempted, static fn ($n) => $n['status'] === 'error')) === count($attempted);
+
         return [
             'title' => $title,
             'dimension' => $dimension,
             'axis' => $axis,
             'total' => $total,
             'has_data' => $hasData,
+            'reachable' => ! $allAttemptedErrored, // false = Metricool unreachable for this dimension
             'networks' => $networks,
         ];
     }
@@ -511,6 +525,7 @@ class AccountGrowthService
             'axis' => [],
             'total' => 0,
             'has_data' => false,
+            'reachable' => true, // empty scaffold (not wired / not mapped) is not an outage
             'networks' => $networks,
         ];
     }
