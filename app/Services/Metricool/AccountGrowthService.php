@@ -83,7 +83,31 @@ class AccountGrowthService
 
     private const CACHE_TTL_SECONDS = 300; // 5 min — "live" without hammering Metricool
 
-    public function __construct(private readonly ?MetricoolClient $client) {}
+    /**
+     * Per-call timeout (s) for the SYNCHRONOUS growth pull. Short on purpose: this
+     * runs inside the /agency/performance web request, which does ~13 serial
+     * Metricool calls — the publish-path default (30s × retry 2) would blow past
+     * PHP's max_execution_time and 500 the page (the prod outage). Config-driven.
+     */
+    private int $callTimeout;
+
+    /**
+     * Hard wall-clock BUDGET (s) for the whole growth pull. Once the cumulative
+     * time across all network calls exceeds this, the remaining networks are
+     * NOT called — they degrade to an honest 'error' tile and the page renders
+     * with whatever arrived. This is the guarantee that the request always
+     * finishes under PHP's 30s ceiling no matter how many networks hang.
+     *
+     * A float so tests can pin a sub-second budget to prove the cutoff
+     * deterministically; production runs whole seconds (default 18).
+     */
+    private float $timeBudget;
+
+    public function __construct(private readonly ?MetricoolClient $client)
+    {
+        $this->callTimeout = max(2, (int) config('services.metricool.growth_call_timeout', 6));
+        $this->timeBudget = max(0.0, (float) config('services.metricool.growth_time_budget', 18));
+    }
 
     /**
      * Resolve the EIAAW-internal brand to show on the HQ dashboard: the brand
@@ -170,11 +194,16 @@ class AccountGrowthService
         $toIso = $to->format('Y-m-d\TH:i:s');
 
         return Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($base, $blogId, $fromIso, $toIso) {
+            // Shared deadline across BOTH dimensions: the whole pull must finish
+            // within $timeBudget so the web request can't hit PHP's hard limit.
+            // Once passed, any not-yet-called network degrades to an 'error' tile.
+            $deadline = microtime(true) + $this->timeBudget;
+
             return $base + [
                 // Followers = account-level stock from the timelines endpoint.
-                'followers' => $this->followersDimension($blogId, $fromIso, $toIso),
+                'followers' => $this->followersDimension($blogId, $fromIso, $toIso, $deadline),
                 // Impressions = summed per-post analytics (what the UI card shows).
-                'impressions' => $this->impressionsDimension($blogId, $fromIso, $toIso),
+                'impressions' => $this->impressionsDimension($blogId, $fromIso, $toIso, $deadline),
             ];
         });
     }
@@ -187,7 +216,7 @@ class AccountGrowthService
      *
      * @return array<string,mixed>
      */
-    private function followersDimension(int $blogId, string $fromIso, string $toIso): array
+    private function followersDimension(int $blogId, string $fromIso, string $toIso, float $deadline): array
     {
         $networks = [];
         $allDates = [];
@@ -200,6 +229,13 @@ class AccountGrowthService
                 continue;
             }
 
+            // Out of time budget: don't make another blocking call. Mark this
+            // network 'error' and move on — the page renders with what we have.
+            if (microtime(true) >= $deadline) {
+                $networks[] = $this->networkRow($network, $meta, status: 'error');
+                continue;
+            }
+
             try {
                 $result = $this->client->getAccountTimeline(
                     blogId: $blogId,
@@ -207,6 +243,7 @@ class AccountGrowthService
                     network: $meta['network'],
                     fromIso: $fromIso,
                     toIso: $toIso,
+                    timeoutOverride: $this->callTimeout,
                 );
             } catch (\Throwable $e) {
                 Log::warning('AccountGrowthService: followers timeline failed', [
@@ -257,7 +294,7 @@ class AccountGrowthService
      *
      * @return array<string,mixed>
      */
-    private function impressionsDimension(int $blogId, string $fromIso, string $toIso): array
+    private function impressionsDimension(int $blogId, string $fromIso, string $toIso, float $deadline): array
     {
         $networks = [];
         $allDates = [];
@@ -272,8 +309,14 @@ class AccountGrowthService
                 continue;
             }
 
+            // Out of time budget: skip the blocking call, degrade to 'error'.
+            if (microtime(true) >= $deadline) {
+                $networks[] = $this->networkRow($network, $meta, status: 'error');
+                continue;
+            }
+
             try {
-                $result = $this->client->postAnalytics($blogId, $fromIso, $toIso, $meta['network']);
+                $result = $this->client->postAnalytics($blogId, $fromIso, $toIso, $meta['network'], timeoutOverride: $this->callTimeout);
             } catch (\Throwable $e) {
                 Log::warning('AccountGrowthService: post analytics failed', [
                     'blog_id' => $blogId, 'network' => $meta['network'], 'error' => $e->getMessage(),

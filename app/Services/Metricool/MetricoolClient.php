@@ -132,15 +132,19 @@ class MetricoolClient
         return $handle;
     }
 
-    private function client(): PendingRequest
+    /**
+     * @param  int|null  $timeoutOverride  per-call timeout (seconds); defaults to $this->timeout.
+     * @param  int       $retries          attempts (1 = no retry); defaults to 2 like the rest.
+     */
+    private function client(?int $timeoutOverride = null, int $retries = 2): PendingRequest
     {
         return Http::withHeaders([
                 'X-Mc-Auth' => $this->apiToken,
                 'accept' => 'application/json',
             ])
             ->baseUrl($this->baseUrl)
-            ->timeout($this->timeout)
-            ->retry(2, 500, throw: false);
+            ->timeout($timeoutOverride ?? $this->timeout)
+            ->retry($retries, 500, throw: false);
     }
 
     /**
@@ -204,9 +208,13 @@ class MetricoolClient
      * probe can map real field names onto our post_metrics columns without
      * guessing. `found=false` when the endpoint 404s (e.g. network not on plan).
      *
+     * $timeoutOverride caps a SINGLE attempt's wall-clock for the synchronous
+     * growth dashboard (no retry) so one slow network can't exhaust the page's
+     * time budget; null = the publish/collector default (timeout + retry 2).
+     *
      * @return array{found:bool, status:int, body:mixed}
      */
-    public function postAnalytics(int $blogId, string $from, string $to, string $network): array
+    public function postAnalytics(int $blogId, string $from, string $to, string $network, ?int $timeoutOverride = null): array
     {
         // Metricool's analytics endpoints validate the window as `from`/`to`
         // (verified live 2026-05-30: sending start/end yields HTTP 400
@@ -217,7 +225,8 @@ class MetricoolClient
             'to' => $to,
         ]);
 
-        $response = $this->client()->get('/v2/analytics/posts/' . urlencode($network), $query);
+        $client = $timeoutOverride !== null ? $this->client($timeoutOverride, retries: 1) : $this->client();
+        $response = $client->get('/v2/analytics/posts/' . urlencode($network), $query);
 
         if ($response->status() === 404) {
             return ['found' => false, 'status' => 404, 'body' => $response->json()];
@@ -368,6 +377,7 @@ class MetricoolClient
         string $fromIso,
         string $toIso,
         string $subject = 'account',
+        ?int $timeoutOverride = null,
     ): array {
         $query = array_merge($this->baseQuery($blogId), [
             'metric' => $metric,
@@ -377,7 +387,10 @@ class MetricoolClient
             'to' => $toIso,
         ]);
 
-        $response = $this->client()->get('/v2/analytics/timelines', $query);
+        // $timeoutOverride: short single-attempt call for the synchronous growth
+        // dashboard (see services.metricool.growth_call_timeout); null elsewhere.
+        $client = $timeoutOverride !== null ? $this->client($timeoutOverride, retries: 1) : $this->client();
+        $response = $client->get('/v2/analytics/timelines', $query);
 
         // Not-connected (404), invalid metric for this network (400), or an
         // upstream 500 → this network simply has no series; don't blow up the
