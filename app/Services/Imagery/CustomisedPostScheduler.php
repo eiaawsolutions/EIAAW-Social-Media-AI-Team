@@ -2,6 +2,7 @@
 
 namespace App\Services\Imagery;
 
+use App\Exceptions\AlreadyScheduledException;
 use App\Models\Brand;
 use App\Models\BrandAsset;
 use App\Models\CalendarEntry;
@@ -90,6 +91,20 @@ class CustomisedPostScheduler
         $result = DB::transaction(function () use (
             $asset, $brand, $narrative, $platforms, $publishAt, $narrativeSource, $hashtags, $assetUrl
         ): array {
+            // Concurrency guard: re-read the asset FOR UPDATE inside the
+            // transaction and bail if it's already been scheduled. Two
+            // concurrent callers (e.g. a double-click, or two recovery-command
+            // workers) can both load the asset with a NULL
+            // customised_calendar_entry_id; without this lock the second would
+            // create a duplicate calendar entry + drafts and orphan the first.
+            // The lock serialises them; the loser sees the winner's id and stops.
+            $locked = BrandAsset::whereKey($asset->id)->lockForUpdate()->first();
+            if ($locked && $locked->customised_calendar_entry_id) {
+                throw new AlreadyScheduledException(
+                    "Asset #{$asset->id} is already scheduled (calendar entry #{$locked->customised_calendar_entry_id})."
+                );
+            }
+
             $calendar = $this->customisedCalendar($brand);
             $entry = $this->createEntry($calendar, $brand, $asset, $platforms, $publishAt);
 
@@ -133,6 +148,14 @@ class CustomisedPostScheduler
      *     manual review rather than auto-publishing ungoverned copy.
      *   - any other error: same — leave it held, never silently auto-approve.
      *
+     * In BOTH non-pass exits we ALSO record an explanatory ComplianceCheck row
+     * (result='error') so the draft is not held with a blank Drafts page — the
+     * operator sees a concrete reason for the hold (the agent never reaches its
+     * own checkBrandVoice() error path because ensureReady() throws first, so
+     * without this row there would be zero audit trail). Each draft is refreshed
+     * so the returned models carry the TRUE post-compliance status (the caller's
+     * notification reads it — otherwise it shows the stale 'compliance_pending').
+     *
      * Per-draft try/catch so one platform's failure neither aborts the others
      * nor the upload request. Operator copy is never AI-rewritten: the
      * drafts:redraft-failed loop skips agent_role='operator' drafts.
@@ -145,18 +168,77 @@ class CustomisedPostScheduler
             try {
                 app(\App\Agents\ComplianceAgent::class)->run($brand, ['draft_id' => $draft->id]);
             } catch (\App\Exceptions\AgentPrerequisiteMissing $e) {
-                $draft->update(['status' => 'awaiting_approval']);
+                $this->recordComplianceHold(
+                    $draft, $brand, 'prerequisite',
+                    'Compliance could not run: the brand has no published voice/style yet ("'
+                        . ($e->missingStage() ?? 'brand_style') . '"). Held for your review — finish the '
+                        . 'brand setup and re-run compliance, then approve.',
+                    ['missing_stage' => $e->missingStage()],
+                );
                 \Illuminate\Support\Facades\Log::info(
                     'CustomisedPostScheduler: compliance skipped (no brand_style) — held for review',
                     ['draft_id' => $draft->id, 'brand_id' => $brand->id, 'missing_stage' => $e->missingStage()],
                 );
             } catch (\Throwable $e) {
-                $draft->update(['status' => 'awaiting_approval']);
+                $this->recordComplianceHold(
+                    $draft, $brand, 'compliance_error',
+                    'Compliance check hit an unexpected error and could not complete. Held for your '
+                        . 'review — re-run compliance, or approve if the copy is good.',
+                    ['error' => substr($e->getMessage(), 0, 300)],
+                );
                 \Illuminate\Support\Facades\Log::error(
                     'CustomisedPostScheduler: compliance errored — held for review',
                     ['draft_id' => $draft->id, 'brand_id' => $brand->id, 'error' => substr($e->getMessage(), 0, 300)],
                 );
             }
+
+            // Refresh so the returned model reflects the status compliance set
+            // (approved / awaiting_approval / compliance_failed) — the caller's
+            // notification keys off this. Without it the model is the stale
+            // 'compliance_pending' snapshot from createDraft().
+            try {
+                $draft->refresh();
+            } catch (\Throwable) {
+                // Row vanished mid-flight — nothing to refresh; leave as-is.
+            }
+        }
+    }
+
+    /**
+     * Park a customised draft for manual review WITH an explanatory audit row,
+     * so the Drafts page shows a concrete reason instead of a blank compliance
+     * section. The status update is wrapped defensively: if it throws (infra
+     * error / row deleted), we log and move on rather than letting it propagate
+     * out of schedule() and surface to the operator as a generic failure while
+     * leaving the draft stranded in 'compliance_pending' (invisible to every
+     * downstream cron). The audit row is best-effort for the same reason.
+     */
+    private function recordComplianceHold(Draft $draft, Brand $brand, string $checkType, string $reason, array $details): void
+    {
+        try {
+            \App\Models\ComplianceCheck::create([
+                'draft_id' => $draft->id,
+                'brand_id' => $brand->id,
+                'check_type' => $checkType,
+                'result' => 'error',
+                'reason' => $reason,
+                'details' => $details,
+                'checked_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning(
+                'CustomisedPostScheduler: could not record compliance-hold audit row',
+                ['draft_id' => $draft->id, 'error' => substr($e->getMessage(), 0, 200)],
+            );
+        }
+
+        try {
+            $draft->update(['status' => 'awaiting_approval']);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error(
+                'CustomisedPostScheduler: could not park draft at awaiting_approval',
+                ['draft_id' => $draft->id, 'error' => substr($e->getMessage(), 0, 200)],
+            );
         }
     }
 
