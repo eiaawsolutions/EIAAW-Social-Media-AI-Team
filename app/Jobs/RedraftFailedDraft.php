@@ -74,6 +74,14 @@ class RedraftFailedDraft implements ShouldQueue
         if ($draft->status !== 'compliance_failed') {
             return;
         }
+        // Defensive twin of the DraftsRedraftFailed cron exclusion: never
+        // AI-rewrite operator-authored copy (customised posts). The cron
+        // already filters these out, but a manual dispatch or a job queued
+        // before the status flipped could still land here.
+        if ($draft->agent_role === 'operator' || $draft->prompt_version === 'customised-post.v1') {
+            Log::info('RedraftFailedDraft: skipping operator-authored draft (manual review only)', ['draft_id' => $draft->id]);
+            return;
+        }
         if (($draft->revision_count ?? 0) >= self::MAX_REVISIONS) {
             return;
         }
