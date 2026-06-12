@@ -382,6 +382,15 @@ class ManageBrandAssets extends ManageRecords
                 narrativeSource: ! empty($data['narrative_source']) ? (string) $data['narrative_source'] : 'manual',
                 hashtags: $hashtags,
             );
+        } catch (\App\Exceptions\AlreadyScheduledException $e) {
+            // Benign double-submit (e.g. a double-click): the asset is already
+            // scheduled. Tell the operator calmly, not as an error.
+            Notification::make()
+                ->title('Already scheduled')
+                ->body('This asset already has a customised post scheduled. Check the Schedule or Drafts page.')
+                ->warning()
+                ->send();
+            return;
         } catch (\Throwable $e) {
             Notification::make()
                 ->title('Could not schedule the customised post')
@@ -392,13 +401,49 @@ class ManageBrandAssets extends ManageRecords
             return;
         }
 
-        $count = count($result['drafts']);
+        // Report the TRUE outcome per draft (the scheduler refreshes each draft
+        // after compliance, so these statuses are live). Compliance can hold a
+        // post (awaiting_approval) or fail it (compliance_failed) — a flat
+        // "Scheduled!" success would be a false positive that sends the operator
+        // to the Schedule page where the post isn't (and won't be until they
+        // approve it on the Drafts page).
+        $drafts = $result['drafts'];
+        $count = count($drafts);
         $when = $publishAt->copy()->setTimezone($brandTz)->format('D, M j Y · g:i A');
-        Notification::make()
-            ->title("Scheduled {$count} customised post(s)")
-            ->body("Publishing " . implode(', ', $platforms) . " on {$when}. Track it on the Schedule page.")
-            ->success()
-            ->send();
+        $statuses = collect($drafts)->countBy(fn ($d) => $d->status);
+        $queued = (int) $statuses->get('approved', 0) + (int) $statuses->get('scheduled', 0);
+        $awaiting = (int) $statuses->get('awaiting_approval', 0);
+        $failed = (int) $statuses->get('compliance_failed', 0);
+        $platformList = implode(', ', $platforms);
+
+        if ($failed === 0 && $awaiting === 0) {
+            // All passed compliance + green-lane approved → genuinely queued.
+            Notification::make()
+                ->title("Scheduled {$count} customised post(s)")
+                ->body("Passed compliance. Publishing {$platformList} on {$when}. Track it on the Schedule page.")
+                ->success()
+                ->send();
+        } elseif ($failed > 0) {
+            Notification::make()
+                ->title("Held: {$failed} of {$count} post(s) flagged by compliance")
+                ->body("Created {$count} post(s) for {$platformList}. {$failed} need a fix and "
+                    . ($queued + $awaiting > 0 ? ($queued + $awaiting) . ' are awaiting approval/queued. ' : '')
+                    . "Review them on the Drafts page — your wording is never auto-rewritten.")
+                ->warning()
+                ->persistent()
+                ->send();
+        } else {
+            // Some/all awaiting approval (amber/red lane, or compliance couldn't
+            // run e.g. no brand_style yet — see the reason on each draft).
+            Notification::make()
+                ->title("Created {$count} customised post(s) — {$awaiting} awaiting your approval")
+                ->body("For {$platformList}, publishing {$when} once approved. "
+                    . ($queued > 0 ? "{$queued} already queued. " : '')
+                    . "Approve them on the Drafts page (the compliance result explains each one).")
+                ->info()
+                ->persistent()
+                ->send();
+        }
     }
 
     /** Create one BrandAsset row from an uploaded relative path. */
