@@ -181,6 +181,52 @@ return [
         'max_ads_per_handle' => (int) env('COMPETITOR_INTEL_MAX_ADS_PER_HANDLE', 25),
         // Rolling retention; rows past this are pruned by the agent itself.
         'retention_days' => (int) env('COMPETITOR_INTEL_RETENTION_DAYS', 30),
+        // CompetitorStrategistAgent (Dim 2): synthesise the raw competitor_ads
+        // into a strategic READ (pillars/positioning/share-of-voice/whitespace)
+        // the Strategist reads at calendar-build. On by default (no new
+        // ingestion — it reads ads already collected); per-brand override via
+        // competitor_intel_config.synthesis_enabled. Kill switch = false →
+        // raw competitor signals still flow, only the synthesis is skipped.
+        'synthesis_enabled' => (bool) env('COMPETITOR_INTEL_SYNTHESIS_ENABLED', true),
+    ],
+
+    // ─── Market & trend intelligence (Dim 1 + 3) ────────────────────
+    // MarketIntelAgent (weekly, inside intel:refresh) discovers live industry
+    // market + trend signals via Firecrawl /search, runs each through the
+    // MarketSignalNormalizer verification gate (real URL + fetched_at + recency
+    // or DISCARD), and synthesises a verified-only MarketTrendBrief the
+    // Strategist reads. DEFAULT OFF — the only live-external-fetch path; opt-in
+    // per env, then per brand via brands.market_intel_config.enabled. Firecrawl
+    // spend is bounded by the query/result caps and tracked on /admin/cost-monitor.
+    'market_intel' => [
+        'enabled' => (bool) env('MARKET_INTEL_ENABLED', false),
+        'max_queries_per_brand' => (int) env('MARKET_INTEL_MAX_QUERIES', 6),
+        'max_results_per_query' => (int) env('MARKET_INTEL_MAX_RESULTS', 8),
+        // Trend-staleness ceiling: a signal with a KNOWN published date older
+        // than this is rejected by the gate (a months-old "trend" isn't one).
+        'signal_recency_days' => (int) env('MARKET_INTEL_RECENCY_DAYS', 21),
+        // Rolling retention for market_signals rows; pruned by the agent.
+        'retention_days' => (int) env('MARKET_INTEL_RETENTION_DAYS', 30),
+    ],
+
+    // ─── Growth strategy (reach · engagement · conversions) ─────────
+    // GrowthStrategistAgent (weekly, inside intel:refresh) computes the brand's
+    // OWN growth signals from real metrics — best posting times, winning hook
+    // patterns, CTA/conversion lift, reach focus, follower velocity, recommended
+    // objective mix — and an LLM narrates them into per-objective hook/CTA
+    // guidance. All data is internal (post_metrics / ScheduledPost /
+    // AccountGrowthService), no external fetch, so `enabled` defaults TRUE;
+    // per-brand override via brands.growth_strategy_config.enabled.
+    //
+    // auto_apply_best_times wires the computed best hour into the auto-scheduler
+    // as the fallback when the operator did NOT pin a scheduled_time (replacing
+    // the hardcoded 09:00). It NEVER overrides an operator-set time. DEFAULT OFF
+    // — this is the only change to the live publish path, so it ships dark and is
+    // enabled per-env only after validation. ALERT before enabling in prod.
+    'growth_strategy' => [
+        'enabled' => (bool) env('GROWTH_STRATEGY_ENABLED', true),
+        'min_posts' => (int) env('GROWTH_STRATEGY_MIN_POSTS', 6),
+        'auto_apply_best_times' => (bool) env('GROWTH_STRATEGY_AUTO_APPLY_BEST_TIMES', false),
     ],
 
     // ─── Publishing ─────────────────────────────────────────────────

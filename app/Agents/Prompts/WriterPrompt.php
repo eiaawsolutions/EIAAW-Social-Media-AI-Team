@@ -46,7 +46,13 @@ final class WriterPrompt
     // tension/audience. The Writer is asked to PICK ONE angle and draft from
     // it (rather than generating from the one-line strategist angle alone).
     // Falls back gracefully when the brief is null (Researcher off / failed).
-    public const VERSION = 'writer.v1.5';
+    //
+    // v1.6 — Growth objective guidance. When the calendar entry's objective has
+    // proven hook patterns / CTA styles in the brand's GrowthStrategyBrief, the
+    // user message now lists them; the Writer prefers them when they fit. Self-
+    // suppressing (byte-identical when no brief). Bumping the version makes prior
+    // compliance_failed drafts eligible for redraft under the new prompt.
+    public const VERSION = 'writer.v1.6';
 
     /**
      * Per-platform character limits enforced both in the schema and in the
@@ -133,6 +139,15 @@ evoke THAT feeling — don't default every post to the same register.
   "Save this for your next launch"). Still weave it naturally into the body —
   naming it here guarantees it's never dropped. Omit only for pure-awareness
   posts where a CTA would feel forced.
+
+# Growth objective guidance
+
+If the calendar entry block lists "Proven hook patterns / CTA styles for this
+objective", these are patterns that have measurably worked for THIS brand on
+THIS objective (from its own performance data). Prefer them for the hook + CTA
+when they fit the topic — they're your best bet for engagement + conversion —
+but never force a pattern that doesn't suit the post. Report the chosen hook in
+hook_pattern as usual.
 
 # Carousel — slide-by-slide (ONLY when the entry format is "carousel")
 

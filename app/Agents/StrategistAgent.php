@@ -6,7 +6,10 @@ use App\Agents\Prompts\StrategistPrompt;
 use App\Models\Brand;
 use App\Models\CalendarEntry;
 use App\Models\CompetitorAd;
+use App\Models\CompetitorStrategyBrief;
 use App\Models\ContentCalendar;
+use App\Models\GrowthStrategyBrief;
+use App\Models\MarketTrendBrief;
 use App\Services\Readiness\SetupReadiness;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -202,6 +205,19 @@ class StrategistAgent extends BaseAgent
             ? "\n# Competitor signals (last 30 days)\n".$competitorBlock."\n"
             : '';
 
+        // Synthesised strategic reads (self-suppress to '' when no current brief),
+        // injected between the raw competitor signals and the brand facts. An
+        // un-enriched brand with no briefs produces a prompt byte-identical to
+        // the pre-feature behaviour.
+        $competitorStrategyBlock = $this->renderCompetitorStrategy($brand);
+        $competitorStrategySection = $competitorStrategyBlock === '' ? '' : "\n".$competitorStrategyBlock."\n";
+
+        $marketTrendBlock = $this->renderMarketTrendBrief($brand);
+        $marketTrendSection = $marketTrendBlock === '' ? '' : "\n".$marketTrendBlock."\n";
+
+        $growthBlock = $this->renderGrowthStrategy($brand);
+        $growthSection = $growthBlock === '' ? '' : "\n".$growthBlock."\n";
+
         $factsBlock = $brand->brandFactsBlock();
         $factsSection = $factsBlock === '' ? '' : "\n".$factsBlock."\n";
 
@@ -217,7 +233,7 @@ ACTIVE PLATFORMS: {$platformList}
 
 # Format mix targets
 {$formatLines}
-{$competitorSection}{$factsSection}
+{$competitorSection}{$competitorStrategySection}{$marketTrendSection}{$growthSection}{$factsSection}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 
@@ -256,5 +272,341 @@ MSG;
         })->implode("\n");
 
         return $lines."\n\nUse these as MARKET CONTEXT only — never copy themes, names, or wording. Position 1–2 entries as deliberate counter-positioning anchored in your brand's evidence.";
+    }
+
+    /**
+     * Render the current competitor-strategy synthesis (Dim 2) — the strategic
+     * READ of competitors' pillars, positioning, share-of-voice, and the
+     * whitespace the brand can own. Returns '' when no current brief exists, so
+     * the prompt section is suppressed entirely (no empty header).
+     *
+     * Written weekly by CompetitorStrategistAgent. share_of_voice here is
+     * already evidence-true (recomputed in PHP from real ad counts).
+     */
+    private function renderCompetitorStrategy(Brand $brand): string
+    {
+        $brief = CompetitorStrategyBrief::currentForBrand($brand->id)->first();
+        if (! $brief) {
+            return '';
+        }
+
+        return self::renderCompetitorStrategyBlock(
+            (array) ($brief->dominant_themes ?? []),
+            (array) ($brief->share_of_voice ?? []),
+            (array) ($brief->positioning_map ?? []),
+            (array) ($brief->whitespace ?? []),
+        );
+    }
+
+    /**
+     * Pure renderer for the competitor-strategy block — no DB, no model state,
+     * so it is unit-testable without a database (the suite runs DB-free).
+     * Returns '' when every section is empty (suppression).
+     *
+     * @param  array<int,array<string,mixed>>  $themes
+     * @param  array<string,mixed>             $shareOfVoice  label => pct
+     * @param  array<int,array<string,mixed>>  $positioning
+     * @param  array<int,string>               $whitespace
+     */
+    public static function renderCompetitorStrategyBlock(
+        array $themes,
+        array $shareOfVoice,
+        array $positioning,
+        array $whitespace,
+    ): string {
+        $lines = [];
+
+        if ($themes !== []) {
+            $themeLines = [];
+            foreach (array_slice($themes, 0, 6) as $t) {
+                if (! is_array($t)) {
+                    continue;
+                }
+                $theme = trim((string) ($t['theme'] ?? ''));
+                if ($theme === '') {
+                    continue;
+                }
+                $who = implode(', ', array_slice((array) ($t['competitors'] ?? []), 0, 4));
+                $themeLines[] = "- {$theme}".($who !== '' ? " (pushed by: {$who})" : '');
+            }
+            if ($themeLines !== []) {
+                $lines[] = "## Dominant competitor themes\n".implode("\n", $themeLines);
+            }
+        }
+
+        if ($shareOfVoice !== []) {
+            $sovLine = collect($shareOfVoice)
+                ->take(6)
+                ->map(fn ($pct, $label) => "{$label} {$pct}%")
+                ->implode(' · ');
+            $lines[] = "## Share of voice (by observed ad volume)\n{$sovLine}";
+        }
+
+        if ($positioning !== []) {
+            $posLines = [];
+            foreach (array_slice($positioning, 0, 6) as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $label = trim((string) ($p['competitor_label'] ?? ''));
+                $summary = trim((string) ($p['positioning_summary'] ?? ''));
+                if ($label === '' || $summary === '') {
+                    continue;
+                }
+                $posLines[] = "- {$label}: {$summary}";
+            }
+            if ($posLines !== []) {
+                $lines[] = "## How each competitor positions\n".implode("\n", $posLines);
+            }
+        }
+
+        if ($whitespace !== []) {
+            $ws = implode('; ', array_slice($whitespace, 0, 6));
+            $lines[] = "## WHITESPACE — no competitor is addressing these (your opening)\n{$ws}";
+        }
+
+        if ($lines === []) {
+            return '';
+        }
+
+        return "# Competitor strategy synthesis (last 30 days)\n".implode("\n\n", $lines)
+            ."\n\nUse this as STRATEGY CONTEXT: position the brand DISTINCTLY from the dominant themes, and aim 1–2 entries squarely at the whitespace. Never name competitors or claim their metrics in published copy.";
+    }
+
+    /**
+     * Render the current market & trend brief (Dim 1+3) — verified market
+     * context + the genuine trends the brand could authentically ride, each
+     * grounded in a verified signal. Returns '' when no current brief exists
+     * (or it had zero verified trends, in which case MarketIntelAgent wrote
+     * nothing), so the section is suppressed.
+     */
+    private function renderMarketTrendBrief(Brand $brand): string
+    {
+        $brief = MarketTrendBrief::currentForBrand($brand->id)->first();
+        if (! $brief) {
+            return '';
+        }
+
+        return self::renderMarketTrendBlock(
+            (string) ($brief->market_summary ?? ''),
+            (array) ($brief->trends ?? []),
+            (array) ($brief->seasonal_moments ?? []),
+        );
+    }
+
+    /**
+     * Pure renderer for the market & trend block — no DB. Returns '' when there
+     * is nothing to say (suppression).
+     *
+     * @param  array<int,array<string,mixed>>  $trends
+     * @param  array<int,array<string,mixed>>  $seasonal
+     */
+    public static function renderMarketTrendBlock(
+        string $marketSummary,
+        array $trends,
+        array $seasonal,
+    ): string {
+        $lines = [];
+
+        $summary = trim($marketSummary);
+        if ($summary !== '') {
+            $lines[] = $summary;
+        }
+
+        if ($trends !== []) {
+            $trendLines = [];
+            foreach (array_slice($trends, 0, 6) as $t) {
+                if (! is_array($t)) {
+                    continue;
+                }
+                $name = trim((string) ($t['trend'] ?? ''));
+                if ($name === '') {
+                    continue;
+                }
+                $why = trim((string) ($t['why_relevant'] ?? ''));
+                $angle = trim((string) ($t['suggested_angle'] ?? ''));
+                $line = "- {$name}";
+                if ($why !== '') {
+                    $line .= " — {$why}";
+                }
+                if ($angle !== '') {
+                    $line .= " (angle: {$angle})";
+                }
+                $trendLines[] = $line;
+            }
+            if ($trendLines !== []) {
+                $lines[] = "## Current trends to consider\n".implode("\n", $trendLines);
+            }
+        }
+
+        if ($seasonal !== []) {
+            $seasonalLines = [];
+            foreach (array_slice($seasonal, 0, 6) as $m) {
+                if (! is_array($m)) {
+                    continue;
+                }
+                $moment = trim((string) ($m['moment'] ?? ''));
+                if ($moment === '') {
+                    continue;
+                }
+                $window = trim((string) ($m['window'] ?? ''));
+                $why = trim((string) ($m['why_relevant'] ?? ''));
+                $line = "- {$moment}";
+                if ($window !== '') {
+                    $line .= " ({$window})";
+                }
+                if ($why !== '') {
+                    $line .= " — {$why}";
+                }
+                $seasonalLines[] = $line;
+            }
+            if ($seasonalLines !== []) {
+                $lines[] = "## Upcoming seasonal/topical moments\n".implode("\n", $seasonalLines);
+            }
+        }
+
+        if ($lines === []) {
+            return '';
+        }
+
+        return "# Market & Trend brief (verified signals)\n".implode("\n\n", $lines)
+            ."\n\nThese are VERIFIED market signals. You MAY align 2–4 entries to a listed trend WHERE it authentically fits the brand. Never assert a market statistic the brief did not supply, and never claim a trend is 'viral' or cite numbers not given here.";
+    }
+
+    /**
+     * Render the current growth strategy brief (best times / platform focus /
+     * winning hooks / follower momentum / recommended objective mix), computed
+     * from the brand's OWN real performance. Returns '' when no current brief
+     * exists, so the section is suppressed.
+     */
+    private function renderGrowthStrategy(Brand $brand): string
+    {
+        $brief = GrowthStrategyBrief::currentForBrand($brand->id)->first();
+        if (! $brief) {
+            return '';
+        }
+
+        return self::renderGrowthStrategyBlock(
+            (array) ($brief->best_posting_times ?? []),
+            (array) ($brief->platform_focus ?? []),
+            (array) ($brief->hook_performance ?? []),
+            (array) ($brief->follower_velocity ?? []),
+            (array) ($brief->recommended_objective_mix ?? []),
+        );
+    }
+
+    /**
+     * Pure renderer for the growth strategy block — no DB. All numbers are
+     * computed facts from the brief; the prompt instructs the model to honour
+     * them without inventing new ones. Returns '' when nothing to say.
+     *
+     * @param  array<string,mixed>             $bestTimes        {platform: [{day_of_week,hour,...}]}
+     * @param  array<string,mixed>             $platformFocus    {platform: {reach_share_pct,...}}
+     * @param  array<int,array<string,mixed>>  $hookPerformance  [{hook_pattern,avg_engagement,...}]
+     * @param  array<string,mixed>             $followerVelocity {network: {direction,net_new,...}}
+     * @param  array<string,float>             $objectiveMix     {objective: pct}
+     */
+    public static function renderGrowthStrategyBlock(
+        array $bestTimes,
+        array $platformFocus,
+        array $hookPerformance,
+        array $followerVelocity,
+        array $objectiveMix,
+    ): string {
+        $days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        $lines = [];
+
+        if ($bestTimes !== []) {
+            $timeLines = [];
+            foreach ($bestTimes as $platform => $buckets) {
+                if (! is_array($buckets) || $buckets === []) {
+                    continue;
+                }
+                $slots = [];
+                foreach (array_slice($buckets, 0, 2) as $b) {
+                    if (! is_array($b)) {
+                        continue;
+                    }
+                    $dow = (int) ($b['day_of_week'] ?? 0);
+                    $hour = (int) ($b['hour'] ?? 0);
+                    $slots[] = ($days[$dow] ?? '?')." {$hour}:00";
+                }
+                if ($slots !== []) {
+                    $timeLines[] = "- {$platform}: ".implode(', ', $slots);
+                }
+            }
+            if ($timeLines !== []) {
+                $lines[] = "## Best posting times (schedule toward these)\n".implode("\n", $timeLines);
+            }
+        }
+
+        if ($platformFocus !== []) {
+            $focusLines = [];
+            foreach ($platformFocus as $platform => $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $share = $p['reach_share_pct'] ?? null;
+                if ($share === null) {
+                    continue;
+                }
+                $focusLines[] = "- {$platform}: {$share}% of reach";
+            }
+            if ($focusLines !== []) {
+                $lines[] = "## Platform focus (by reach share — lean toward the leaders)\n".implode("\n", $focusLines);
+            }
+        }
+
+        if ($hookPerformance !== []) {
+            $hookLines = [];
+            foreach (array_slice($hookPerformance, 0, 5) as $h) {
+                if (! is_array($h)) {
+                    continue;
+                }
+                $hook = trim((string) ($h['hook_pattern'] ?? ''));
+                if ($hook === '') {
+                    continue;
+                }
+                $win = isset($h['win_rate']) ? ' ('.round(((float) $h['win_rate']) * 100).'% win rate)' : '';
+                $hookLines[] = "- {$hook}{$win}";
+            }
+            if ($hookLines !== []) {
+                $lines[] = "## Winning hook patterns (favour these in content_angle)\n".implode("\n", $hookLines);
+            }
+        }
+
+        if ($followerVelocity !== []) {
+            $velLines = [];
+            foreach ($followerVelocity as $v) {
+                if (! is_array($v)) {
+                    continue;
+                }
+                $label = trim((string) ($v['label'] ?? ''));
+                $dir = trim((string) ($v['direction'] ?? ''));
+                if ($label === '' || $dir === '') {
+                    continue;
+                }
+                $velLines[] = "- {$label}: {$dir}";
+            }
+            if ($velLines !== []) {
+                $lines[] = "## Follower momentum\n".implode("\n", $velLines);
+            }
+        }
+
+        if ($objectiveMix !== []) {
+            $mixLine = collect($objectiveMix)
+                ->map(fn ($pct, $obj) => "{$obj} ".round(((float) $pct) * 100).'%')
+                ->implode(', ');
+            if (trim($mixLine) !== '') {
+                $lines[] = "## Recommended objective distribution\n{$mixLine}";
+            }
+        }
+
+        if ($lines === []) {
+            return '';
+        }
+
+        return "# Growth strategy (from this brand's own performance)\n".implode("\n\n", $lines)
+            ."\n\nThese are computed from this brand's REAL metrics. Lean platform + objective distribution and posting times toward what's working here, and favour the winning hook patterns. Never assert a number not shown above.";
     }
 }

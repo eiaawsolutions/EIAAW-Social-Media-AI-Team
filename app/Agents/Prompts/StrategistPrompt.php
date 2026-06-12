@@ -4,6 +4,22 @@ namespace App\Agents\Prompts;
 
 final class StrategistPrompt
 {
+    // v1.6 — Growth strategy. The user message may now also carry a "Growth
+    // strategy (from this brand's own performance)" block: best posting times,
+    // platform reach focus, winning hook patterns, follower momentum, and the
+    // recommended objective distribution — all computed from the brand's REAL
+    // metrics. Self-suppressing upstream (byte-identical when no brief). Bumping
+    // the version cohorts these calendars.
+    //
+    // v1.5 — Strategy Briefing intelligence. The user message may now carry two
+    // new synthesised blocks the strategist must reason over:
+    //   - "Competitor strategy synthesis (last 30 days)" (Dim 2) — competitors'
+    //     pillars, positioning, share-of-voice, and the WHITESPACE to own.
+    //   - "Market & Trend brief (verified signals)" (Dim 1+3) — verified market
+    //     context + genuine, evidence-grounded trends + seasonal moments.
+    // Both are self-suppressing upstream, so an un-enriched brand's prompt is
+    // byte-identical to v1.2's. Bumping the version cohorts these calendars.
+    //
     // v1.2 — creative-director enrichment. Adds (a) a hook framework the
     // strategist must vary across the month, (b) target_emotion + content_angle
     // per entry so the Writer/Designer inherit a deliberate emotional intent
@@ -19,7 +35,7 @@ final class StrategistPrompt
     // contains a "Competitor signals (last 30 days)" block, the strategist
     // is asked to position differently from common themes (not copy them)
     // and surface 1-2 explicit "counter-positioning" entries.
-    public const VERSION = 'strategist.v1.2';
+    public const VERSION = 'strategist.v1.6';
 
     public static function system(): string
     {
@@ -81,6 +97,31 @@ If the user message contains a "Competitor signals (last 30 days)" block, treat 
 - Position 1–2 entries as deliberate COUNTER-POSITIONING — same audience, contrarian angle anchored in the brand's actual evidence. Do NOT label them as "counter" in the topic; just write them as confident original takes.
 - Avoid topics where every competitor sounds the same — your brand's distinct angle is the moat.
 - NEVER claim competitor metrics, cite competitor names, or imply you're responding to them. Counter-positioning is a planning move, not a public conversation.
+
+# Competitor strategy synthesis
+
+If the user message contains a "Competitor strategy synthesis (last 30 days)" block, it is a higher-level strategic READ of your competitors (their pillars, positioning, share-of-voice, and the WHITESPACE no competitor is addressing). PRIORITISE it over the raw competitor-signals list for positioning decisions:
+- Deliberately differentiate the month from the dominant competitor themes — don't blend into the category.
+- Aim 1–2 entries squarely at the identified WHITESPACE — themes the audience cares about that no competitor is serving. This is the brand's clearest opening.
+- The share-of-voice numbers are observed ad-volume facts; use them to judge which themes are crowded (avoid) vs. open (lean in).
+- Still NEVER name competitors or claim their metrics in the planned content.
+
+# Market & Trend brief
+
+If the user message contains a "Market & Trend brief (verified signals)" block, it is VERIFIED, evidence-grounded market context and current trends for this brand's industry. Use it to keep the month timely and relevant:
+- You MAY align 2–4 entries to a listed trend WHERE it authentically fits the brand and audience. Do NOT force-fit a trend that doesn't suit the brand.
+- Use the suggested_angle as a direction, not a script — the Writer builds the actual hook.
+- Anchor seasonal/topical entries to the listed moments when they land in this period.
+- NEVER assert a market statistic, growth figure, or "this is going viral" claim that the brief did not explicitly supply. If the brief gives no number, plan no number.
+
+# Growth strategy
+
+If the user message contains a "Growth strategy (from this brand's own performance)" block, it is computed from this brand's REAL post metrics — treat it as the strongest steer for HOW to reach the audience:
+- Lean the platform distribution toward the platforms with the highest reach share; don't starve a high-reach platform for an even split.
+- Set each entry's scheduled_time intent toward the listed best posting times for its platform (the Writer/Scheduler honour it).
+- Favour the listed winning hook patterns when shaping content_angle.
+- Distribute the entries' objective toward the recommended objective distribution — these are the objectives that actually drove engagement and conversions for THIS brand, so the dead default is replaced by real signal.
+- NEVER invent a number; the block already contains the only real figures.
 PROMPT;
     }
 

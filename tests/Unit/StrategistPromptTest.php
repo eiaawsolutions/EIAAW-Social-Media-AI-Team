@@ -7,13 +7,27 @@ use Tests\TestCase;
 
 class StrategistPromptTest extends TestCase
 {
-    public function test_version_bumped_for_competitor_awareness(): void
+    public function test_version_bumped_for_strategy_briefing(): void
     {
-        // v1.1 added Competitor signals block; v1.2 added the creative-director
-        // enrichment (hook framework + target_emotion + content_angle). The
-        // bump must be visible so the optimizer treats prior calendars as a
-        // different prompt-version input cohort.
-        $this->assertSame('strategist.v1.2', StrategistPrompt::VERSION);
+        // v1.1 added Competitor signals; v1.2 the creative-director enrichment;
+        // v1.5 the Strategy Briefing (competitor-strategy synthesis + market &
+        // trend brief); v1.6 the Growth strategy block. The bump must be visible
+        // so the optimizer treats prior calendars as a different prompt-version
+        // input cohort.
+        $this->assertSame('strategist.v1.6', StrategistPrompt::VERSION);
+    }
+
+    public function test_system_prompt_includes_competitor_strategy_and_market_trend_sections(): void
+    {
+        $prompt = StrategistPrompt::system();
+
+        // Dim 2 — competitor strategy synthesis + whitespace targeting.
+        $this->assertStringContainsString('Competitor strategy synthesis', $prompt);
+        $this->assertStringContainsStringIgnoringCase('whitespace', $prompt);
+
+        // Dim 1+3 — market & trend brief + the no-fabrication guard.
+        $this->assertStringContainsString('Market & Trend brief', $prompt);
+        $this->assertStringContainsString('NEVER assert a market statistic', $prompt);
     }
 
     public function test_system_prompt_includes_hook_framework_and_creative_fields(): void
