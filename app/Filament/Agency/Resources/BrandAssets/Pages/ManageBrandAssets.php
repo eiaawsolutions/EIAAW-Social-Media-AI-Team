@@ -104,7 +104,7 @@ class ManageBrandAssets extends ManageRecords
                 ])
                 ->descriptions([
                     BrandAsset::INTENT_GENERAL => 'Goes into the pool the Designer + Video agents semantically pick from when they build your posts. Best for stock photography, b-roll, brand shots.',
-                    BrandAsset::INTENT_CUSTOMISED => 'Reserved for one dedicated post you control: your own caption (or an AI-written one), the platforms, and the publish date. The agents won\'t reuse it.',
+                    BrandAsset::INTENT_CUSTOMISED => 'Reserved for one dedicated post you control: your own caption (or an AI-written one), the platforms, and the publish date. We run it through the same compliance checks as agent posts — your wording is never AI-rewritten; if a check flags it, it waits for you to review and approve. The agents won\'t reuse the asset.',
                 ])
                 ->default(BrandAsset::INTENT_GENERAL)
                 ->required()
@@ -145,7 +145,7 @@ class ManageBrandAssets extends ManageRecords
                 ->label('Post narrative')
                 ->rows(5)
                 ->placeholder('Write the caption for this post — or use the AI writer to draft it, then edit.')
-                ->helperText('This exact text publishes (trimmed per platform). You authored it, so it skips the AI compliance redraft loop.')
+                ->helperText('This text publishes (trimmed per platform). It runs through compliance first — if everything passes it queues automatically (amber/red lanes wait for your approval); if a check flags it, it surfaces on the Drafts page for you to review and edit. We never auto-rewrite your words.')
                 ->hintAction($this->aiWriterAction())
                 ->visible(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED)
                 ->required(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED)
