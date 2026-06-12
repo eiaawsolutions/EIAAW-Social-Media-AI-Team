@@ -7,6 +7,7 @@ use App\Models\Brand;
 use App\Models\BrandCorpusItem;
 use App\Models\CalendarEntry;
 use App\Models\Draft;
+use App\Models\GrowthStrategyBrief;
 use App\Services\Embeddings\EmbeddingService;
 use App\Services\Llm\LlmGateway;
 use App\Services\Readiness\SetupReadiness;
@@ -390,6 +391,7 @@ class WriterAgent extends BaseAgent
         $similarBlock = $this->renderSimilarBlock($similar);
         $researchBlock = $this->renderResearchBrief($entry);
         $creativeLines = $this->renderCreativeIntent($entry);
+        $growthGuidance = $this->renderGrowthObjectiveGuidance($brand, $entry);
         $factsBlock = $this->renderBrandFacts($brand);
 
         $priorBody = (string) ($redraftContext['prior_body'] ?? '');
@@ -433,7 +435,7 @@ PRIOR_DRAFT
 - Pillar: {$entry->pillar}
 - Format: {$entry->format}
 - Objective: {$entry->objective}
-- Visual direction: {$entry->visual_direction}{$creativeLines}
+- Visual direction: {$entry->visual_direction}{$creativeLines}{$growthGuidance}
 {$researchBlock}{$factsBlock}# brand-style.md (single source of truth)
 {$brandStyleMd}
 
@@ -461,6 +463,7 @@ MSG;
         $similarBlock = $this->renderSimilarBlock($similar);
         $researchBlock = $this->renderResearchBrief($entry);
         $creativeLines = $this->renderCreativeIntent($entry);
+        $growthGuidance = $this->renderGrowthObjectiveGuidance($brand, $entry);
         $factsBlock = $this->renderBrandFacts($brand);
 
         return <<<MSG
@@ -473,7 +476,7 @@ PLATFORM: {$platform}
 - Pillar: {$entry->pillar}
 - Format: {$entry->format}
 - Objective: {$entry->objective}
-- Visual direction: {$entry->visual_direction}{$creativeLines}
+- Visual direction: {$entry->visual_direction}{$creativeLines}{$growthGuidance}
 {$researchBlock}{$factsBlock}# brand-style.md (single source of truth)
 {$brandStyleMd}
 
@@ -535,6 +538,62 @@ MSG;
         $angle = trim((string) ($creative['content_angle'] ?? ''));
         if ($angle !== '') {
             $lines .= "\n- Content angle (build the hook from this direction): {$angle}";
+        }
+
+        return $lines;
+    }
+
+    /**
+     * Per-objective growth guidance (Growth Strategist, v1.6). Reads the current
+     * GrowthStrategyBrief and, keyed off this entry's `objective`, surfaces the
+     * hook patterns + CTA styles that have measurably worked for THIS brand on
+     * THIS objective. Returns '' when no brief or no guidance for the objective —
+     * so an un-enriched brand's prompt is byte-identical to the pre-feature version.
+     */
+    private function renderGrowthObjectiveGuidance(Brand $brand, CalendarEntry $entry): string
+    {
+        $brief = GrowthStrategyBrief::currentForBrand($brand->id)->first();
+        if (! $brief) {
+            return '';
+        }
+
+        return self::renderGrowthObjectiveGuidanceBlock(
+            (array) ($brief->objective_guidance ?? []),
+            (string) $entry->objective,
+        );
+    }
+
+    /**
+     * Pure renderer — no DB. Returns lines (each starting "\n- ") to append under
+     * the calendar-entry block, or '' when there's nothing for this objective.
+     * Mirrors renderCreativeIntent's suppression idiom.
+     *
+     * @param  array<string,mixed>  $objectiveGuidance  {objective: {hook_patterns:[], cta_styles:[]}}
+     */
+    public static function renderGrowthObjectiveGuidanceBlock(array $objectiveGuidance, string $objective): string
+    {
+        $objective = trim($objective);
+        $g = $objectiveGuidance[$objective] ?? null;
+        if (! is_array($g)) {
+            return '';
+        }
+
+        $hooks = array_values(array_filter(array_map(
+            fn ($h) => trim((string) $h),
+            (array) ($g['hook_patterns'] ?? []),
+        ), fn ($h) => $h !== ''));
+        $ctas = array_values(array_filter(array_map(
+            fn ($c) => trim((string) $c),
+            (array) ($g['cta_styles'] ?? []),
+        ), fn ($c) => $c !== ''));
+
+        $lines = '';
+        if ($hooks !== []) {
+            $lines .= "\n- Proven hook patterns for this objective ({$objective}): ".implode(', ', $hooks);
+        }
+        if ($ctas !== []) {
+            $ctaList = implode('; ', array_map(fn ($c) => "\"{$c}\"", array_slice($ctas, 0, 4)));
+            $lines .= "\n- Proven CTA styles for this objective: {$ctaList}";
         }
 
         return $lines;

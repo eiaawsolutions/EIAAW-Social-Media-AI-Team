@@ -4,8 +4,10 @@ namespace App\Console\Commands;
 
 use App\Models\CalendarEntry;
 use App\Models\Draft;
+use App\Models\GrowthStrategyBrief;
 use App\Models\PlatformConnection;
 use App\Models\ScheduledPost;
+use App\Services\Growth\BestTimeResolver;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -82,7 +84,7 @@ class PostsAutoScheduleApproved extends Command
                     continue;
                 }
 
-                $when = $this->resolveScheduledFor($draft, $brand->timezone ?: 'UTC', $fallbackOffset, $skippedPastFallback);
+                $when = $this->resolveScheduledFor($draft, $brand, $fallbackOffset, $skippedPastFallback);
 
                 if ($dry) {
                     $this->line(sprintf(
@@ -144,16 +146,28 @@ class PostsAutoScheduleApproved extends Command
      * to UTC for storage. If the calendar slot is already in the past (or
      * absent), use now() + fallback-offset minutes so we still publish.
      *
+     * Best-time override: when the operator did NOT pin a scheduled_time, the
+     * hardcoded 09:00 fallback is replaced by the brand's computed best hour for
+     * that (platform, day-of-week) from its GrowthStrategyBrief — but ONLY when
+     * config('services.growth_strategy.auto_apply_best_times') is on. An
+     * operator-pinned scheduled_time is NEVER overridden.
+     *
      * @param-out int $skippedPastFallback incremented when fallback path used
      */
-    private function resolveScheduledFor(Draft $draft, string $brandTz, int $fallbackOffsetMinutes, int &$skippedPastFallback): Carbon
+    private function resolveScheduledFor(Draft $draft, \App\Models\Brand $brand, int $fallbackOffsetMinutes, int &$skippedPastFallback): Carbon
     {
+        $brandTz = $brand->timezone ?: 'UTC';
         $entry = $draft->calendarEntry;
         $now = Carbon::now('UTC');
 
         if ($entry && $entry->scheduled_date) {
             $datePart = Carbon::parse($entry->scheduled_date)->format('Y-m-d');
-            $timePart = trim((string) ($entry->scheduled_time ?: '09:00:00'));
+            $operatorPinned = trim((string) ($entry->scheduled_time ?? '')) !== '';
+            // Operator's time wins outright. Only when unpinned do we consider
+            // the computed best hour (else the legacy 09:00 default).
+            $timePart = $operatorPinned
+                ? trim((string) $entry->scheduled_time)
+                : $this->fallbackTimeFor($draft, $brand, $datePart, $brandTz);
             // CalendarEntry.scheduled_time is stored as a TIME — combine with
             // date in the brand's TZ, then convert to UTC for storage.
             try {
@@ -171,5 +185,31 @@ class PostsAutoScheduleApproved extends Command
         }
 
         return $now->copy()->addMinutes($fallbackOffsetMinutes);
+    }
+
+    /**
+     * The fallback time (HH:MM:SS) to use when the operator didn't pin one.
+     * Legacy default is 09:00. When auto-apply-best-times is enabled and the
+     * brand's GrowthStrategyBrief has a best hour for this (platform, day), use
+     * that hour instead. Pure-fallback path — touches no operator-set time.
+     */
+    private function fallbackTimeFor(Draft $draft, \App\Models\Brand $brand, string $datePart, string $brandTz): string
+    {
+        if (! (bool) config('services.growth_strategy.auto_apply_best_times', false)) {
+            return '09:00:00';
+        }
+
+        $brief = GrowthStrategyBrief::currentForBrand($brand->id)->first();
+        if (! $brief || ! is_array($brief->best_posting_times)) {
+            return '09:00:00';
+        }
+
+        $dayOfWeek = (int) Carbon::parse($datePart, $brandTz)->dayOfWeek; // 0=Sun..6=Sat
+        $hour = BestTimeResolver::hourFor($brief->best_posting_times, $draft->platform, $dayOfWeek);
+        if ($hour === null) {
+            return '09:00:00';
+        }
+
+        return sprintf('%02d:00:00', $hour);
     }
 }

@@ -239,6 +239,85 @@ class Performance extends Page
         ];
     }
 
+    /**
+     * The current Growth Strategy brief for the workspace's focused brand — best
+     * posting times, winning hooks, CTA lift, follower momentum, recommended
+     * objective mix, active-goal progress, and the plain-English summary. Every
+     * number is computed from real metrics (GrowthStrategistAgent). Returns
+     * ['brief'=>null] when no brief exists yet (the view shows nothing / a
+     * "building" hint), so the card suppresses cleanly.
+     *
+     * @return array<string,mixed>
+     */
+    public function growthStrategy(): array
+    {
+        $ws = $this->workspace();
+        $brand = $ws ? app(AccountGrowthService::class)->brandForWorkspace($ws) : null;
+        if ($brand === null) {
+            return ['brief' => null];
+        }
+
+        $brief = \App\Models\GrowthStrategyBrief::currentForBrand($brand->id)->first();
+        if (! $brief) {
+            return ['brief' => null];
+        }
+
+        $days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+        $bestTimes = [];
+        foreach ((array) ($brief->best_posting_times ?? []) as $platform => $buckets) {
+            if (! is_array($buckets)) {
+                continue;
+            }
+            $slots = [];
+            foreach (array_slice($buckets, 0, 2) as $b) {
+                if (is_array($b) && isset($b['hour'])) {
+                    $slots[] = ($days[(int) ($b['day_of_week'] ?? 0)] ?? '?').' '.((int) $b['hour']).':00';
+                }
+            }
+            if ($slots !== []) {
+                $bestTimes[$platform] = implode(', ', $slots);
+            }
+        }
+
+        $hooks = [];
+        foreach ((array) ($brief->hook_performance ?? []) as $h) {
+            if (is_array($h) && ! empty($h['hook_pattern'])) {
+                $hooks[] = [
+                    'hook' => (string) $h['hook_pattern'],
+                    'win_rate' => isset($h['win_rate']) ? round(((float) $h['win_rate']) * 100) : null,
+                ];
+            }
+        }
+
+        $velocity = [];
+        foreach ((array) ($brief->follower_velocity ?? []) as $v) {
+            if (is_array($v) && ! empty($v['label'])) {
+                $velocity[] = ['label' => (string) $v['label'], 'direction' => (string) ($v['direction'] ?? '')];
+            }
+        }
+
+        $objectiveMix = [];
+        foreach ((array) ($brief->recommended_objective_mix ?? []) as $obj => $pct) {
+            $objectiveMix[$obj] = round(((float) $pct) * 100);
+        }
+
+        return [
+            'brief' => [
+                'summary' => (string) ($brief->summary ?? ''),
+                'best_times' => $bestTimes,
+                'platform_focus' => (array) ($brief->platform_focus ?? []),
+                'hooks' => array_slice($hooks, 0, 5),
+                'cta_lift' => (array) ($brief->cta_lift ?? []),
+                'follower_velocity' => $velocity,
+                'objective_mix' => $objectiveMix,
+                'goal_progress' => (array) ($brief->goal_progress ?? []),
+                'post_count' => (int) $brief->post_count_in_window,
+                'updated_at' => $brief->updated_at?->diffForHumans(),
+            ],
+        ];
+    }
+
     /** @return array<string,mixed> */
     public function summary(): array
     {

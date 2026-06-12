@@ -68,6 +68,7 @@
 
     @php
         $g = $this->growth();
+        $gs = $this->growthStrategy();
         $s = $this->summary();
         $platforms = $this->perPlatform();
         $top = $this->topPosts();
@@ -178,6 +179,77 @@
             </div>
         @elseif (! $g['configured'])
             {{-- Metricool not wired in this env — quiet, no scary banner on the customer page --}}
+        @endif
+
+        {{-- ── Growth strategy (computed from this brand's own real performance) ── --}}
+        @if ($gs['brief'] !== null)
+            @php($b = $gs['brief'])
+            <div class="perf-growth" style="margin-top:18px;">
+                <div class="perf-section-title">Growth strategy · from your own performance</div>
+
+                @if ($b['summary'] !== '')
+                    <div class="perf-growth-note" style="margin-bottom:12px; font-size:0.95em;">{{ $b['summary'] }}</div>
+                @endif
+
+                <div class="perf-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));">
+                    @if (! empty($b['best_times']))
+                        <div class="perf-tile" style="text-align:left;">
+                            <div class="perf-tile-label">Best posting times</div>
+                            @foreach ($b['best_times'] as $platform => $slots)
+                                <div class="perf-tile-sub" style="margin-top:4px;"><strong>{{ ucfirst($platform) }}</strong>: {{ $slots }}</div>
+                            @endforeach
+                        </div>
+                    @endif
+
+                    @if (! empty($b['hooks']))
+                        <div class="perf-tile" style="text-align:left;">
+                            <div class="perf-tile-label">Winning hooks</div>
+                            @foreach ($b['hooks'] as $h)
+                                @php($hWin = $h['win_rate'] !== null ? ' · '.$h['win_rate'].'% win' : '')
+                                <div class="perf-tile-sub" style="margin-top:4px;">{{ str_replace('_', ' ', $h['hook']).$hWin }}</div>
+                            @endforeach
+                        </div>
+                    @endif
+
+                    @if (! empty($b['follower_velocity']))
+                        <div class="perf-tile" style="text-align:left;">
+                            <div class="perf-tile-label">Follower momentum</div>
+                            @foreach ($b['follower_velocity'] as $v)
+                                <div class="perf-tile-sub" style="margin-top:4px;"><strong>{{ $v['label'] }}</strong>: {{ $v['direction'] }}</div>
+                            @endforeach
+                        </div>
+                    @endif
+
+                    @if (($b['cta_lift']['has_signal'] ?? false))
+                        <div class="perf-tile">
+                            <div class="perf-tile-label">CTA lift</div>
+                            <div class="perf-tile-num">{{ $b['cta_lift']['lift_pct'] > 0 ? '+' : '' }}{{ $b['cta_lift']['lift_pct'] }}%</div>
+                            <div class="perf-tile-sub">link clicks with a CTA</div>
+                        </div>
+                    @endif
+                </div>
+
+                @if (! empty($b['goal_progress']))
+                    <div class="perf-section-title" style="margin-top:16px; font-size:0.95em;">Goal progress</div>
+                    @foreach ($b['goal_progress'] as $gp)
+                        @php
+                            $gpScope = $gp['platform'] ? ' ('.ucfirst($gp['platform']).')' : '';
+                            $gpProgress = $gp['progress_pct'] !== null
+                                ? $gp['progress_pct'].'% there'
+                                : 'progress builds as readings arrive';
+                            $gpBy = ! empty($gp['window_ends_on']) ? ' · by '.$gp['window_ends_on'] : '';
+                        @endphp
+                        <div class="perf-growth-note" style="margin-top:4px;">
+                            <strong>{{ str_replace('_', ' ', $gp['target_metric']).$gpScope }}</strong>
+                            → target {{ number_format($gp['target_value']) }} · {{ $gpProgress }}{{ $gpBy }}
+                        </div>
+                    @endforeach
+                @endif
+
+                <div class="perf-growth-note" style="margin-top:12px;">
+                    Computed from {{ $b['post_count'] }} of your published posts · updated {{ $b['updated_at'] }} · real readings only — the AI uses this to plan your calendar, hooks, and CTAs.
+                </div>
+            </div>
         @endif
 
         <div class="perf-section-title">Posts — last {{ $this->window }} days</div>

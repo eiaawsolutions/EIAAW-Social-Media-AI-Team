@@ -31,6 +31,8 @@ class Brand extends Model
         'competitor_intel_config',
         'business_locations',
         'audience_profile',
+        'market_intel_config',
+        'growth_strategy_config',
         'archived_at',
     ];
 
@@ -42,6 +44,8 @@ class Brand extends Model
             'competitor_intel_config' => 'array',
             'business_locations' => 'array',
             'audience_profile' => 'array',
+            'market_intel_config' => 'array',
+            'growth_strategy_config' => 'array',
             'archived_at' => 'datetime',
             'metricool_connect_link_sent_at' => 'datetime',
             'metricool_connected_at' => 'datetime',
