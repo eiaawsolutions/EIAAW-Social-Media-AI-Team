@@ -261,6 +261,71 @@
                 </div>
             </div>
 
+            {{-- Company / brand profile: authoritative grounding text + optional
+                 archival source file. The pasted text is what the AI reads; the
+                 file is stored durably for the operator's record only. --}}
+            <div class="corpus-card">
+                <h3>Your company / brand profile</h3>
+                <p class="lead">
+                    Paste your company or brand profile — <strong>positioning, products, brand voice,
+                    and who you serve</strong>. The Writer and Strategist treat this as
+                    <strong>authoritative ground truth</strong>, weighted above the AI-inferred voice and
+                    surviving every voice refresh. Optionally attach the source document for your records —
+                    <em>only the pasted text grounds the AI; the file is archived, not read.</em>
+                </p>
+
+                <label class="corpus-field-label" for="bf-company-profile">Profile text (this is what the AI reads)</label>
+                <textarea id="bf-company-profile" class="corpus-textarea"
+                          wire:model="companyProfile"
+                          placeholder="e.g. ACME Coffee is a Klang Valley specialty-coffee brand…&#10;&#10;Positioning: the third-wave roaster for time-poor professionals who still want a real cup.&#10;&#10;Flagship products: single-origin pour-overs, the house cold brew, a monthly subscription box.&#10;&#10;Brand voice: warm, precise, never salesy — we talk like a knowledgeable barista, not an ad.&#10;&#10;Target audience: urban professionals 25–40 across the Klang Valley who discover places on Instagram."></textarea>
+
+                <div style="margin-top: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <button type="button"
+                            class="corpus-cta"
+                            wire:click="saveBrandFacts"
+                            wire:loading.attr="disabled"
+                            wire:target="saveBrandFacts">
+                        <span wire:loading.remove wire:target="saveBrandFacts">
+                            Save profile text
+                            <span aria-hidden="true">→</span>
+                        </span>
+                        <span wire:loading wire:target="saveBrandFacts">Saving…</span>
+                    </button>
+                    <span class="corpus-tip">Saved with your business details · the AI reads this text.</span>
+                </div>
+
+                <label class="corpus-field-label" for="bf-profile-file">Optional: attach the source document (archived for your records)</label>
+                <input id="bf-profile-file" type="file" class="corpus-input"
+                       wire:model="profileFile"
+                       accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,.md,.rtf,.odt,.csv,.xls,.xlsx">
+
+                @error('profileFile')
+                    <span class="corpus-tip" style="color:#b4413c;">{{ $message }}</span>
+                @enderror
+
+                @if ($brand->company_profile_file)
+                    <div class="corpus-tip" style="margin-top:8px;">
+                        Current file:
+                        <a href="{{ $brand->company_profile_file['url'] }}" target="_blank" rel="noopener"
+                           style="color:var(--eiaaw-primary-dark);text-decoration:underline;">
+                            {{ $brand->company_profile_file['filename'] }}
+                        </a>
+                        ({{ number_format((($brand->company_profile_file['size'] ?? 0) / 1024), 0) }} KB)
+                    </div>
+                @endif
+
+                <div style="margin-top: 12px;">
+                    <button type="button"
+                            class="corpus-cta corpus-cta-ghost"
+                            wire:click="saveCompanyProfileFile"
+                            wire:loading.attr="disabled"
+                            wire:target="profileFile,saveCompanyProfileFile">
+                        <span wire:loading.remove wire:target="profileFile,saveCompanyProfileFile">Upload document</span>
+                        <span wire:loading wire:target="profileFile,saveCompanyProfileFile">Uploading…</span>
+                    </button>
+                </div>
+            </div>
+
             {{-- Path 1: paste real historical posts --}}
             <div class="corpus-card">
                 <h3>Paste your historical posts</h3>
