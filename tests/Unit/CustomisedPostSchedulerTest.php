@@ -252,6 +252,64 @@ class CustomisedPostSchedulerTest extends TestCase
         }
     }
 
+    /**
+     * createEntry() must set a calendar_entries.status that the CHECK-constrained
+     * enum actually permits. The enum is ['planned','drafted','scheduled',
+     * 'published','skipped'] — 'approved' is NOT a member (it belongs to the
+     * content_calendars + drafts vocabularies), and using it 23514s the INSERT,
+     * rolling back the whole schedule() transaction. This reads the allowed set
+     * straight from the migration and asserts createEntry()'s status is in it, so
+     * a future drift to an out-of-vocabulary value fails here. DB-free by design.
+     */
+    public function test_create_entry_status_is_a_valid_calendar_entry_enum_member(): void
+    {
+        $migration = (string) file_get_contents(
+            base_path('database/migrations/2026_04_30_100400_create_content_tables.php'),
+        );
+
+        // Isolate the calendar_entries Schema::create block, then its status enum.
+        $this->assertSame(
+            1,
+            preg_match("/Schema::create\('calendar_entries'.*?\}\);/s", $migration, $block),
+            'Could not locate the calendar_entries schema block.',
+        );
+        $this->assertSame(
+            1,
+            preg_match("/enum\('status',\s*\[([^\]]*)\]\)/", $block[0], $enum),
+            'Could not locate the calendar_entries status enum.',
+        );
+        preg_match_all("/'([a-z_]+)'/", $enum[1], $vals);
+        $allowed = $vals[1];
+        $this->assertContains('scheduled', $allowed, 'Sanity: enum should include scheduled.');
+        $this->assertNotContains('approved', $allowed, 'Sanity: enum must NOT include approved (the bug value).');
+
+        // Extract createEntry()'s status value and assert it's an allowed member.
+        $entryBlock = $this->createEntryBlock();
+        $this->assertSame(
+            1,
+            preg_match("/'status'\s*=>\s*'([a-z_]+)'/", $entryBlock, $m),
+            'Could not find a literal status in createEntry().',
+        );
+        $this->assertContains(
+            $m[1],
+            $allowed,
+            "createEntry() sets calendar_entries.status='{$m[1]}', which the CHECK enum rejects — INSERT will 23514.",
+        );
+    }
+
+    /** Helper: isolate the createEntry() method body from the scheduler source. */
+    private function createEntryBlock(): string
+    {
+        $src = $this->schedulerSource();
+        $this->assertSame(
+            1,
+            preg_match('/function createEntry\(.*?\n    \}/s', $src, $fn),
+            'Could not locate createEntry() in the scheduler.',
+        );
+
+        return $fn[0];
+    }
+
     /** Helper: isolate the createDraft() method body from the scheduler source. */
     private function createDraftBlock(): string
     {

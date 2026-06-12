@@ -214,7 +214,13 @@ class CustomisedPostScheduler
             'objective' => 'operator_scheduled',
             'visual_direction' => mb_substr($visualDirection, 0, 1000),
             'is_pillar' => false,
-            'status' => 'approved',
+            // calendar_entries.status is a CHECK-constrained enum:
+            // ['planned','drafted','scheduled','published','skipped']. 'approved'
+            // is NOT a member (that vocabulary belongs to content_calendars +
+            // drafts) — using it 23514s the insert and rolls back schedule().
+            // The operator pinned a date/time, so this entry is 'scheduled'
+            // (the Strategist's autonomous entries enter at 'planned').
+            'status' => 'scheduled',
         ]);
     }
 
