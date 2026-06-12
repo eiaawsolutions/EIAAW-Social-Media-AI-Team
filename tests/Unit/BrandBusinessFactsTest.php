@@ -79,6 +79,42 @@ class BrandBusinessFactsTest extends TestCase
         $this->assertStringContainsString('- Johor Bahru, Malaysia', $block);
     }
 
+    // ---- Company profile (3rd renderer param) ----------------------------
+
+    public function test_company_profile_empty_preserves_byte_identical_invariant(): void
+    {
+        // The 3rd param defaults to '' so existing 2-arg callers are untouched,
+        // and an explicit '' / whitespace-only profile must still render nothing.
+        $this->assertSame('', Brand::renderBrandFactsBlock([], []));
+        $this->assertSame('', Brand::renderBrandFactsBlock([], [], ''));
+        $this->assertSame('', Brand::renderBrandFactsBlock([], [], '   '));
+    }
+
+    public function test_company_profile_renders_section_and_stays_authoritative(): void
+    {
+        $block = Brand::renderBrandFactsBlock([], [], 'ACME Coffee — specialty roaster. Voice: warm, precise.');
+
+        $this->assertStringContainsString('## Company profile', $block);
+        $this->assertStringContainsString('ACME Coffee — specialty roaster.', $block);
+        // The authoritative header must still wrap the block.
+        $this->assertStringContainsString('operator-supplied', $block);
+        $this->assertStringContainsString('authoritative', $block);
+    }
+
+    public function test_company_profile_section_ordered_before_locations_and_audience(): void
+    {
+        $block = Brand::renderBrandFactsBlock(
+            [['area' => 'Penang', 'country' => 'Malaysia']],
+            ['description' => 'Urban professionals.'],
+            'ACME Coffee profile.',
+        );
+
+        $profilePos = strpos($block, '## Company profile');
+        $this->assertNotFalse($profilePos);
+        $this->assertLessThan(strpos($block, '## Business locations'), $profilePos);
+        $this->assertLessThan(strpos($block, '## Target audience'), $profilePos);
+    }
+
     // ---- Model wiring ----------------------------------------------------
 
     public function test_brand_casts_and_fillable_include_business_facts(): void
@@ -93,6 +129,19 @@ class BrandBusinessFactsTest extends TestCase
                 "Brand casts() missing {$col} => array",
             );
         }
+    }
+
+    public function test_brand_fillable_and_casts_include_company_profile(): void
+    {
+        $src = file_get_contents(app_path('Models/Brand.php'));
+
+        // Both columns are fillable.
+        $this->assertStringContainsString("'company_profile',", $src);
+        $this->assertStringContainsString("'company_profile_file',", $src);
+        // The file metadata bag is JSON-cast; the profile text is plain (no cast).
+        $this->assertMatchesRegularExpression("/'company_profile_file'\s*=>\s*'array'/", $src);
+        // brandFactsBlock must pass the profile text as the 3rd renderer arg.
+        $this->assertMatchesRegularExpression('/renderBrandFactsBlock\(.*company_profile.*\)/s', $src);
     }
 
     // ---- Agent injection (source inspection) -----------------------------
@@ -156,5 +205,38 @@ class BrandBusinessFactsTest extends TestCase
         $this->assertStringContainsString('wire:click="saveBrandFacts"', $view);
         $this->assertStringContainsString('wire:click="addLocation"', $view);
         $this->assertStringContainsString('wire:model="audienceDescription"', $view);
+    }
+
+    // ---- Company profile persistence + view (source inspection) ----------
+
+    public function test_corpus_page_persists_company_profile(): void
+    {
+        $src = file_get_contents(app_path('Filament/Agency/Pages/BrandCorpusSeed.php'));
+
+        // Profile text folds into the existing facts save.
+        $this->assertStringContainsString("'company_profile' =>", $src);
+        // Dedicated archival-file handler stores durably to R2 (or public).
+        $this->assertStringContainsString('public function saveCompanyProfileFile(', $src);
+        $this->assertStringContainsString('durableArtifactDisk()', $src);
+        $this->assertStringContainsString('company-profiles/', $src);
+        $this->assertStringContainsString("'company_profile_file' =>", $src);
+        // The upload handler must invalidate readiness like the facts save does.
+        $this->assertMatchesRegularExpression(
+            '/function saveCompanyProfileFile\(.*?SetupReadiness::class\)->invalidate/s',
+            $src,
+            'saveCompanyProfileFile must invalidate setup readiness',
+        );
+    }
+
+    public function test_corpus_view_exposes_company_profile_card(): void
+    {
+        $view = file_get_contents(
+            resource_path('views/filament/agency/pages/brand-corpus-seed.blade.php')
+        );
+
+        $this->assertStringContainsString('Your company / brand profile', $view);
+        $this->assertStringContainsString('wire:model="companyProfile"', $view);
+        $this->assertStringContainsString('wire:model="profileFile"', $view);
+        $this->assertStringContainsString('wire:click="saveCompanyProfileFile"', $view);
     }
 }

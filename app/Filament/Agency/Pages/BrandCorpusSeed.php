@@ -2,6 +2,7 @@
 
 namespace App\Filament\Agency\Pages;
 
+use App\Agents\BaseAgent;
 use App\Models\Brand;
 use App\Models\BrandCorpusItem;
 use App\Models\Workspace;
@@ -12,6 +13,9 @@ use Filament\Pages\Page;
 use GuzzleHttp\Client as Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Livewire\WithFileUploads;
 
 /**
  * Stage 03 — Brand corpus seed.
@@ -43,11 +47,18 @@ use Illuminate\Support\Facades\Log;
  */
 class BrandCorpusSeed extends Page
 {
+    use WithFileUploads;
+
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-book-open';
+
     protected static ?string $navigationLabel = 'Brand corpus';
+
     protected static ?string $title = 'Brand corpus';
+
     protected static ?int $navigationSort = 2;
+
     protected static ?string $slug = 'brand-corpus';
+
     protected string $view = 'filament.agency.pages.brand-corpus-seed';
 
     public function getSubheading(): ?string
@@ -57,6 +68,7 @@ class BrandCorpusSeed extends Page
 
     /** Livewire-safe scalar state. */
     public ?int $brand = null;
+
     public string $pasteText = '';
 
     /**
@@ -71,8 +83,20 @@ class BrandCorpusSeed extends Page
     public array $locations = [];
 
     public string $audienceDescription = '';
+
     public string $audienceSegmentsText = '';
+
     public string $audienceGeoFocus = '';
+
+    /**
+     * Operator-pasted company / brand profile (positioning, products, voice,
+     * audience). This is the AUTHORITATIVE text the Writer + Strategist read —
+     * rendered into Brand::brandFactsBlock above the AI-synthesised voice.
+     */
+    public string $companyProfile = '';
+
+    /** Transient Livewire upload handle for the optional ARCHIVAL source file. */
+    public $profileFile = null;
 
     public function mount(): void
     {
@@ -99,6 +123,10 @@ class BrandCorpusSeed extends Page
         $this->audienceDescription = (string) ($audience['description'] ?? '');
         $this->audienceSegmentsText = implode(', ', (array) ($audience['segments'] ?? []));
         $this->audienceGeoFocus = (string) ($audience['geo_focus'] ?? '');
+
+        $this->companyProfile = (string) ($brand->company_profile ?? '');
+        // $profileFile is a transient upload handle — never round-tripped. The
+        // "current file" indicator in the view reads $brand->company_profile_file.
     }
 
     /** Add a blank location row to the repeater. */
@@ -117,17 +145,23 @@ class BrandCorpusSeed extends Page
     public function resolveBrand(): ?Brand
     {
         $user = auth()->user();
-        if (! $user) return null;
+        if (! $user) {
+            return null;
+        }
 
         /** @var ?Workspace $ws */
         $ws = $user->currentWorkspace
             ?? $user->workspaces()->first()
             ?? $user->ownedWorkspaces()->first();
-        if (! $ws) return null;
+        if (! $ws) {
+            return null;
+        }
 
         if ($this->brand) {
             $b = Brand::where('workspace_id', $ws->id)->find($this->brand);
-            if ($b) return $b;
+            if ($b) {
+                return $b;
+            }
         }
 
         return Brand::where('workspace_id', $ws->id)
@@ -139,6 +173,7 @@ class BrandCorpusSeed extends Page
     public function existingCount(): int
     {
         $b = $this->resolveBrand();
+
         return $b ? BrandCorpusItem::where('brand_id', $b->id)->count() : 0;
     }
 
@@ -159,6 +194,7 @@ class BrandCorpusSeed extends Page
         $brand = $this->resolveBrand();
         if (! $brand) {
             Notification::make()->title('No brand to seed')->danger()->send();
+
             return;
         }
 
@@ -169,6 +205,7 @@ class BrandCorpusSeed extends Page
                 ->body('Paste at least one post — separate multiple posts with a blank line.')
                 ->warning()
                 ->send();
+
             return;
         }
 
@@ -186,10 +223,11 @@ class BrandCorpusSeed extends Page
             ]);
             Notification::make()
                 ->title('Could not embed your posts')
-                ->body('The embedding service errored: ' . substr($e->getMessage(), 0, 200))
+                ->body('The embedding service errored: '.substr($e->getMessage(), 0, 200))
                 ->danger()
                 ->persistent()
                 ->send();
+
             return;
         }
 
@@ -198,7 +236,7 @@ class BrandCorpusSeed extends Page
                 BrandCorpusItem::create([
                     'brand_id' => $brand->id,
                     'source_type' => 'historical_post',
-                    'source_label' => 'Pasted post ' . ($i + 1),
+                    'source_label' => 'Pasted post '.($i + 1),
                     'content' => $text,
                     'embedding' => $vectors[$i],
                 ]);
@@ -234,6 +272,7 @@ class BrandCorpusSeed extends Page
         $brand = $this->resolveBrand();
         if (! $brand) {
             Notification::make()->title('No brand to seed')->danger()->send();
+
             return;
         }
 
@@ -243,6 +282,7 @@ class BrandCorpusSeed extends Page
                 ->body('Add a website URL to the brand profile, then retry.')
                 ->warning()
                 ->send();
+
             return;
         }
 
@@ -253,6 +293,7 @@ class BrandCorpusSeed extends Page
                 ->body('Check the URL is reachable and try again.')
                 ->danger()
                 ->send();
+
             return;
         }
         if (count($chunks) === 0) {
@@ -261,6 +302,7 @@ class BrandCorpusSeed extends Page
                 ->body('The site returned too little text to be useful. Paste posts instead.')
                 ->warning()
                 ->send();
+
             return;
         }
 
@@ -282,6 +324,7 @@ class BrandCorpusSeed extends Page
                 ->danger()
                 ->persistent()
                 ->send();
+
             return;
         }
 
@@ -296,7 +339,7 @@ class BrandCorpusSeed extends Page
                     'brand_id' => $brand->id,
                     'source_type' => 'website_page',
                     'source_url' => $brand->website_url,
-                    'source_label' => 'Website chunk ' . ($i + 1),
+                    'source_label' => 'Website chunk '.($i + 1),
                     'content' => $text,
                     'embedding' => $vectors[$i],
                 ]);
@@ -331,6 +374,7 @@ class BrandCorpusSeed extends Page
         $brand = $this->resolveBrand();
         if (! $brand) {
             Notification::make()->title('No brand to update')->danger()->send();
+
             return;
         }
 
@@ -382,9 +426,14 @@ class BrandCorpusSeed extends Page
             'geo_focus' => $geoFocus,
         ], fn ($v) => $v !== '' && $v !== []);
 
+        // Company profile text — generous cap for archival prose; the AI reads
+        // this verbatim above brand-style.md (see Brand::brandFactsBlock).
+        $companyProfile = mb_substr(trim($this->companyProfile), 0, 20000);
+
         $brand->update([
             'business_locations' => $locations !== [] ? $locations : null,
             'audience_profile' => $audience !== [] ? $audience : null,
+            'company_profile' => $companyProfile !== '' ? $companyProfile : null,
         ]);
 
         // Re-normalise local state from what we persisted (collapses cleared rows).
@@ -395,6 +444,77 @@ class BrandCorpusSeed extends Page
         Notification::make()
             ->title('Business details saved')
             ->body('The Writer and Strategist will now ground every post in these locations and audience.')
+            ->success()
+            ->send();
+    }
+
+    /**
+     * Move the optional ARCHIVAL profile document to the DURABLE disk (R2 in
+     * prod, public locally) and record its metadata on the brand.
+     *
+     * The file is NEVER parsed and NEVER read back — it's the operator's record
+     * only; the AI is grounded by the pasted company_profile text, not this
+     * file. Livewire temp uploads land on the LOCAL disk first, so storeAs(...,
+     * ['disk' => $disk]) performs a one-way local→durable transfer with no
+     * read-back/preview of the stored file (sidesteps the Livewire S3-temp
+     * preview failure mode entirely).
+     *
+     * Kept independent of saveBrandFacts so editing the profile text never
+     * forces a re-upload of the (optional) document.
+     */
+    public function saveCompanyProfileFile(): void
+    {
+        $brand = $this->resolveBrand();
+        if (! $brand) {
+            Notification::make()->title('No brand to update')->danger()->send();
+
+            return;
+        }
+        if (! $this->profileFile) {
+            Notification::make()->title('No file selected')->warning()->send();
+
+            return;
+        }
+
+        $this->validate([
+            'profileFile' => [
+                'file',
+                'max:25600', // 25 MB
+                'mimes:pdf,doc,docx,ppt,pptx,txt,md,rtf,odt,csv,xls,xlsx',
+            ],
+        ]);
+
+        $disk = BaseAgent::durableArtifactDisk(); // 'r2' | 'public'
+        $original = $this->profileFile->getClientOriginalName();
+        $mime = $this->profileFile->getMimeType();
+        $size = $this->profileFile->getSize();
+
+        // One-way local-temp → durable disk. No get(), no preview, no parse.
+        $path = $this->profileFile->storeAs(
+            'company-profiles/'.$brand->id,
+            Str::random(20).'-'.$original,
+            ['disk' => $disk, 'visibility' => 'public'],
+        );
+        $url = Storage::disk($disk)->url($path);
+
+        $brand->update([
+            'company_profile_file' => [
+                'disk' => $disk,
+                'path' => $path,
+                'url' => $url,
+                'filename' => $original,
+                'mime' => $mime,
+                'size' => $size,
+                'uploaded_at' => now()->toIso8601String(),
+            ],
+        ]);
+
+        $this->profileFile = null;
+        app(SetupReadiness::class)->invalidate($brand);
+
+        Notification::make()
+            ->title('Profile document saved')
+            ->body('Archived for your records. The AI is grounded by the profile text you paste, not this file.')
             ->success()
             ->send();
     }
@@ -413,6 +533,7 @@ class BrandCorpusSeed extends Page
                 $out[] = $b;
             }
         }
+
         return array_values(array_unique($out));
     }
 
@@ -430,11 +551,14 @@ class BrandCorpusSeed extends Page
             ]);
         } catch (\Throwable $e) {
             Log::warning('BrandCorpusSeed: scrape failed', ['url' => $url, 'error' => $e->getMessage()]);
+
             return null;
         }
 
         $html = (string) $response->getBody();
-        if (strlen($html) < 200) return [];
+        if (strlen($html) < 200) {
+            return [];
+        }
 
         // Strip noisy blocks before extracting text.
         $cleaned = preg_replace(
@@ -446,14 +570,18 @@ class BrandCorpusSeed extends Page
         $text = trim(html_entity_decode(strip_tags($cleaned), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
         $text = preg_replace('/[ \t]+/', ' ', $text);
         $text = preg_replace('/\n{2,}/', "\n\n", $text);
-        if (mb_strlen($text) < 200) return [];
+        if (mb_strlen($text) < 200) {
+            return [];
+        }
 
         // Naive paragraph split — good enough for a v1 fallback.
         $paragraphs = preg_split("/\n\s*\n/", $text) ?: [];
         $chunks = [];
         foreach ($paragraphs as $p) {
             $p = trim($p);
-            if (mb_strlen($p) < 80) continue;
+            if (mb_strlen($p) < 80) {
+                continue;
+            }
             // Cap each chunk at ~2000 chars (~500 tokens) so embeddings stay cheap and on-topic.
             if (mb_strlen($p) > 2000) {
                 foreach (str_split($p, 2000) as $sub) {
@@ -463,6 +591,7 @@ class BrandCorpusSeed extends Page
                 $chunks[] = $p;
             }
         }
+
         return array_values(array_unique(array_filter($chunks)));
     }
 }

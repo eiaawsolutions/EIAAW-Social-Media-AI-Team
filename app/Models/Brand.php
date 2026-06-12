@@ -31,6 +31,8 @@ class Brand extends Model
         'competitor_intel_config',
         'business_locations',
         'audience_profile',
+        'company_profile',
+        'company_profile_file',
         'market_intel_config',
         'growth_strategy_config',
         'archived_at',
@@ -44,6 +46,7 @@ class Brand extends Model
             'competitor_intel_config' => 'array',
             'business_locations' => 'array',
             'audience_profile' => 'array',
+            'company_profile_file' => 'array',
             'market_intel_config' => 'array',
             'growth_strategy_config' => 'array',
             'archived_at' => 'datetime',
@@ -74,6 +77,7 @@ class Brand extends Model
         if ($this->metricool_connect_link_sent_at !== null) {
             return 'link_sent';
         }
+
         return 'mapped';
     }
 
@@ -201,6 +205,7 @@ class Brand extends Model
         return self::renderBrandFactsBlock(
             (array) ($this->business_locations ?? []),
             (array) ($this->audience_profile ?? []),
+            (string) ($this->company_profile ?? ''),
         );
     }
 
@@ -210,11 +215,21 @@ class Brand extends Model
      * a database (the test suite runs DB-free; see BrandCreateAtomicityTest).
      *
      * @param  array<int, array<string, mixed>>  $locations  business_locations rows
-     * @param  array<string, mixed>              $audience   audience_profile object
+     * @param  array<string, mixed>  $audience  audience_profile object
+     * @param  string  $companyProfile  operator-pasted profile text
      */
-    public static function renderBrandFactsBlock(array $locations, array $audience): string
+    public static function renderBrandFactsBlock(array $locations, array $audience, string $companyProfile = ''): string
     {
         $sections = [];
+
+        // Company profile renders first — the most general operator context
+        // (positioning, products, voice, audience), ahead of the structured
+        // location/audience facts. The block header below marks the whole thing
+        // authoritative, so the profile inherits "honour over inferred voice".
+        $profile = trim($companyProfile);
+        if ($profile !== '') {
+            $sections[] = "## Company profile\n".$profile;
+        }
 
         $locationLines = [];
         foreach ($locations as $loc) {
@@ -275,6 +290,7 @@ class Brand extends Model
         if ($platformSetting) {
             return $platformSetting->default_lane;
         }
+
         return $this->autonomySettings()->whereNull('platform')->value('default_lane') ?? 'amber';
     }
 }
