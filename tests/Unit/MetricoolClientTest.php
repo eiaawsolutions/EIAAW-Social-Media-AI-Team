@@ -80,6 +80,61 @@ class MetricoolClientTest extends TestCase
         $this->assertNull(MetricoolClient::fromConfig());
     }
 
+    /**
+     * REGRESSION (2026-06-13): lazyResolve() calls Log::info()/Log::warning()
+     * but the file was missing `use Illuminate\Support\Facades\Log;`, so the
+     * unqualified `Log::` resolved to the non-existent App\Services\Metricool\Log
+     * and FATALED the instant the self-heal path ran with the resolver ENABLED —
+     * silently disarming the 2026-06-02 Infisical-flap recovery. The pre-existing
+     * test only exercised the resolver-DISABLED early return, so it never reached
+     * the Log:: calls. These two drive the enabled path (success + failure
+     * branches) so a missing facade import can never regress unnoticed again.
+     */
+    public function test_from_config_self_heals_a_leftover_handle_when_resolver_enabled(): void
+    {
+        config()->set('secrets.infisical.enabled', true);
+        config()->set('services.metricool.api_token', 'secret://eiaaw-smt-prod/prod/METRICOOL_API_TOKEN');
+        config()->set('services.metricool.user_id', 4242);
+
+        // Resolver returns a real token → lazyResolve() hits the SUCCESS branch
+        // (config heal + Log::info at line 124). Without the import, this fatals.
+        $this->app->instance(\App\Services\Secrets\InfisicalResolver::class, new class extends \App\Services\Secrets\InfisicalResolver {
+            public function __construct() {}
+
+            public function resolve(string $handle): string
+            {
+                return 'mc_resolved_token';
+            }
+        });
+
+        $client = MetricoolClient::fromConfig();
+
+        $this->assertInstanceOf(MetricoolClient::class, $client);
+        // Healed value is cached back into config for the rest of the process.
+        $this->assertSame('mc_resolved_token', config('services.metricool.api_token'));
+    }
+
+    public function test_from_config_logs_and_no_ops_when_resolver_throws(): void
+    {
+        config()->set('secrets.infisical.enabled', true);
+        config()->set('services.metricool.api_token', 'secret://eiaaw-smt-prod/prod/METRICOOL_API_TOKEN');
+        config()->set('services.metricool.user_id', 4242);
+
+        // Resolver throws → lazyResolve() hits the catch (Log::warning at line
+        // 128). Without the import, even the failure branch fatals. The client
+        // must degrade to null (unconfigured), not throw into the hot path.
+        $this->app->instance(\App\Services\Secrets\InfisicalResolver::class, new class extends \App\Services\Secrets\InfisicalResolver {
+            public function __construct() {}
+
+            public function resolve(string $handle): string
+            {
+                throw new \RuntimeException('Infisical unreachable');
+            }
+        });
+
+        $this->assertNull(MetricoolClient::fromConfig());
+    }
+
     public function test_get_scheduled_posts_sends_blog_id_and_window_and_parses_rows(): void
     {
         Http::fake([
