@@ -23,6 +23,17 @@
 
   <title>@yield('title', 'EIAAW Social Media Team — AI that shows you the receipts')</title>
   <meta name="description" content="@yield('description', 'The autonomous AI social media team for SMBs and agencies. Six specialised agents, hard compliance gate, and provenance receipts on every post. Built for Malaysia and APAC.')">
+  {{-- Canonical: keep the real per-page path but pin the host to the production
+       host, so crawls of alternate hosts (e.g. via Railway's *.up.railway.app or
+       a www variant) self-canonicalize to one URL instead of creating duplicate
+       indexable pages. --}}
+  @php
+      $smtPath = '/'.ltrim(request()->path() === '/' ? '' : request()->path(), '/');
+      $smtCanonical = rtrim('https://smt.eiaawsolutions.com'.$smtPath, '/');
+      $smtCanonical = $smtCanonical === 'https://smt.eiaawsolutions.com' ? $smtCanonical.'/' : $smtCanonical;
+  @endphp
+  <link rel="canonical" href="{{ $smtCanonical }}">
+  <meta property="og:url" content="{{ $smtCanonical }}">
   <meta name="theme-color" content="#11766A">
   <meta name="apple-mobile-web-app-title" content="EIAAW SMT">
   <meta name="application-name" content="EIAAW SMT">
