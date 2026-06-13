@@ -14,7 +14,10 @@ use Illuminate\Support\Facades\Log;
  * still needs work:
  *   - status=queued                     → first submission
  *   - status=submitted (no post id)     → poll for a stuck-processing row
- *   - status=failed AND attempt_count<3 → automatic retry with 5-min backoff
+ *   - status=failed AND attempt_count<3 → automatic retry with 5-min backoff,
+ *        EXCEPT permanent failures (revoked connection, missing draft,
+ *        publishability/video-integrity gates) which never self-heal on retry —
+ *        those are held for operator action (see ScheduledPost::PERMANENT_FAILURE_SIGNATURES)
  *   - status=submitting (stale >10min)  → orphan recovery (worker died mid-submit)
  *
  * The Job itself is idempotent so re-dispatching the same row is safe; we
@@ -66,10 +69,25 @@ class PostsDispatchDue extends Command
             $dispatched++;
         }
 
-        // 3. Failed + retryable + last attempt > 5 min ago.
+        // 3. Failed + retryable + last attempt > 5 min ago — but ONLY for
+        // TRANSIENT failures. A row whose last_error names a PERMANENT
+        // condition (revoked/expired connection, missing draft, publishability
+        // gate, video-format integrity) will produce the identical failure on
+        // every tick, so auto-retrying it just burns the 3-attempt budget and
+        // misleads the operator with "cron will retry" copy. We exclude those
+        // signatures here (the operator fixes the root cause then uses the
+        // manual Retry/Re-evaluate action, or posts:repoint-revoked-connection
+        // repoints to an active sibling). The permanent set is the single
+        // source of truth on ScheduledPost; an unmatched/NULL last_error stays
+        // retryable (fail-open). Count the held rows so they're observable.
         $retries = ScheduledPost::where('status', 'failed')
             ->where('attempt_count', '<', 3)
             ->where('updated_at', '<=', $now->copy()->subMinutes(5))
+            ->where(function ($q) {
+                foreach (ScheduledPost::PERMANENT_FAILURE_SIGNATURES as $signature) {
+                    $q->where('last_error', 'not like', '%' . $signature . '%');
+                }
+            })
             ->limit($limit)
             ->get();
         foreach ($retries as $row) {
@@ -78,6 +96,20 @@ class PostsDispatchDue extends Command
             SubmitScheduledPost::dispatch($row->id)->onQueue('publishing');
             $dispatched++;
         }
+
+        // Observability: how many failed rows the retry pass intentionally held
+        // back because their last_error names a permanent condition.
+        $skippedPermanent = ScheduledPost::where('status', 'failed')
+            ->where('attempt_count', '<', 3)
+            ->where('updated_at', '<=', $now->copy()->subMinutes(5))
+            ->where(function ($q) {
+                $q->where(function ($inner) {
+                    foreach (ScheduledPost::PERMANENT_FAILURE_SIGNATURES as $signature) {
+                        $inner->orWhere('last_error', 'like', '%' . $signature . '%');
+                    }
+                });
+            })
+            ->count();
 
         // 4. Orphan recovery: rows stuck in 'submitting' for >10min whose worker
         // died before advancing them. Only those WITHOUT a provider id are safe
@@ -113,6 +145,7 @@ class PostsDispatchDue extends Command
             'queued_due' => $rows->count(),
             'polls' => $polls->count(),
             'retries' => $retries->count(),
+            'retries_skipped_permanent' => $skippedPermanent,
             'orphans_requeued' => $orphansRequeued,
             'orphans_failed' => $orphansFailed,
         ]);

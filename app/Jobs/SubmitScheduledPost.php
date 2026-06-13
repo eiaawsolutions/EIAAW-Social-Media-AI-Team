@@ -72,6 +72,9 @@ class SubmitScheduledPost implements ShouldQueue
             return;
         }
 
+        // PERMANENT failure — matched by ScheduledPost::isPermanentFailureReason()
+        // ('Draft or platform connection missing'); cron does NOT auto-retry it.
+        // Keep this message in sync with PERMANENT_FAILURE_SIGNATURES.
         if (! $post->draft || ! $post->platformConnection) {
             $this->markFailed($post, 'Draft or platform connection missing.');
             return;
@@ -116,6 +119,11 @@ class SubmitScheduledPost implements ShouldQueue
             return;
         }
 
+        // PERMANENT failure — matched by ScheduledPost::isPermanentFailureReason()
+        // ('connection is not active'); cron does NOT auto-retry a revoked/
+        // expired/reauth_required connection (it never self-heals). Operator must
+        // reconnect, or posts:repoint-revoked-connection repoints to an active
+        // sibling. Keep this message in sync with PERMANENT_FAILURE_SIGNATURES.
         if ($post->platformConnection->status !== 'active') {
             $this->markFailed($post, 'Platform connection is not active (status=' . $post->platformConnection->status . ').');
             return;
@@ -139,6 +147,10 @@ class SubmitScheduledPost implements ShouldQueue
         // before the provider call. This stops the YouTube `TypeError: Failed
         // to parse URL from undefined` (failed/450758 class) and the IG/TikTok
         // text-only 422s from ever reaching the provider.
+        // PERMANENT failure — matched by ScheduledPost::isPermanentFailureReason()
+        // ('Publishability gate (pre-publish)'); cron does NOT auto-retry it (the
+        // same rules fail identically every tick). Operator fixes the draft then
+        // Re-evaluates. Keep this prefix in sync with PERMANENT_FAILURE_SIGNATURES.
         $eval = PlatformRules::evaluate($post->draft, $post->platformConnection);
         if (! $eval['passed']) {
             $reasons = collect($eval['violations'])->pluck('reason')->implode(' | ');
@@ -155,6 +167,10 @@ class SubmitScheduledPost implements ShouldQueue
         // Refusal is loud + actionable: the operator sees "Draft has stale
         // image asset on a video format. Re-run VideoAgent." in the failed
         // list. Auto-redraft will route to regenerate_media on the next tick.
+        // PERMANENT failure — matched by ScheduledPost::isPermanentFailureReason()
+        // ('Video-format draft has a still image'); cron does NOT auto-retry it
+        // (it stays a still image until VideoAgent re-runs). Keep this message in
+        // sync with PERMANENT_FAILURE_SIGNATURES.
         if ($this->draftNeedsVideoButHasImage($post->draft)) {
             $this->markFailed(
                 $post,

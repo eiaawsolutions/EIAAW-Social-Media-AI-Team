@@ -564,9 +564,19 @@ class ScheduledPostResource extends Resource
             'submitting' => 'WAIT for ' . $provider . ' to accept (auto)',
             'submitted' => 'WAIT for ' . $provider . ' status poll → published / failed',
             'published' => 'DONE — view on Live feed',
-            'failed' => $post->attempt_count < 3
-                ? 'AUTO: cron will retry in ~5 min (attempt ' . ($post->attempt_count + 1) . '/3)'
-                : 'FAIL — manual: click Retry or fix root cause + resubmit',
+            // Permanent failures never self-heal, so don't promise an auto-retry
+            // that can't succeed — point at the real fix. The connection case is
+            // the most actionable (reconnect → Retry); the rest need the root
+            // cause fixed then a Re-evaluate. Transient failures keep the
+            // existing auto-retry / exhausted copy. Mirrors the cron's skip
+            // logic in PostsDispatchDue (both read PERMANENT_FAILURE_SIGNATURES).
+            'failed' => $post->isPermanentlyFailed()
+                ? (\Illuminate\Support\Str::contains((string) $post->last_error, 'connection is not active', ignoreCase: true)
+                    ? 'ACTION: reconnect this platform, then click Retry (cron will NOT auto-retry a revoked/expired connection)'
+                    : 'ACTION: fix the root cause then click Re-evaluate (cron will NOT auto-retry this failure)')
+                : ($post->attempt_count < 3
+                    ? 'AUTO: cron will retry in ~5 min (attempt ' . ($post->attempt_count + 1) . '/3)'
+                    : 'FAIL — manual: click Retry or fix root cause + resubmit'),
             'cancelled' => 'DONE — cancelled; draft is back to approved',
             default => '—',
         };

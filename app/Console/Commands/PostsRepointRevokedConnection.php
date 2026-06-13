@@ -44,8 +44,13 @@ use Illuminate\Support\Facades\DB;
  */
 class PostsRepointRevokedConnection extends Command
 {
-    /** The exact gate signature from SubmitScheduledPost. */
-    private const SIGNATURE = 'connection is not active';
+    /**
+     * The exact gate signature from SubmitScheduledPost. Sourced from the
+     * shared permanent-failure set on ScheduledPost so the repair matcher here
+     * and the cron's auto-retry SKIP in PostsDispatchDue can never drift apart
+     * (locked by tests/Unit/PermanentFailureNoAutoRetryTest).
+     */
+    private const SIGNATURE = ScheduledPost::PERMANENT_FAILURE_SIGNATURES[0]; // 'connection is not active'
 
     protected $signature = 'posts:repoint-revoked-connection
                             {--workspace= : restrict to one workspace id (default: all)}
