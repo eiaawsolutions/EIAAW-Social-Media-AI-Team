@@ -108,7 +108,7 @@
                     </div>
                 @else
                 @foreach (['followers', 'impressions'] as $dimKey)
-                    @php($dim = $g['data'][$dimKey])
+                    @php $dim = $g['data'][$dimKey]; @endphp
                     <div class="perf-growth-block">
                         <div class="perf-growth-head">
                             <h4>{{ $dim['title'] }}</h4>
@@ -144,7 +144,7 @@
                         </div>
 
                         @if ($dim['has_data'])
-                            @php($historyDays = count($dim['axis']))
+                            @php $historyDays = count($dim['axis']); @endphp
                             <div class="perf-chart-box" wire:ignore wire:key="perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}">
                                 <canvas
                                     id="perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}"
@@ -183,7 +183,7 @@
 
         {{-- ── Growth strategy (computed from this brand's own real performance) ── --}}
         @if ($gs['brief'] !== null)
-            @php($b = $gs['brief'])
+            @php $b = $gs['brief']; @endphp
             <div class="perf-growth" style="margin-top:18px;">
                 <div class="perf-section-title">Growth strategy · from your own performance</div>
 
@@ -205,7 +205,7 @@
                         <div class="perf-tile" style="text-align:left;">
                             <div class="perf-tile-label">Winning hooks</div>
                             @foreach ($b['hooks'] as $h)
-                                @php($hWin = $h['win_rate'] !== null ? ' · '.$h['win_rate'].'% win' : '')
+                                @php $hWin = $h['win_rate'] !== null ? ' · '.$h['win_rate'].'% win' : ''; @endphp
                                 <div class="perf-tile-sub" style="margin-top:4px;">{{ str_replace('_', ' ', $h['hook']).$hWin }}</div>
                             @endforeach
                         </div>
