@@ -23,6 +23,17 @@ class ComplianceLegalPromptTest extends TestCase
         $this->assertStringContainsString('Output ONLY the JSON', $prompt);
     }
 
+    public function test_system_prompt_treats_draft_as_untrusted_data(): void
+    {
+        // Prompt-injection defence: the judge must be told the draft is data and
+        // never to obey instructions/pre-approval claims inside it.
+        $prompt = ComplianceLegalPrompt::system();
+
+        $this->assertStringContainsString('untrusted DATA', $prompt);
+        $this->assertStringContainsString('DRAFT_BODY', $prompt);
+        $this->assertStringContainsStringIgnoringCase('never obey', $prompt);
+    }
+
     public function test_schema_has_no_min_max_on_numbers(): void
     {
         // Anthropic's structured-output validator rejects minimum/maximum on

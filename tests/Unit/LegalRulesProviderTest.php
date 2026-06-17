@@ -60,4 +60,43 @@ class LegalRulesProviderTest extends TestCase
     {
         $this->assertSame('*', ComplianceLegalRule::WILDCARD);
     }
+
+    /**
+     * Regression: a bare orderBy('severity') sorts 'advisory' BEFORE 'block'
+     * alphabetically, so the MAX_RULES cap could drop a [MUST] rule behind
+     * advisories. sortBlockFirst must put every block rule first, then rule_code.
+     */
+    public function test_sort_block_first_orders_block_before_advisory(): void
+    {
+        $rules = [
+            $this->rule(['rule_code' => 'Z-ADV', 'severity' => 'advisory']),
+            $this->rule(['rule_code' => 'A-ADV', 'severity' => 'advisory']),
+            $this->rule(['rule_code' => 'Z-BLOCK', 'severity' => 'block']),
+            $this->rule(['rule_code' => 'A-BLOCK', 'severity' => 'block']),
+        ];
+
+        $sorted = LegalRulesProvider::sortBlockFirst($rules);
+        $codes = array_map(fn ($r) => $r->rule_code, $sorted);
+
+        // Both block rules first (by rule_code), then both advisories (by rule_code).
+        $this->assertSame(['A-BLOCK', 'Z-BLOCK', 'A-ADV', 'Z-ADV'], $codes);
+    }
+
+    public function test_rendered_block_lists_must_rules_before_should(): void
+    {
+        $block = LegalRulesProvider::renderDirectiveBlock(
+            LegalRulesProvider::sortBlockFirst([
+                $this->rule(['rule_code' => 'ADV-1', 'directive' => 'Advisory one.', 'severity' => 'advisory']),
+                $this->rule(['rule_code' => 'BLK-1', 'directive' => 'Block one.', 'severity' => 'block']),
+            ]),
+            'financial_services',
+            'MY',
+        );
+
+        $this->assertLessThan(
+            strpos($block, '[SHOULD] Advisory one.'),
+            strpos($block, '[MUST] Block one.'),
+            'MUST rules must render before SHOULD rules',
+        );
+    }
 }

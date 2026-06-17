@@ -66,10 +66,15 @@
             <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: #6B7A7F; margin-bottom: 6px;">Compliance</div>
             <div style="border: 1px solid #E8DFCC; border-radius: 8px; overflow: hidden;">
                 @foreach ($checks as $c)
-                    <div style="padding: 8px 12px; display: flex; justify-content: space-between; gap: 12px; background: {{ $loop->odd ? 'white' : '#FAF7F2' }}; font-size: 12.5px;">
-                        <span style="font-family: 'JetBrains Mono', monospace; color: #2A3438;">{{ \Illuminate\Support\Str::headline($c->check_type) }}</span>
-                        <span style="font-family: 'JetBrains Mono', monospace; color: #6B7A7F;">{{ number_format((float) $c->score, 2) }}</span>
-                        <span style="color: {{ ['pass' => '#11766A', 'warning' => '#8E6300', 'error' => '#8E6300'][$c->result] ?? '#7E2C1B' }}; font-weight: 600;">{{ strtoupper($c->result) }}</span>
+                    <div style="padding: 8px 12px; background: {{ $loop->odd ? 'white' : '#FAF7F2' }}; font-size: 12.5px;">
+                        <div style="display: flex; justify-content: space-between; gap: 12px;">
+                            <span style="font-family: 'JetBrains Mono', monospace; color: #2A3438;">{{ \Illuminate\Support\Str::headline($c->check_type) }}</span>
+                            <span style="font-family: 'JetBrains Mono', monospace; color: #6B7A7F;">{{ number_format((float) $c->score, 2) }}</span>
+                            <span style="color: {{ ['pass' => '#11766A', 'warning' => '#8E6300', 'error' => '#8E6300'][$c->result] ?? '#7E2C1B' }}; font-weight: 600;">{{ strtoupper($c->result) }}</span>
+                        </div>
+                        @if ($c->result !== 'pass' && filled($c->reason))
+                            <div style="margin-top: 4px; font-size: 11.5px; color: #6B7A7F; line-height: 1.45;">{{ $c->reason }}</div>
+                        @endif
                     </div>
                 @endforeach
             </div>
