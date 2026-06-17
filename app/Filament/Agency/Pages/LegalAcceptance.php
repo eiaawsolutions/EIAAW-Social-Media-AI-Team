@@ -61,7 +61,7 @@ class LegalAcceptance extends Page
      * server-side so a tampered client can't accept on the user's behalf with
      * the box unticked.
      */
-    public function accept(): RedirectResponse|null
+    public function submit(): RedirectResponse|null
     {
         if (! $this->accept) {
             Notification::make()
