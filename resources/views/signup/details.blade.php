@@ -19,7 +19,7 @@
             Tell us your name and email.
           </h1>
           <p class="lead" style="margin-top: 18px; max-width: 56ch;">
-            We need these to set up your workspace. The next screen is Stripe — we never see your card. Your subscription is charged the moment you confirm, and our team provisions your dedicated Blotato account within 1 business day.
+            We need these to set up your workspace. The next screen is Stripe — we never see your card. Your subscription is charged the moment you confirm, and we'll guide you through connecting your social accounts within 1 business day.
           </p>
         </div>
 
@@ -79,6 +79,15 @@
             <span style="font-size: 12px; color: var(--mute);">Shown on receipts and at the top of your dashboard. You can change this later.</span>
           </label>
 
+          <label style="display: flex; gap: 10px; align-items: flex-start; margin-top: 4px; font-size: 13px; line-height: 1.55; color: var(--ink-2);">
+            <input type="checkbox" name="accept_terms" value="1" required style="margin-top: 3px; flex: 0 0 auto;">
+            <span>I have read and agree to the
+              <a href="/terms" target="_blank" rel="noopener" style="color: var(--primary-dark);">Terms of Service</a>,
+              <a href="/acceptable-use" target="_blank" rel="noopener" style="color: var(--primary-dark);">Acceptable Use Policy</a>,
+              <a href="/ai-disclaimer" target="_blank" rel="noopener" style="color: var(--primary-dark);">AI Content Disclaimer</a>, and
+              <a href="/privacy" target="_blank" rel="noopener" style="color: var(--primary-dark);">Privacy Policy</a>.</span>
+          </label>
+
           <div style="margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 18px;">
             <button type="submit" class="btn btn-primary btn-lg">
               Continue to secure checkout <span class="arrow">&rarr;</span>
@@ -87,7 +96,7 @@
           </div>
 
           <p style="margin-top: 12px; font-size: 12px; line-height: 1.55; color: var(--mute);">
-            By continuing you agree to our <a href="/terms" style="color: var(--primary-dark);">Terms</a> and <a href="/privacy" style="color: var(--primary-dark);">Privacy</a>. Cancel any time from the billing page; future renewals stop immediately.
+            Cancel any time from the billing page; future renewals stop immediately.
           </p>
         </form>
       </div>
@@ -109,7 +118,7 @@
               <div style="display: flex; justify-content: space-between;"><span>Renews</span><strong style="color: var(--ink);">Monthly</strong></div>
             </div>
             <p style="margin-top: 22px; font-size: 12px; color: var(--mute); line-height: 1.5;">
-              Charged today. Our team provisions your dedicated Blotato account within 1 business day &mdash; you'll get an email with your Blotato login. Cancel any time from the billing page; renewals stop immediately.
+              Charged today. We'll help you connect your social accounts within 1 business day &mdash; you'll get an email with your next steps. Cancel any time from the billing page; renewals stop immediately.
             </p>
           </div>
         </div>

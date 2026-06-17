@@ -30,8 +30,12 @@ Route::post('/api/contact', [SupportChatController::class, 'contact'])
 // Terms, and the PDPA requires a reachable privacy notice.
 Route::view('/privacy', 'legal.privacy')->name('legal.privacy');
 Route::view('/terms', 'legal.terms')->name('legal.terms');
+Route::view('/acceptable-use', 'legal.acceptable-use')->name('legal.acceptable-use');
+Route::view('/ai-disclaimer', 'legal.ai-disclaimer')->name('legal.ai-disclaimer');
+Route::view('/dpa', 'legal.dpa')->name('legal.dpa');
 Route::view('/security', 'legal.security')->name('legal.security');
 Route::view('/changelog', 'legal.changelog')->name('legal.changelog');
+Route::view('/legal', 'legal.index')->name('legal.index');
 
 Route::redirect('/login', '/agency/login')->name('login');
 

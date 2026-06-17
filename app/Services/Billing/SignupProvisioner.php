@@ -6,6 +6,7 @@ use App\Mail\WelcomeWithCredentials;
 use App\Models\User;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
+use App\Support\Legal\LegalDocuments;
 use App\Support\MailTransport;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -82,6 +83,12 @@ class SignupProvisioner
         $workspaceName = $metadata['workspace_name'] ?? null;
         $plan = $metadata['plan'] ?? 'solo';
 
+        // Legal version the customer accepted at checkout. Falls back to the
+        // current version for legacy sessions created before this field existed
+        // (stamping the live version keeps the gate closed-correct — the worst
+        // case is the customer sees the one-time acceptance wall in-app).
+        $legalVersion = $metadata['legal_version'] ?? LegalDocuments::version();
+
         if (! $email || ! $name || ! $workspaceName) {
             Log::error('SignupProvisioner: missing checkout metadata', [
                 'session_id' => $session->id ?? null,
@@ -99,12 +106,25 @@ class SignupProvisioner
         $tempPassword = Str::password(12, symbols: false);
 
         try {
-            [$user, $workspace] = DB::transaction(function () use ($email, $name, $workspaceName, $plan, $tempPassword, $session, $subscription) {
+            [$user, $workspace] = DB::transaction(function () use ($email, $name, $workspaceName, $plan, $tempPassword, $session, $subscription, $legalVersion) {
                 $user = User::create([
                     'name' => $name,
                     'email' => $email,
                     'password' => Hash::make($tempPassword),
                 ]);
+
+                // Stamp the mandatory legal acceptance the customer gave on the
+                // signup form, inside this transaction so it commits atomically
+                // with the account. IP/user-agent are null on the webhook
+                // safety-net path (no HTTP request there); 'signup' is the
+                // source either way. A stamped user never sees the in-app
+                // acceptance wall.
+                $user->recordLegalAcceptance(
+                    version: $legalVersion,
+                    ip: app()->runningInConsole() ? null : request()->ip(),
+                    ua: app()->runningInConsole() ? null : request()->userAgent(),
+                    source: 'signup',
+                );
 
                 $slug = Str::slug($workspaceName);
                 if (Workspace::where('slug', $slug)->exists()) {

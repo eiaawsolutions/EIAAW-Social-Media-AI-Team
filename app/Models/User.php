@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\Legal\LegalDocuments;
 use Filament\Auth\MultiFactor\App\Contracts\HasAppAuthentication;
 use Filament\Auth\MultiFactor\App\Contracts\HasAppAuthenticationRecovery;
 use Filament\Models\Contracts\FilamentUser;
@@ -52,6 +53,7 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
             'is_super_admin' => 'boolean',
             'two_factor_confirmed_at' => 'datetime',
             'last_login_at' => 'datetime',
+            'legal_accepted_at' => 'datetime',
 
             // TOTP shared secret + recovery codes are bearer credentials —
             // anyone holding the secret can mint a valid 2FA code forever.
@@ -85,6 +87,60 @@ class User extends Authenticatable implements FilamentUser, HasAppAuthentication
         return WorkspaceMember::where('workspace_id', $workspace->id)
             ->where('user_id', $this->id)
             ->first();
+    }
+
+    /* ─────────────────────────────────────────────────────────────────
+     |  Legal acceptance — mandatory, version-gated acknowledgement.
+     |
+     |  The denormalized columns (legal_accepted_version / legal_accepted_at)
+     |  are the fast gate check; the legal_acceptances rows are the append-only
+     |  audit trail. Both are written together by recordLegalAcceptance().
+     |
+     |  Neither column is in $fillable — they are written ONLY via forceFill in
+     |  recordLegalAcceptance(), never from arbitrary form input (same discipline
+     |  as is_super_admin / the 2FA secrets above).
+     ───────────────────────────────────────────────────────────────── */
+
+    public function legalAcceptances(): HasMany
+    {
+        return $this->hasMany(LegalAcceptance::class);
+    }
+
+    /**
+     * True when this user has accepted the CURRENT legal version. The gate lets
+     * them through iff this is true.
+     */
+    public function hasAcceptedCurrentLegal(): bool
+    {
+        return $this->legal_accepted_version === LegalDocuments::version();
+    }
+
+    /**
+     * Record an affirmative acceptance: append one immutable audit row AND
+     * refresh the denormalized cache columns the gate reads.
+     *
+     * Safe to call from inside an enclosing DB::transaction (the signup
+     * provisioner and Filament Register both do) — the two writes then commit
+     * atomically with the surrounding account creation.
+     *
+     * IP / user-agent are nullable on purpose: the Stripe webhook safety-net
+     * path provisions without an HTTP request and passes null for both.
+     */
+    public function recordLegalAcceptance(string $version, ?string $ip, ?string $ua, string $source): void
+    {
+        $this->legalAcceptances()->create([
+            'document_version' => $version,
+            'accepted_at' => now(),
+            'ip_address' => $ip,
+            'user_agent' => $ua !== null ? substr($ua, 0, 512) : null,
+            'documents_json' => LegalDocuments::manifest(),
+            'source' => $source,
+        ]);
+
+        $this->forceFill([
+            'legal_accepted_version' => $version,
+            'legal_accepted_at' => now(),
+        ])->save();
     }
 
     /**

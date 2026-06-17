@@ -6,7 +6,9 @@ use App\Http\Controllers\SignupController;
 use App\Models\User;
 use App\Models\Workspace;
 use App\Models\WorkspaceMember;
+use App\Support\Legal\LegalDocuments;
 use Filament\Auth\Pages\Register as BaseRegister;
+use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Components\Component;
 use Filament\Schemas\Schema;
@@ -34,7 +36,17 @@ class Register extends BaseRegister
                 $this->getEmailFormComponent(),
                 $this->getPasswordFormComponent(),
                 $this->getPasswordConfirmationFormComponent(),
+                $this->getLegalAcceptanceFormComponent(),
             ]);
+    }
+
+    protected function getLegalAcceptanceFormComponent(): Component
+    {
+        return Checkbox::make('accept_terms')
+            ->label('I have read and agree to the Terms of Service, Acceptable Use Policy, AI Content Disclaimer, and Privacy Policy.')
+            ->accepted()
+            ->required()
+            ->dehydrated(false); // Not a users column — consumed in handleRegistration.
     }
 
     protected function getWorkspaceNameFormComponent(): Component
@@ -59,8 +71,11 @@ class Register extends BaseRegister
 
         $workspaceName = $data['workspace_name'] ?? $data['name'];
 
-        // Strip the workspace_name field — it's not a column on users.
-        $userData = collect($data)->except(['workspace_name'])->all();
+        // Strip non-column fields before User::create. workspace_name and
+        // accept_terms are not columns on users (accept_terms is also
+        // dehydrated(false), so it normally won't be present — excepted here
+        // defensively).
+        $userData = collect($data)->except(['workspace_name', 'accept_terms'])->all();
 
         /** @var User $user */
         $user = $this->getUserModel()::create($userData);
@@ -98,6 +113,16 @@ class Register extends BaseRegister
         ]);
 
         $user->forceFill(['current_workspace_id' => $workspace->id])->save();
+
+        // Record the mandatory legal acceptance (the form's required, accepted()
+        // checkbox gates submission). Inside Filament's wrapInDatabaseTransaction,
+        // so it commits atomically with the user/workspace.
+        $user->recordLegalAcceptance(
+            version: LegalDocuments::version(),
+            ip: request()->ip(),
+            ua: request()->userAgent(),
+            source: 'register',
+        );
 
         // Plan was consumed — clear it so a logged-in user navigating
         // around doesn't carry a stale plan into a future second account.
