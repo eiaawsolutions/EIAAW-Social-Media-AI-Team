@@ -59,7 +59,7 @@
 
             <div class="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
                 <x-filament::button
-                    wire:click="accept"
+                    wire:click="submit"
                     wire:loading.attr="disabled"
                     :disabled="! $accept"
                     color="primary"

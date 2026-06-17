@@ -99,6 +99,36 @@ class LegalAcceptanceWiringTest extends TestCase
         $this->assertStringContainsString('if (! $this->accept)', $page);
     }
 
+    /**
+     * Regression: the "I agree" button did nothing because the action method and
+     * the checkbox-bound property shared the name "accept". Livewire resolves a
+     * wire:click against the PROPERTY of the same name first, so the method never
+     * ran. The button's wire:click action must NOT name a public property.
+     */
+    public function test_acceptance_buttons_wire_click_is_not_a_property_name(): void
+    {
+        $blade = self::read('resources/views/filament/agency/pages/legal-acceptance.blade.php');
+
+        $this->assertSame(
+            1,
+            preg_match('/wire:click="([a-zA-Z_]\w*)"/', $blade, $m),
+            'The acceptance page must have exactly one wire:click action button.'
+        );
+        $action = $m[1];
+
+        // The checkbox binds the "accept" property — the action must differ from it
+        // and from any public property declared on the page class.
+        $page = self::read('app/Filament/Agency/Pages/LegalAcceptance.php');
+        preg_match_all('/public\s+(?:\??\w+\s+)?\$(\w+)/', $page, $props);
+
+        $this->assertNotContains(
+            $action,
+            $props[1],
+            "wire:click=\"{$action}\" collides with a public property of the same name; "
+                . 'Livewire resolves the property first and the action never fires.'
+        );
+    }
+
     public function test_register_fallback_requires_and_records_acceptance(): void
     {
         $register = self::read('app/Filament/Agency/Auth/Register.php');
