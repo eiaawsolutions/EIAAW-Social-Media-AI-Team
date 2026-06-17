@@ -129,6 +129,32 @@ class LegalAcceptanceWiringTest extends TestCase
         );
     }
 
+    /**
+     * Regression: the page surfaced Filament's generic "Error while loading
+     * page" toast because mount() and the wire:click action RETURNED a
+     * RedirectResponse. Livewire discards a value returned from mount(), and a
+     * Livewire action must hand back a JSON snapshot, not an HTTP redirect — the
+     * framework-native way to navigate is $this->redirect(). Lock that in: the
+     * Livewire page must redirect via $this->redirect(...) and must not return a
+     * raw redirect() response from its lifecycle/action methods.
+     */
+    public function test_acceptance_page_redirects_the_livewire_native_way(): void
+    {
+        $page = self::read('app/Filament/Agency/Pages/LegalAcceptance.php');
+
+        $this->assertStringContainsString(
+            '$this->redirect(',
+            $page,
+            'The page must navigate via Livewire\'s $this->redirect(), not a returned RedirectResponse.'
+        );
+        $this->assertDoesNotMatchRegularExpression(
+            '/\breturn\s+redirect\s*\(/',
+            $page,
+            'Returning redirect() from a Livewire mount()/action triggers the '
+                . '"Error while loading page" toast; use $this->redirect() instead.'
+        );
+    }
+
     public function test_register_fallback_requires_and_records_acceptance(): void
     {
         $register = self::read('app/Filament/Agency/Auth/Register.php');

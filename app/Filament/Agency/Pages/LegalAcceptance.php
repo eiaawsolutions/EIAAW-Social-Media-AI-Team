@@ -5,7 +5,6 @@ namespace App\Filament\Agency\Pages;
 use App\Support\Legal\LegalDocuments;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
-use Illuminate\Http\RedirectResponse;
 
 /**
  * Mandatory legal-acceptance wall. The EnforceLegalAcceptance middleware
@@ -39,21 +38,24 @@ class LegalAcceptance extends Page
     /** True when the user previously accepted an older version (re-acceptance). */
     public bool $isReacceptance = false;
 
-    public function mount(): RedirectResponse|null
+    public function mount(): void
     {
         $user = auth()->user();
 
         // If they're already current (e.g. accepted in another tab, or hit the
-        // URL directly), don't show the wall.
+        // URL directly), don't show the wall. Use Livewire's own redirect()
+        // (not a returned RedirectResponse): on the initial full-page GET it
+        // aborts into a real HTTP redirect, and Livewire DISCARDS a value
+        // returned from mount() anyway, so returning one is a silent no-op.
         if ($user && $user->hasAcceptedCurrentLegal()) {
-            return redirect('/agency');
+            $this->redirect('/agency');
+
+            return;
         }
 
         $this->documents = LegalDocuments::documents();
         $this->changeNote = LegalDocuments::changeNote();
         $this->isReacceptance = $user?->legal_accepted_version !== null;
-
-        return null;
     }
 
     /**
@@ -61,7 +63,7 @@ class LegalAcceptance extends Page
      * server-side so a tampered client can't accept on the user's behalf with
      * the box unticked.
      */
-    public function submit(): RedirectResponse|null
+    public function submit(): void
     {
         if (! $this->accept) {
             Notification::make()
@@ -69,12 +71,14 @@ class LegalAcceptance extends Page
                 ->danger()
                 ->send();
 
-            return null;
+            return;
         }
 
         $user = auth()->user();
         if (! $user) {
-            return redirect('/agency/login');
+            $this->redirect('/agency/login');
+
+            return;
         }
 
         $user->recordLegalAcceptance(
@@ -84,6 +88,11 @@ class LegalAcceptance extends Page
             source: 'panel',
         );
 
-        return redirect('/agency');
+        // Livewire's redirect() emits a client-side redirect effect on the
+        // wire:click roundtrip. Returning a RedirectResponse from a Livewire
+        // action instead is the pattern that surfaces Filament's generic
+        // "Error while loading page" toast, because the action response is
+        // expected to be a Livewire JSON snapshot, not an HTTP redirect.
+        $this->redirect('/agency');
     }
 }
