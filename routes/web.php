@@ -34,7 +34,9 @@ Route::view('/acceptable-use', 'legal.acceptable-use')->name('legal.acceptable-u
 Route::view('/ai-disclaimer', 'legal.ai-disclaimer')->name('legal.ai-disclaimer');
 Route::view('/dpa', 'legal.dpa')->name('legal.dpa');
 Route::view('/security', 'legal.security')->name('legal.security');
-Route::view('/changelog', 'legal.changelog')->name('legal.changelog');
+// Changelog hidden from all users (route disabled). View + CHANGELOG.md kept
+// on disk; re-enable by uncommenting and restoring the footer link.
+// Route::view('/changelog', 'legal.changelog')->name('legal.changelog');
 Route::view('/legal', 'legal.index')->name('legal.index');
 
 Route::redirect('/login', '/agency/login')->name('login');
