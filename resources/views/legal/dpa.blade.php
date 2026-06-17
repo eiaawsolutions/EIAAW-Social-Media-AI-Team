@@ -42,7 +42,7 @@
 
   <h2>4. Sub-processors</h2>
   <p>
-    You authorise us to engage sub-processors to deliver the service. Our current sub-processors are listed in our <a href="/privacy">Privacy Policy</a> (including Anthropic, FAL.AI, Stripe, Blotato, and our cloud-hosting and email providers). We impose data-protection obligations on each sub-processor that are no less protective than those in this DPA, and we remain responsible for their performance. We will give reasonable notice of any new sub-processor so you may object on reasonable data-protection grounds.
+    You authorise us to engage sub-processors to deliver the service. Our current sub-processors are listed in our <a href="/privacy">Privacy Policy</a> (including Anthropic, FAL.AI, Stripe, Metricool, Blotato, and our cloud-hosting and email providers). We impose data-protection obligations on each sub-processor that are no less protective than those in this DPA, and we remain responsible for their performance. We will give reasonable notice of any new sub-processor so you may object on reasonable data-protection grounds.
   </p>
 
   <h2>5. Data-subject requests</h2>

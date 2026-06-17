@@ -34,8 +34,8 @@
         <a class="eiaaw-auth-card-metric">→ engagement 4.2× baseline</a>
       </div>
       <div class="eiaaw-auth-card-chips">
-        <span class="chip">VOICE 0.91 / 0.85</span>
-        <span class="chip">COMPLIANCE 5/5</span>
+        <span class="chip">VOICE 0.91 / 0.70</span>
+        <span class="chip">COMPLIANCE 8/8</span>
       </div>
       <footer class="eiaaw-auth-card-foot">
         WRITER · CLAUDE-SONNET-4-6 · 0.041 USD

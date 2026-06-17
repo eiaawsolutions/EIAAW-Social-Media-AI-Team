@@ -94,7 +94,7 @@ class ComplianceAgent extends BaseAgent
         // publish (missing media on IG/TikTok/YouTube, missing pageId on
         // Facebook Page, caption over cap, etc), there's no point spending
         // LLM tokens on brand-voice or factual-grounding checks. The gate
-        // still runs all 7 checks though so the operator sees every problem
+        // still runs all 8 checks though so the operator sees every problem
         // on one screen instead of a dribble of one-at-a-time fails.
         //
         // learned_rule_match runs second: this is the memory layer that

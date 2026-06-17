@@ -23,7 +23,7 @@
   <h2>Tenant &amp; brand isolation</h2>
   <ul>
     <li>Each workspace is isolated. Brand evidence, drafts, and receipts belong to a single workspace and are not shared across customers.</li>
-    <li>Every workspace gets its <strong>own dedicated Blotato publishing account</strong> — connected social tokens are never pooled across customers.</li>
+    <li>Connected social tokens are <strong>isolated per workspace and brand</strong> — never pooled or cross-shared between customers.</li>
     <li>Authorization is enforced on every request, not just in the UI, to prevent cross-tenant access.</li>
   </ul>
 
@@ -38,7 +38,7 @@
 
   <h2>AI safety controls</h2>
   <ul>
-    <li>A hard <strong>Compliance gate</strong> runs seven checks on every post before it can reach the publishing queue — off-brand or unverified content is held with the reason shown.</li>
+    <li>A hard <strong>Compliance gate</strong> runs eight checks on every post before it can reach the publishing queue — off-brand or unverified content is held with the reason shown.</li>
     <li>Cost circuit breakers and per-plan caps prevent runaway generation spend.</li>
     <li>AI-generated media is flagged for honest disclosure under platform synthetic-media policies.</li>
   </ul>

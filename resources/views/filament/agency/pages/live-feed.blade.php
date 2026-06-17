@@ -374,7 +374,7 @@
             <div class="lf-empty">
                 <h3>No live posts yet.</h3>
                 <p>
-                    Once a scheduled post publishes via Blotato, it appears here. Schedule a draft from
+                    Once a scheduled post publishes, it appears here. Schedule a draft from
                     <strong>/agency/drafts</strong> and the cron worker handles the rest.
                 </p>
             </div>
@@ -397,9 +397,9 @@
                         $stampLocal = $stamp?->copy()->setTimezone($tz);
                         $clickHref = $isPublishing ? null : $this->clickUrl($post);
                         $hasUrl = ! empty($clickHref);
-                        // Published row but no verified permalink — Blotato
-                        // hasn't confirmed platform-side delivery yet. Show
-                        // it but don't pretend the click goes anywhere.
+                        // Published row but no verified permalink — the
+                        // platform hasn't confirmed delivery yet. Show it
+                        // but don't pretend the click goes anywhere.
                         $isUnverified = ! $isPublishing && ! $hasUrl;
                         $cardDisabled = $isPublishing || $isUnverified;
                     @endphp
@@ -541,7 +541,7 @@
                                 @if ($isPublishing)
                                     <span class="lf-publishing-pill">publishing</span>
                                 @elseif ($isUnverified)
-                                    <span class="lf-unverified-pill" title="Awaiting platform confirmation — Blotato has not returned a permalink yet">unverified</span>
+                                    <span class="lf-unverified-pill" title="Awaiting platform confirmation of the post — no permalink returned yet">unverified</span>
                                 @else
                                     <span>{{ $hasUrl ? 'view live →' : '' }}</span>
                                 @endif
