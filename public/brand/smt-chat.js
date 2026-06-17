@@ -22,7 +22,19 @@
   const SURFACE = (SELF && SELF.dataset.surface) || 'landing';
   const CHAT_URL = (SELF && SELF.dataset.chatUrl) || '/api/chatbot';
   const CONTACT_URL = (SELF && SELF.dataset.contactUrl) || '/api/contact';
+  const IDENTIFY_URL = (SELF && SELF.dataset.identifyUrl) || '/api/chatbot/identify';
   const CSRF = (SELF && SELF.dataset.csrf) || '';
+  // Prefilled when the visitor is logged in (panels emit these); blank on public
+  // pages. Name/email are pre-populated for convenience — phone is still required.
+  const USER_NAME = (SELF && SELF.dataset.userName) || '';
+  const USER_EMAIL = (SELF && SELF.dataset.userEmail) || '';
+
+  // Contact gate: before the AI answers ANYTHING, we collect name + email +
+  // phone (company optional). Persisted in sessionStorage so we only ask once
+  // per browsing session (a new tab / new visit asks again — correct for a
+  // lead-capture gate). "Talk to us" and "Subscribe" stay open before the gate.
+  let gatePassed = false;
+  try { gatePassed = sessionStorage.getItem('smtGatePassed') === '1'; } catch (e) { /* private mode */ }
 
   const COPY = {
     landing: {
@@ -246,8 +258,119 @@
       handleUserMessage(v);
     });
 
+    if (gatePassed) {
+      startConversation();
+    } else {
+      renderGate();
+    }
+  }
+
+  // Reveal the normal chat (input + quick replies) and post the greeting. Called
+  // once the gate is satisfied, or straight away if it was already passed.
+  function startConversation() {
+    showChatControls(true);
     addBotMessage(C.greeting);
     renderQuickReplies(C.quick);
+  }
+
+  function showChatControls(show) {
+    const form = document.getElementById('smt-chat-form');
+    const quick = document.getElementById('smt-chat-quick');
+    if (form) form.style.display = show ? '' : 'none';
+    if (quick) quick.style.display = show ? '' : 'none';
+  }
+
+  // ---------- Contact gate: name + email + phone before the AI answers ----------
+  function renderGate() {
+    showChatControls(false);
+    const msgs = document.getElementById('smt-chat-msgs');
+    if (!msgs || document.getElementById('smt-gate')) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'smt-gate';
+    wrap.className = 'smt-gate';
+    wrap.innerHTML = `
+      <span class="smt-eyebrow">Before we start</span>
+      <p class="smt-gate-lead">Tell me who I'm chatting with and I'll help right away.</p>
+      <div class="smt-field">
+        <label for="smt-gate-name">Name</label>
+        <input id="smt-gate-name" type="text" autocomplete="name" maxlength="120" required>
+      </div>
+      <div class="smt-field">
+        <label for="smt-gate-email">Email</label>
+        <input id="smt-gate-email" type="email" autocomplete="email" maxlength="160" required>
+      </div>
+      <div class="smt-row">
+        <div class="smt-field">
+          <label for="smt-gate-phone">Phone</label>
+          <input id="smt-gate-phone" type="tel" autocomplete="tel" maxlength="40" required>
+        </div>
+        <div class="smt-field">
+          <label for="smt-gate-company">Company <small>(optional)</small></label>
+          <input id="smt-gate-company" type="text" autocomplete="organization" maxlength="160">
+        </div>
+      </div>
+      <div class="smt-modal-err" id="smt-gate-err" hidden></div>
+      <button type="button" class="smt-btn smt-btn-primary" id="smt-gate-submit">Start chat &rarr;</button>`;
+    msgs.appendChild(wrap);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    const nameEl = wrap.querySelector('#smt-gate-name');
+    const emailEl = wrap.querySelector('#smt-gate-email');
+    if (USER_NAME) nameEl.value = USER_NAME;
+    if (USER_EMAIL) emailEl.value = USER_EMAIL;
+
+    wrap.querySelector('#smt-gate-submit').addEventListener('click', submitGate);
+    setTimeout(() => (USER_NAME ? wrap.querySelector('#smt-gate-phone') : nameEl).focus(), 30);
+  }
+
+  async function submitGate() {
+    const wrap = document.getElementById('smt-gate');
+    if (!wrap) return;
+    const name = wrap.querySelector('#smt-gate-name').value.trim();
+    const email = wrap.querySelector('#smt-gate-email').value.trim();
+    const phone = wrap.querySelector('#smt-gate-phone').value.trim();
+    const company = wrap.querySelector('#smt-gate-company').value.trim();
+    const errEl = wrap.querySelector('#smt-gate-err');
+    const btn = wrap.querySelector('#smt-gate-submit');
+
+    if (!name || !email || !phone) {
+      errEl.textContent = 'Please add your name, email, and phone to continue.';
+      errEl.hidden = false;
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errEl.textContent = 'Please enter a valid email address.';
+      errEl.hidden = false;
+      return;
+    }
+    errEl.hidden = true;
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    try {
+      const res = await fetch(IDENTIFY_URL, {
+        method: 'POST',
+        headers: postHeaders(),
+        body: JSON.stringify({ name, email, phone, company, surface: SURFACE }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        errEl.textContent = data.error || 'Something went wrong. Please try again, or use "Talk to us".';
+        errEl.hidden = false;
+        btn.disabled = false;
+        btn.innerHTML = 'Start chat &rarr;';
+        return;
+      }
+    } catch (e) {
+      errEl.textContent = 'Connection issue. Please try again, or email eiaawsolutions@gmail.com.';
+      errEl.hidden = false;
+      btn.disabled = false;
+      btn.innerHTML = 'Start chat &rarr;';
+      return;
+    }
+    gatePassed = true;
+    try { sessionStorage.setItem('smtGatePassed', '1'); } catch (e) { /* private mode */ }
+    wrap.remove();
+    startConversation();
   }
 
   function addBotMessage(text) {
@@ -299,6 +422,16 @@
   }
 
   async function handleUserMessage(text) {
+    // Hard gate: the AI never answers until name + email + phone are captured.
+    // Quick-reply "msg" chips route through here too, so they're covered. The
+    // "Talk to us" form and "Subscribe" actions are handled separately and stay
+    // available before the gate.
+    if (!gatePassed) {
+      renderGate();
+      const wrap = document.getElementById('smt-gate');
+      if (wrap) wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
     addUserMessage(text);
     addTyping();
     try {

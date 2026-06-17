@@ -11,7 +11,10 @@ use Illuminate\Mail\Mailables\Envelope;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * HQ notification for a new "Talk to us" enquiry from the floating chatbot.
+ * HQ notification for a new lead from the floating chatbot — either a "Talk to
+ * us" enquiry (kind='enquiry') or a contact-gate capture taken before the AI
+ * answers (kind='chat_gate'). The subject is labelled so HQ can triage from the
+ * inbox without opening it.
  *
  * The lead is already persisted to support_enquiries before this is sent — the
  * email is the push notification, the table is the source of truth. Mailer is
@@ -38,10 +41,15 @@ class SupportEnquiryReceived extends Mailable
             default => 'landing page',
         };
 
+        // Label the subject by how the lead was captured so HQ can triage from
+        // the inbox: a chat-gate contact (they wanted the AI) reads differently
+        // from a deliberate "Talk to us" enquiry.
+        $lead = $this->enquiry->kind === 'chat_gate' ? 'chat-gate contact' : 'enquiry';
+
         return new Envelope(
             from: new Address($fromAddress, $fromName),
             replyTo: [new Address($this->enquiry->email, $this->enquiry->name)],
-            subject: sprintf('New SMT enquiry from %s (%s)', $this->enquiry->name, $surfaceLabel),
+            subject: sprintf('New SMT %s from %s (%s)', $lead, $this->enquiry->name, $surfaceLabel),
         );
     }
 

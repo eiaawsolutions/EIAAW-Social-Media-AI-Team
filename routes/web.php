@@ -24,6 +24,13 @@ Route::post('/api/contact', [SupportChatController::class, 'contact'])
     ->middleware('throttle:6,1')
     ->name('support.contact');
 
+// Contact gate: name + email + phone collected before the AI answers anything.
+// Same public + CSRF-exempt shape as the others (CSRF exemption in
+// bootstrap/app.php); tight write-throttle — it only inserts a lead + notifies.
+Route::post('/api/chatbot/identify', [SupportChatController::class, 'identify'])
+    ->middleware('throttle:6,1')
+    ->name('support.identify');
+
 // Static info / legal pages linked from the site footer. Plain view routes
 // (no controller) — content is fully static so there is nothing to compute.
 // These MUST exist: a paid SaaS with Stripe billing cannot 404 on Privacy /

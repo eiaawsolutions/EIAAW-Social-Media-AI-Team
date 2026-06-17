@@ -12,6 +12,7 @@
     $smtSurface = $surface ?? 'landing';
     $smtCssVer = @filemtime(public_path('brand/smt-chat.css')) ?: '1';
     $smtJsVer = @filemtime(public_path('brand/smt-chat.js')) ?: '1';
+    $smtUser = auth()->user();
 @endphp
 <link rel="stylesheet" href="{{ asset('brand/smt-chat.css') }}?v={{ $smtCssVer }}">
 <script
@@ -19,5 +20,10 @@
     data-surface="{{ $smtSurface }}"
     data-chat-url="{{ url('/api/chatbot') }}"
     data-contact-url="{{ url('/api/contact') }}"
+    data-identify-url="{{ url('/api/chatbot/identify') }}"
+    @if ($smtUser)
+        data-user-name="{{ $smtUser->name }}"
+        data-user-email="{{ $smtUser->email }}"
+    @endif
     data-csrf="{{ $smtSurface === 'landing' ? '' : csrf_token() }}"
     defer></script>

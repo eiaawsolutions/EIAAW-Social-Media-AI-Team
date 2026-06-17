@@ -69,6 +69,17 @@ class SupportEnquiryResource extends Resource
                     ->placeholder('—')
                     ->color('gray')
                     ->toggleable(isToggledHiddenByDefault: true),
+                Tables\Columns\TextColumn::make('kind')
+                    ->label('Source')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state) => [
+                        'chat_gate' => 'Chat gate',
+                        'enquiry' => 'Enquiry',
+                    ][$state] ?? $state)
+                    ->color(fn (string $state) => match ($state) {
+                        'chat_gate' => 'warning',
+                        default => 'gray',
+                    }),
                 Tables\Columns\TextColumn::make('surface')
                     ->badge()
                     ->formatStateUsing(fn (string $state) => [
@@ -99,6 +110,10 @@ class SupportEnquiryResource extends Resource
                     'new' => 'New',
                     'contacted' => 'Contacted',
                     'closed' => 'Closed',
+                ]),
+                Tables\Filters\SelectFilter::make('kind')->label('Source')->options([
+                    'enquiry' => 'Enquiry',
+                    'chat_gate' => 'Chat gate',
                 ]),
                 Tables\Filters\SelectFilter::make('surface')->options([
                     'landing' => 'Landing page',

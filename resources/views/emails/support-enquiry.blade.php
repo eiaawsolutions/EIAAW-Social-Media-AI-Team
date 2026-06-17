@@ -8,9 +8,10 @@
     <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="background:#ffffff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.05); padding:32px;">
         <tr>
             <td>
-                <p style="margin:0 0 4px; font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.12em; text-transform:uppercase; color:#11766A;">New website enquiry</p>
+                @php($isGate = $enquiry->kind === 'chat_gate')
+                <p style="margin:0 0 4px; font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.12em; text-transform:uppercase; color:#11766A;">{{ $isGate ? 'New chat-gate contact' : 'New website enquiry' }}</p>
                 <h1 style="margin:0 0 16px; font-size:20px; line-height:1.3; font-weight:600;">
-                    {{ $enquiry->name }} wants to talk
+                    {{ $isGate ? $enquiry->name . ' started a chat' : $enquiry->name . ' wants to talk' }}
                 </h1>
 
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="font-size:14px; color:#0f172a;">
@@ -33,6 +34,10 @@
                     <tr>
                         <td style="padding:6px 0; color:#64748b; vertical-align:top;">Source</td>
                         <td style="padding:6px 0;">{{ ['landing' => 'Landing page', 'client' => 'Client panel', 'hq' => 'HQ panel'][$enquiry->surface] ?? $enquiry->surface }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:6px 0; color:#64748b; vertical-align:top;">Type</td>
+                        <td style="padding:6px 0;">{{ $isGate ? 'Chat gate (collected before AI reply)' : 'Talk to us enquiry' }}</td>
                     </tr>
                 </table>
 

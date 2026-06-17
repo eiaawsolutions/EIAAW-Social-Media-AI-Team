@@ -13,7 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class SupportEnquiry extends Model
 {
     protected $fillable = [
-        'workspace_id', 'user_id', 'surface',
+        'workspace_id', 'user_id', 'surface', 'kind',
         'name', 'email', 'phone', 'company', 'message',
         'ip_hash', 'user_agent', 'referer',
         'status', 'handled_at',

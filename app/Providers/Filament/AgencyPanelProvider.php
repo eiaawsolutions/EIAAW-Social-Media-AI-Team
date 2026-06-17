@@ -146,10 +146,13 @@ class AgencyPanelProvider extends PanelProvider
                 PanelsRenderHook::AUTH_PASSWORD_RESET_RESET_FORM_BEFORE,
                 fn (): string => view('filament.agency.auth.return-link')->render(),
             )
-            // Floating support chatbot — client surface (guide-steps + enquiry).
-            // Body-end so it floats over every dashboard page for the logged-in
-            // customer. NOT scoped to auth screens (a prospect on the login page
-            // doesn't need the in-app guide; the landing widget covers them).
+            // Floating support chatbot, body-end so it floats over EVERY page in
+            // this panel — the authenticated dashboard AND the public auth screens
+            // (login / password reset), which is part of the "chatbot on all pages"
+            // requirement. Surface hint is 'client'; the controller re-derives and
+            // clamps it to 'landing' for a logged-out caller (resolveSurface()), so
+            // a prospect on the login page correctly gets the public mode, and the
+            // widget loader only prefills name/email when auth()->user() exists.
             ->renderHook(
                 PanelsRenderHook::BODY_END,
                 fn (): string => Blade::render("@include('partials.smt-chat-widget', ['surface' => 'client'])"),

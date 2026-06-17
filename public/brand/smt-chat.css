@@ -139,6 +139,16 @@
 .smt-chat-bubble.typing span:nth-child(3) { animation-delay: 0.3s; }
 @keyframes smt-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
 
+/* Contact gate — rendered inside the message log before the AI can answer.
+   Reuses .smt-field / .smt-row / .smt-modal-err / .smt-btn-primary / .smt-eyebrow. */
+.smt-gate {
+  align-self: stretch; background: #fff; border: 1px solid var(--smt-line);
+  border-radius: 14px; padding: 16px;
+}
+.smt-gate-lead { margin: 8px 0 14px; font-size: 13px; line-height: 1.5; color: var(--smt-mute); }
+.smt-gate .smt-field { margin-bottom: 12px; }
+.smt-gate .smt-btn-primary { width: 100%; margin-top: 2px; }
+
 .smt-chat-quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 14px 8px; }
 .smt-chat-chip {
   padding: 7px 12px; border: 1px solid var(--smt-teal); background: transparent;

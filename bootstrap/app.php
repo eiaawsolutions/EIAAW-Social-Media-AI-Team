@@ -208,13 +208,14 @@ return Application::configure(basePath: dirname(__DIR__))
         // and the panel widgets reuse the same endpoints. Abuse is bounded by
         // tight per-IP rate limits (routes/web.php), input validation, and the
         // LlmGateway prompt-injection detector — not CSRF, which a logged-out
-        // visitor can't carry. No state is mutated by /api/chatbot; /api/contact
-        // only inserts a lead row + sends a notification.
+        // visitor can't carry. No state is mutated by /api/chatbot;
+        // /api/contact and /api/chatbot/identify only insert a lead row + notify.
         $middleware->validateCsrfTokens(except: [
             'stripe/webhook',
             'csp-report',
             'api/chatbot',
             'api/contact',
+            'api/chatbot/identify',
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
