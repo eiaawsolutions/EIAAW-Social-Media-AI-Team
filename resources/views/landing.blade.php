@@ -307,7 +307,7 @@
           Built by EIAAW Solutions <em>in Malaysia</em>, for SMBs who refuse to settle for AI slop.
         </h2>
         <p class="lead rvl" style="margin-top: 28px;">
-          We run this on our own brands first — EIAAW Workforce, Sales Marketing Agent, EIAAW AI ADS Agency, Claritas, SAINS CRM. If it doesn't deliver real results we measure ourselves, we don't ship it to you.
+          We run this on our own brands first — EIAAW Workforce, EIAAW AI Sales Agent, and EIAAW AI Ads Agency. If it doesn't deliver real results we measure ourselves, we don't ship it to you.
         </p>
         <div class="rvl" style="margin-top: 36px; display: flex; gap: 18px; flex-wrap: wrap;">
           <a href="{{ url('/signup') }}" class="btn btn-primary btn-lg">Start your subscription <span class="arrow">&rarr;</span></a>
