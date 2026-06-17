@@ -152,23 +152,46 @@ class SupportChatController extends Controller
         $surface = $this->resolveSurface(ChatbotPrompts::normaliseSurface($data['surface'] ?? null), $request);
         $user = $request->user();
 
-        $enquiry = SupportEnquiry::create([
-            'workspace_id' => $user?->current_workspace_id,
-            'user_id' => $user?->id,
-            'surface' => $surface,
-            'kind' => 'chat_gate',
-            'name' => trim($data['name']),
-            'email' => trim($data['email']),
-            'phone' => trim((string) $data['phone']),
-            'company' => trim((string) ($data['company'] ?? '')),
-            'message' => '[Chat gate] Visitor started an AI chat conversation.',
-            'ip_hash' => hash('sha256', (string) $request->ip()),
-            'user_agent' => substr((string) $request->userAgent(), 0, 255),
-            'referer' => substr((string) $request->headers->get('referer', ''), 0, 255),
-            'status' => 'new',
-        ]);
+        // SOFT-FAIL the persist: the gate's job is to capture the lead, but it
+        // must NEVER trap the visitor behind a 500 if the write fails (a DB blip,
+        // or the kind column not yet migrated during a deploy). If we can't store
+        // the lead we log the full submission so HQ can recover it (Lead Gen
+        // Contract: the evidence is never silently dropped) and still open the
+        // chat — a missed lead row is far less bad than a chatbot that "crashes".
+        try {
+            $enquiry = SupportEnquiry::create([
+                'workspace_id' => $user?->current_workspace_id,
+                'user_id' => $user?->id,
+                'surface' => $surface,
+                'kind' => 'chat_gate',
+                'name' => trim($data['name']),
+                'email' => trim($data['email']),
+                'phone' => trim((string) $data['phone']),
+                'company' => trim((string) ($data['company'] ?? '')),
+                'message' => '[Chat gate] Visitor started an AI chat conversation.',
+                'ip_hash' => hash('sha256', (string) $request->ip()),
+                'user_agent' => substr((string) $request->userAgent(), 0, 255),
+                'referer' => substr((string) $request->headers->get('referer', ''), 0, 255),
+                'status' => 'new',
+            ]);
 
-        $this->notifyHqOfEnquiry($enquiry);
+            $this->notifyHqOfEnquiry($enquiry);
+        } catch (\Throwable $e) {
+            Log::error('SupportChatController: chat-gate lead persist failed — recover from this log', [
+                'error' => $e->getMessage(),
+                // The submitted lead, so it is recoverable even though the row
+                // didn't write. Never fabricated — exactly what the visitor sent.
+                'lead' => [
+                    'name' => trim($data['name']),
+                    'email' => trim($data['email']),
+                    'phone' => trim((string) $data['phone']),
+                    'company' => trim((string) ($data['company'] ?? '')),
+                    'surface' => $surface,
+                    'workspace_id' => $user?->current_workspace_id,
+                    'user_id' => $user?->id,
+                ],
+            ]);
+        }
 
         return response()->json(['ok' => true]);
     }

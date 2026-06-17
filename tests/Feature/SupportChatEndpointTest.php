@@ -160,4 +160,47 @@ class SupportChatEndpointTest extends TestCase
             'chat(), contact() and identify() must each clamp the surface via resolveSurface().'
         );
     }
+
+    /**
+     * Regression: the contact gate must NEVER 500 the visitor (which bricks the
+     * chatbot) if the lead write fails — e.g. the kind column not yet migrated
+     * during a deploy, or a transient DB error. With the DB on a stale schema
+     * that lacks the kind column (the local throwaway state), a valid identify
+     * POST must still return 200 {ok:true}, soft-failing the persist so the gate
+     * opens. The lost lead is logged for recovery (asserted at source level).
+     */
+    public function test_identify_soft_fails_when_persist_throws_and_never_500s(): void
+    {
+        // Only meaningful when the running DB actually lacks the column (i.e. the
+        // migration hasn't been applied here). When it IS present the write
+        // succeeds and we'd hit the prod test-DB — skip to stay DB-write-free.
+        if (\Illuminate\Support\Facades\Schema::hasColumn('support_enquiries', 'kind')) {
+            $this->markTestSkipped('kind column present — persist would write a row; covered by the soft-fail source guard.');
+        }
+
+        $res = $this->postJson('/api/chatbot/identify', [
+            'name' => 'Resilience Test',
+            'email' => 'resilience@example.com',
+            'phone' => '+60123456789',
+            'surface' => 'landing',
+        ]);
+
+        $res->assertStatus(200);
+        $res->assertJson(['ok' => true]);
+    }
+
+    /**
+     * Source-level guard for the soft-fail contract (runs regardless of DB
+     * schema): identify() must wrap its persist in a try/catch and log a
+     * recoverable entry, so the gate degrades instead of trapping the visitor.
+     */
+    public function test_identify_persist_is_soft_failed_in_source(): void
+    {
+        $src = file_get_contents(app_path('Http/Controllers/SupportChatController.php'));
+        $identify = substr($src, strpos($src, 'public function identify('));
+        $identify = substr($identify, 0, strpos($identify, 'private function') ?: strlen($identify));
+
+        $this->assertStringContainsString('catch (\Throwable', $identify, 'identify() must catch persist failures.');
+        $this->assertStringContainsString('recover from this log', $identify, 'A failed gate lead must be logged for recovery (Lead Gen Contract).');
+    }
 }
