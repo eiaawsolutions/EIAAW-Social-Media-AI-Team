@@ -52,9 +52,12 @@ class BrandResource extends Resource
                     ->url()
                     ->placeholder('https://example.com')
                     ->helperText('We scrape this during onboarding to synthesise your brand voice.'),
-                Forms\Components\TextInput::make('industry')
-                    ->maxLength(80)
-                    ->placeholder('e.g. SaaS, Healthcare, F&B'),
+                Forms\Components\Select::make('industry')
+                    ->label('Industry')
+                    ->options(\App\Support\Compliance\IndustryCatalog::industries())
+                    ->searchable()
+                    ->required()
+                    ->helperText('We apply the advertising & industry laws for your business\'s country to every post based on this.'),
                 Forms\Components\Select::make('locale')
                     ->options([
                         'en' => 'English',

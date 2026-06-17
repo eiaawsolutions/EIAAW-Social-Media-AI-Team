@@ -8,6 +8,7 @@ use App\Models\BrandCorpusItem;
 use App\Models\CalendarEntry;
 use App\Models\Draft;
 use App\Models\GrowthStrategyBrief;
+use App\Services\Compliance\LegalRulesProvider;
 use App\Services\Embeddings\EmbeddingService;
 use App\Services\Llm\LlmGateway;
 use App\Services\Readiness\SetupReadiness;
@@ -393,6 +394,7 @@ class WriterAgent extends BaseAgent
         $creativeLines = $this->renderCreativeIntent($entry);
         $growthGuidance = $this->renderGrowthObjectiveGuidance($brand, $entry);
         $factsBlock = $this->renderBrandFacts($brand);
+        $legalBlock = $this->renderLegalRules($brand);
 
         $priorBody = (string) ($redraftContext['prior_body'] ?? '');
         $failures = $redraftContext['failures'] ?? [];
@@ -420,6 +422,7 @@ MODE: REDRAFT — your previous draft failed Compliance. Fix the listed violatio
 - If a "dedup" failure is listed, the prior draft was too similar to a published post — change the angle wording while keeping the topic.
 - If a "banned_phrase" failure is listed, rewrite the affected sentence without the banned phrase.
 - If an "embargo" failure is listed, drop or rephrase any reference to the embargoed topic for this draft.
+- If a "legal_compliance" failure is listed, the prior draft broke an advertising/industry law for this brand's jurisdiction. Rewrite the offending claim to comply with the legal rules below; if a claim cannot be made lawfully, REMOVE it.
 
 # Compliance failures to fix
 {$failureList}
@@ -436,13 +439,13 @@ PRIOR_DRAFT
 - Format: {$entry->format}
 - Objective: {$entry->objective}
 - Visual direction: {$entry->visual_direction}{$creativeLines}{$growthGuidance}
-{$researchBlock}{$factsBlock}# brand-style.md (single source of truth)
+{$researchBlock}{$factsBlock}{$legalBlock}# brand-style.md (single source of truth)
 {$brandStyleMd}
 
 # Top similar prior posts (for voice grounding — DO cite if your phrasing borrows from them)
 {$similarBlock}
 
-Now produce the fixed JSON object per the schema. Only write the JSON.
+Now produce the fixed JSON object per the schema. The fixed draft MUST NOT violate any legal rule above. Only write the JSON.
 MSG;
     }
 
@@ -458,6 +461,23 @@ MSG;
         return $block === '' ? '' : $block."\n\n";
     }
 
+    /**
+     * Legal & advertising-standards rules for this brand's industry +
+     * jurisdiction, rendered so the post is DRAFTED compliant (shift-left). Same
+     * suppression idiom as renderBrandFacts: empty string when no curated rules
+     * apply, with the trailing blank line added ONLY when there's content — so an
+     * un-curated brand's prompt stays byte-identical to the pre-feature version.
+     */
+    private function renderLegalRules(Brand $brand): string
+    {
+        $block = app(LegalRulesProvider::class)->promptDirectiveFor(
+            $brand->industryKey(),
+            $brand->primaryJurisdiction(),
+        );
+
+        return $block === '' ? '' : $block."\n";
+    }
+
     private function buildUserMessage(Brand $brand, string $brandStyleMd, CalendarEntry $entry, array $similar, string $platform): string
     {
         $similarBlock = $this->renderSimilarBlock($similar);
@@ -465,6 +485,7 @@ MSG;
         $creativeLines = $this->renderCreativeIntent($entry);
         $growthGuidance = $this->renderGrowthObjectiveGuidance($brand, $entry);
         $factsBlock = $this->renderBrandFacts($brand);
+        $legalBlock = $this->renderLegalRules($brand);
 
         return <<<MSG
 BRAND: {$brand->name}
@@ -477,13 +498,13 @@ PLATFORM: {$platform}
 - Format: {$entry->format}
 - Objective: {$entry->objective}
 - Visual direction: {$entry->visual_direction}{$creativeLines}{$growthGuidance}
-{$researchBlock}{$factsBlock}# brand-style.md (single source of truth)
+{$researchBlock}{$factsBlock}{$legalBlock}# brand-style.md (single source of truth)
 {$brandStyleMd}
 
 # Top similar prior posts (for voice grounding — DO cite if your phrasing borrows from them)
 {$similarBlock}
 
-Now draft the post per the schema. Only write the JSON object.
+Now draft the post per the schema. The draft MUST NOT violate any legal rule above — rewrite a claim rather than break a rule. Only write the JSON object.
 MSG;
     }
 

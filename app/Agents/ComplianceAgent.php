@@ -2,6 +2,7 @@
 
 namespace App\Agents;
 
+use App\Agents\Prompts\ComplianceLegalPrompt;
 use App\Agents\Prompts\ComplianceVoicePrompt;
 use App\Models\Brand;
 use App\Models\BrandCorpusItem;
@@ -11,6 +12,7 @@ use App\Models\Embargo;
 use App\Services\Blotato\PlatformRules;
 use App\Services\Compliance\LearnedRulesProvider;
 use App\Services\Compliance\LearnedRulesRecorder;
+use App\Services\Compliance\LegalRulesProvider;
 use App\Services\Llm\LlmGateway;
 use App\Services\Embeddings\EmbeddingService;
 use Illuminate\Support\Facades\DB;
@@ -18,26 +20,38 @@ use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 /**
- * The hard compliance gate. Runs 6 checks per draft. ANY failure → draft held.
+ * The hard compliance gate. Runs 8 checks per draft. ANY failure → draft held.
  *
  * Checks (in order — early exits skip later checks for speed):
  *   1. platform_publishability — deterministic Blotato + native-API rules
  *      (caption length, hashtag cap, required media, connection target_overrides).
  *      Runs FIRST so we never burn LLM tokens on a draft that physically can't
  *      publish. See App\Services\Blotato\PlatformRules.
- *   2. banned_phrase — bypass-impossible. Substring/regex match against brand's
+ *   2. learned_rule_match — memory layer grown from real prod rejections.
+ *   3. banned_phrase — bypass-impossible. Substring/regex match against brand's
  *      banned_phrases list. Score is 1 (no match) or 0 (match).
- *   3. embargo — date+keyword check. Score is 1 (no active matching embargo) or 0.
- *   4. dedup — semantic similarity vs prior published_posts. Score = 1 - max_similarity.
+ *   4. embargo — date+keyword check. Score is 1 (no active matching embargo) or 0.
+ *   5. dedup — semantic similarity vs prior published_posts. Score = 1 - max_similarity.
  *      Threshold 0.85 (anything ≥ 85% similar is held).
- *   5. brand_voice — LLM call to score voice match. Threshold 0.70.
- *   6. factual_grounding — every grounding_source the Writer claimed must
+ *   6. brand_voice — LLM call to score voice match. Threshold 0.70.
+ *   7. factual_grounding — every grounding_source the Writer claimed must
  *      reference a real row in brand_styles or brand_corpus. Score is the % of
  *      sources that resolve. Threshold 0.80.
+ *   8. legal_compliance — BACKSTOP. LLM-as-judge against the curated legal rules
+ *      for the brand's industry + jurisdiction (App\Services\Compliance\
+ *      LegalRulesProvider). The SAME rules are injected into the Strategist +
+ *      Writer prompts so posts are born compliant; this check catches the rare
+ *      slip and enforces rules added AFTER a calendar was planned. A clear
+ *      [MUST]-rule violation fails (threshold 0.80). When the brand has no
+ *      curated rules (industry unset / 'other' with no rules) it records a
+ *      non-blocking 'warning' rather than failing, so existing drafts aren't
+ *      retroactively held — the warning nudges the operator to set an industry.
  *
  * Each check writes a ComplianceCheck row. If ALL pass, the draft moves to
  * 'awaiting_approval' (or 'approved' if its lane is green). If ANY fails, the
  * draft moves to 'compliance_failed' with the reason recorded on the check row.
+ * A 'warning' result is NOT a fail (the gate's pass test is result === 'pass'
+ * for every row), so it surfaces without blocking — same as dedup's fail-open.
  */
 class ComplianceAgent extends BaseAgent
 {
@@ -46,6 +60,7 @@ class ComplianceAgent extends BaseAgent
     private const VOICE_THRESHOLD = 0.70;
     private const DEDUP_SIMILARITY_THRESHOLD = 0.85;
     private const FACTUAL_THRESHOLD = 0.80;
+    private const LEGAL_THRESHOLD = 0.80;
 
     public function __construct(
         LlmGateway $llm,
@@ -95,6 +110,7 @@ class ComplianceAgent extends BaseAgent
             $this->checkDedup($draft, $brand),
             $this->checkBrandVoice($draft, $brand),
             $this->checkFactualGrounding($draft, $brand),
+            $this->checkLegalCompliance($draft, $brand),
         ];
 
         $allPassed = collect($checks)->every(fn (ComplianceCheck $c) => $c->result === 'pass');
@@ -542,6 +558,121 @@ class ComplianceAgent extends BaseAgent
                 round($score * 100)
             ),
             'details' => ['claimed_sources' => count($sources), 'verified' => $verified],
+            'checked_at' => now(),
+        ]);
+    }
+
+    // ─── Check 6: legal compliance (LLM-as-judge — BACKSTOP) ──────────────
+    //
+    // The shift-left prevention (rules injected into Strategist + Writer) does
+    // the heavy lifting; this is the net. It judges the finished draft against
+    // the SAME curated rules for the brand's industry + jurisdiction and hard-
+    // fails a clear [MUST]-rule violation.
+    //
+    // No-rules case: a brand whose industry isn't curated (e.g. 'other', or an
+    // industry with no seeded rules for its jurisdiction beyond globals) and for
+    // which the provider returns nothing → we record a non-blocking 'warning'
+    // rather than failing. This avoids retroactively holding every existing
+    // draft the moment the feature ships, and the warning nudges the operator
+    // to set a recognised industry. (Global '*' ad-standards rules, once seeded,
+    // apply to every brand, so most drafts WILL get a real judged result.)
+
+    private function checkLegalCompliance(Draft $draft, Brand $brand): ComplianceCheck
+    {
+        $industry = $brand->industryKey();
+        $jurisdiction = $brand->primaryJurisdiction();
+
+        $provider = app(LegalRulesProvider::class);
+        $directive = $provider->promptDirectiveFor($industry, $jurisdiction);
+
+        if ($directive === '') {
+            // No curated rules apply — don't block, but make the gap visible.
+            return ComplianceCheck::create([
+                'draft_id' => $draft->id,
+                'brand_id' => $brand->id,
+                'check_type' => 'legal_compliance',
+                'result' => 'warning',
+                'reason' => 'No legal rules configured for this brand\'s industry/jurisdiction — set an industry to enable legal checks.',
+                'details' => ['industry' => $industry, 'jurisdiction' => $jurisdiction, 'rule_count' => 0],
+                'checked_at' => now(),
+            ]);
+        }
+
+        $userMessage = "{$directive}\n\nINDUSTRY: {$industry}\nJURISDICTION: {$jurisdiction}\n\n## DRAFT TO REVIEW\n\nPlatform: {$draft->platform}\nBody:\n{$draft->body}";
+
+        try {
+            $result = $this->llm->call(
+                promptVersion: ComplianceLegalPrompt::VERSION,
+                systemPrompt: ComplianceLegalPrompt::system(),
+                userMessage: $userMessage,
+                brand: $brand,
+                workspace: $brand->workspace,
+                modelId: config('services.anthropic.cheap_model'), // Haiku is fine for rule-matching
+                maxTokens: 1200,
+                jsonSchema: ComplianceLegalPrompt::schema(),
+                agentRole: 'compliance.legal',
+            );
+        } catch (\Throwable $e) {
+            return ComplianceCheck::create([
+                'draft_id' => $draft->id,
+                'brand_id' => $brand->id,
+                'check_type' => 'legal_compliance',
+                'result' => 'error',
+                'reason' => 'Legal compliance call failed: '.substr($e->getMessage(), 0, 200),
+                'checked_at' => now(),
+            ]);
+        }
+
+        $payload = $result->parsedJson;
+        if (! $payload || ! isset($payload['score'])) {
+            return ComplianceCheck::create([
+                'draft_id' => $draft->id,
+                'brand_id' => $brand->id,
+                'check_type' => 'legal_compliance',
+                'result' => 'error',
+                'reason' => 'Legal reviewer returned no score.',
+                'checked_at' => now(),
+            ]);
+        }
+
+        // Clamp the score (no min/max enforced at schema level — see prompt).
+        $score = max(0.0, min(1.0, (float) $payload['score']));
+        $violations = is_array($payload['violations'] ?? null) ? $payload['violations'] : [];
+        $blockingViolations = array_values(array_filter(
+            $violations,
+            fn ($v) => is_array($v) && ($v['severity'] ?? 'block') === 'block',
+        ));
+
+        // Fail when the judge flagged a block-severity violation OR confidence
+        // dropped below the threshold. Belt-and-braces: either signal holds it.
+        $verdictFail = ($payload['verdict'] ?? null) === 'fail';
+        $passed = ! $verdictFail && $blockingViolations === [] && $score >= self::LEGAL_THRESHOLD;
+
+        $reason = $passed
+            ? 'No legal violations detected.'
+            : ($blockingViolations !== []
+                ? 'Legal violation(s): '.collect($blockingViolations)
+                    ->map(fn ($v) => trim((string) ($v['rule_code'] ?? 'general').' — '.($v['reason'] ?? '')))
+                    ->implode(' | ')
+                : (trim((string) ($payload['reasoning'] ?? '')) ?: 'Failed legal compliance.'));
+
+        return ComplianceCheck::create([
+            'draft_id' => $draft->id,
+            'brand_id' => $brand->id,
+            'check_type' => 'legal_compliance',
+            'score' => round($score, 4),
+            'threshold' => self::LEGAL_THRESHOLD,
+            'result' => $passed ? 'pass' : 'fail',
+            'reason' => mb_substr($reason, 0, 1000),
+            'details' => [
+                'industry' => $industry,
+                'jurisdiction' => $jurisdiction,
+                'verdict' => $payload['verdict'] ?? null,
+                'violations' => $violations,
+                'reasoning' => $payload['reasoning'] ?? null,
+            ],
+            'model_id' => $result->modelId,
+            'latency_ms' => $result->latencyMs,
             'checked_at' => now(),
         ]);
     }

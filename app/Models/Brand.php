@@ -210,6 +210,25 @@ class Brand extends Model
     }
 
     /**
+     * The legal jurisdiction this brand operates in, derived from its PRIMARY
+     * business location (not stored separately — see plan §2). Feeds the legal
+     * compliance rule lookup in StrategistAgent, WriterAgent, and ComplianceAgent.
+     * Falls back to the app default (MY) when no location is set.
+     */
+    public function primaryJurisdiction(): string
+    {
+        return \App\Support\Compliance\JurisdictionResolver::fromBusinessLocations(
+            (array) ($this->business_locations ?? []),
+        );
+    }
+
+    /** The brand's industry normalised to a canonical IndustryCatalog key. */
+    public function industryKey(): string
+    {
+        return \App\Support\Compliance\IndustryCatalog::normalize($this->industry);
+    }
+
+    /**
      * Pure renderer — no DB, no model state. Kept static + side-effect-free so it
      * is the single source of truth for both agents and is unit-testable without
      * a database (the test suite runs DB-free; see BrandCreateAtomicityTest).

@@ -82,6 +82,14 @@ class BrandCorpusSeed extends Page
      */
     public array $locations = [];
 
+    /**
+     * The brand's industry (a key from App\Support\Compliance\IndustryCatalog).
+     * Drives the legal-compliance rules — advertising & industry laws for the
+     * brand's jurisdiction — that the Strategist, Writer, and Compliance gate
+     * apply to every post. Hydrated on mount, persisted by saveBrandFacts().
+     */
+    public string $industry = '';
+
     public string $audienceDescription = '';
 
     public string $audienceSegmentsText = '';
@@ -111,6 +119,12 @@ class BrandCorpusSeed extends Page
         if (! $brand) {
             return;
         }
+
+        // Normalise any legacy free-text industry to a catalog key so the
+        // Select shows a valid option (else it renders blank for old brands).
+        $this->industry = \App\Support\Compliance\IndustryCatalog::isValid($brand->industry)
+            ? (string) $brand->industry
+            : ($brand->industry ? \App\Support\Compliance\IndustryCatalog::normalize($brand->industry) : '');
 
         $this->locations = array_values(array_map(fn ($l) => [
             'area' => (string) ($l['area'] ?? ''),
@@ -430,7 +444,15 @@ class BrandCorpusSeed extends Page
         // this verbatim above brand-style.md (see Brand::brandFactsBlock).
         $companyProfile = mb_substr(trim($this->companyProfile), 0, 20000);
 
+        // Industry — store the catalog key only (legal rules key off it). An
+        // unrecognised submission falls back to the existing value rather than
+        // wiping it; empty stays empty.
+        $industry = \App\Support\Compliance\IndustryCatalog::isValid($this->industry)
+            ? $this->industry
+            : ($brand->industry ?: null);
+
         $brand->update([
+            'industry' => $industry,
             'business_locations' => $locations !== [] ? $locations : null,
             'audience_profile' => $audience !== [] ? $audience : null,
             'company_profile' => $companyProfile !== '' ? $companyProfile : null,
