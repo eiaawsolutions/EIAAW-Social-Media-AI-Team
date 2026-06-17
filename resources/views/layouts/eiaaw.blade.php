@@ -121,7 +121,6 @@
         <strong>Company</strong>
         <a href="https://eiaawsolutions.com" target="_blank" rel="noopener">EIAAW Solutions</a>
         <a href="https://eiaawsolutions.com/#contact" target="_blank" rel="noopener">Contact</a>
-        <a href="/changelog">Changelog</a>
       </div>
       <div class="footer-col">
         <strong>Legal</strong>
