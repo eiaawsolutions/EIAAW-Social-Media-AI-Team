@@ -90,9 +90,12 @@ class ClientBrandResource extends Resource
                     ->label('Website URL')
                     ->url()
                     ->placeholder('https://example.com'),
-                Forms\Components\TextInput::make('industry')
-                    ->maxLength(80)
-                    ->placeholder('e.g. SaaS, Healthcare, F&B'),
+                Forms\Components\Select::make('industry')
+                    ->label('Industry')
+                    ->options(\App\Support\Compliance\IndustryCatalog::industries())
+                    ->searchable()
+                    ->required()
+                    ->helperText('Drives the legal compliance rules (advertising & industry laws for the brand\'s country) applied to every post.'),
                 Forms\Components\Select::make('locale')
                     ->options([
                         'en' => 'English',

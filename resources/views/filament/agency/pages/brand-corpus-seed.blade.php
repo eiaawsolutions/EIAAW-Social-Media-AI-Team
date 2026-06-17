@@ -201,6 +201,19 @@
                     your website. Optional, but it sharpens the voice considerably.
                 </p>
 
+                <label class="corpus-field-label" for="bf-industry">Industry</label>
+                <select id="bf-industry" class="corpus-input" wire:model="industry">
+                    <option value="">Select your industry…</option>
+                    @foreach (\App\Support\Compliance\IndustryCatalog::industries() as $key => $label)
+                        <option value="{{ $key }}">{{ $label }}</option>
+                    @endforeach
+                </select>
+                <p style="font-size:12px;color:var(--eiaaw-mute);margin:4px 0 10px;">
+                    Used to apply the advertising &amp; industry laws for your business's country to every post —
+                    the AI plans, writes, and checks each post against the rules for this industry in the
+                    jurisdiction of your primary location below.
+                </p>
+
                 <span class="corpus-field-label">Business locations</span>
                 @forelse ($locations as $i => $loc)
                     <div class="corpus-loc-row" wire:key="loc-{{ $i }}">

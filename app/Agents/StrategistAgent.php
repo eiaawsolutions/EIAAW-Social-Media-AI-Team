@@ -10,6 +10,7 @@ use App\Models\CompetitorStrategyBrief;
 use App\Models\ContentCalendar;
 use App\Models\GrowthStrategyBrief;
 use App\Models\MarketTrendBrief;
+use App\Services\Compliance\LegalRulesProvider;
 use App\Services\Readiness\SetupReadiness;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -221,6 +222,12 @@ class StrategistAgent extends BaseAgent
         $factsBlock = $brand->brandFactsBlock();
         $factsSection = $factsBlock === '' ? '' : "\n".$factsBlock."\n";
 
+        // Legal rules for this brand's industry + jurisdiction, injected so the
+        // calendar is PLANNED compliant (shift-left). Suppressed (byte-identical
+        // to the pre-feature prompt) when no curated rules apply.
+        $legalBlock = $this->renderLegalRules($brand);
+        $legalSection = $legalBlock === '' ? '' : "\n".$legalBlock."\n";
+
         return <<<MSG
 BRAND: {$brand->name}
 INDUSTRY: {$brand->industry}
@@ -233,12 +240,27 @@ ACTIVE PLATFORMS: {$platformList}
 
 # Format mix targets
 {$formatLines}
-{$competitorSection}{$competitorStrategySection}{$marketTrendSection}{$growthSection}{$factsSection}
+{$competitorSection}{$competitorStrategySection}{$marketTrendSection}{$growthSection}{$factsSection}{$legalSection}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 
-Plan the calendar now. Return one entry per day for the month, distributed across pillars/formats per the mix targets and across the active platforms. Use day_offset = 0 for the first day of the period.
+Plan the calendar now. Return one entry per day for the month, distributed across pillars/formats per the mix targets and across the active platforms. Every entry's topic and angle MUST be lawful for this industry in this jurisdiction — do not plan angles that require claims the legal rules above forbid. Use day_offset = 0 for the first day of the period.
 MSG;
+    }
+
+    /**
+     * Legal & advertising-standards directive for this brand's industry +
+     * jurisdiction. Resolves the brand's catalog industry key and primary
+     * jurisdiction, then delegates to the provider. Empty string when no curated
+     * rules apply, so the prompt section is suppressed — keeping an un-curated
+     * brand's prompt byte-identical to the pre-feature behaviour.
+     */
+    private function renderLegalRules(Brand $brand): string
+    {
+        return app(LegalRulesProvider::class)->promptDirectiveFor(
+            $brand->industryKey(),
+            $brand->primaryJurisdiction(),
+        );
     }
 
     /**

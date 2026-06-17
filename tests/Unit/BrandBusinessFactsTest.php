@@ -152,11 +152,12 @@ class BrandBusinessFactsTest extends TestCase
 
         $this->assertStringContainsString('brandFactsBlock', $src, 'WriterAgent must read the facts block');
         // Both the greenfield and redraft builders interpolate the facts block
-        // immediately before the brand-style.md header.
+        // above the brand-style.md header. The legal-rules block (shift-left
+        // compliance) sits between facts and brand-style: facts → legal → style.
         $this->assertMatchesRegularExpression(
-            '/\{\$factsBlock\}# brand-style\.md/',
+            '/\{\$factsBlock\}(\{\$legalBlock\})?# brand-style\.md/',
             $src,
-            'WriterAgent must place the facts block directly above brand-style.md',
+            'WriterAgent must place the facts block above brand-style.md (legal block may follow it)',
         );
         // Two call sites: buildUserMessage + buildRedraftMessage.
         $this->assertSame(
@@ -171,10 +172,12 @@ class BrandBusinessFactsTest extends TestCase
         $src = file_get_contents(app_path('Agents/StrategistAgent.php'));
 
         $this->assertStringContainsString('brandFactsBlock', $src, 'StrategistAgent must read the facts block');
+        // Facts section sits above brand-style.md; the legal-rules section
+        // (shift-left compliance) may sit between them: facts → legal → style.
         $this->assertMatchesRegularExpression(
-            '/\{\$factsSection\}\s*\n# brand-style\.md/',
+            '/\{\$factsSection\}(\{\$legalSection\})?\s*\n# brand-style\.md/',
             $src,
-            'StrategistAgent must place the facts section directly above brand-style.md',
+            'StrategistAgent must place the facts section above brand-style.md (legal section may follow it)',
         );
     }
 
