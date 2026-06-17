@@ -39,6 +39,19 @@ class ComplianceLegalRule extends Model
         'disabled' => 'boolean',
     ];
 
+    /**
+     * Any create/edit/toggle/delete (operator Filament resource, CLI, seeder)
+     * invalidates the LegalRulesProvider cache so the change is applied on the
+     * next agent run rather than waiting out the 60s TTL. Centralised here so
+     * every write path busts the cache without each caller remembering to.
+     */
+    protected static function booted(): void
+    {
+        $flush = fn () => app(\App\Services\Compliance\LegalRulesProvider::class)->flush();
+        static::saved($flush);
+        static::deleted($flush);
+    }
+
     public function isBlocking(): bool
     {
         return $this->severity === 'block';

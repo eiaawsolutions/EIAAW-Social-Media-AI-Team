@@ -71,23 +71,35 @@ final class IndustryCatalog
 
         $needle = mb_strtolower($value);
 
+        // Most-SPECIFIC verticals are listed before broad ones so a multi-signal
+        // string resolves to the narrower, more legally-load-bearing vertical
+        // (e.g. "Health food store" -> healthcare beats food_beverage; "Beauty
+        // clinic" -> healthcare's clinic is intentionally AFTER beauty here so
+        // beauty wins for a beauty business). Aliases are matched as WORD
+        // PREFIXES (word-start boundary, no trailing boundary) so "pharma" still
+        // catches "pharmacy" while "it" can no longer match inside "hospital".
+        // Dangerous ultra-short/substring-prone aliases ("it", "app", "law")
+        // were removed or made word-anchored.
         $aliases = [
-            'food_beverage' => ['f&b', 'fnb', 'food', 'beverage', 'cafe', 'café', 'restaurant', 'coffee', 'fmcg food'],
-            'healthcare' => ['health', 'medical', 'clinic', 'pharma', 'pharmaceutical', 'dental', 'wellness clinic'],
-            'beauty_cosmetics' => ['beauty', 'cosmetic', 'cosmetics', 'skincare', 'makeup', 'salon', 'aesthetics'],
-            'financial_services' => ['finance', 'financial', 'fintech', 'bank', 'banking', 'insurance', 'investment', 'wealth'],
-            'retail_ecommerce' => ['retail', 'ecommerce', 'e-commerce', 'shop', 'store', 'marketplace'],
-            'professional_services' => ['consulting', 'consultancy', 'agency', 'legal', 'law', 'accounting', 'professional'],
-            'technology_saas' => ['saas', 'software', 'tech', 'technology', 'it', 'app', 'platform'],
-            'education' => ['education', 'training', 'school', 'university', 'academy', 'edtech', 'tuition', 'course'],
-            'real_estate' => ['real estate', 'property', 'realty', 'developer'],
+            'beauty_cosmetics' => ['beauty', 'cosmetic', 'skincare', 'makeup', 'salon', 'aesthetic'],
+            'healthcare' => ['health', 'medical', 'medicine', 'clinic', 'pharma', 'dental', 'hospital', 'doctor', 'therapy'],
+            'financial_services' => ['finance', 'financial', 'fintech', 'bank', 'insurance', 'investment', 'wealth', 'lending'],
+            'education' => ['education', 'training', 'school', 'university', 'academy', 'edtech', 'tuition', 'course', 'tutor'],
+            'real_estate' => ['real estate', 'property', 'realty', 'realtor', 'developer'],
             'travel_hospitality' => ['travel', 'hospitality', 'hotel', 'tourism', 'resort', 'airline'],
-            'fitness_wellness' => ['fitness', 'gym', 'yoga', 'pilates', 'wellness', 'sports'],
+            'fitness_wellness' => ['fitness', 'gym', 'yoga', 'pilates', 'wellness', 'sport'],
+            'food_beverage' => ['f&b', 'fnb', 'food', 'beverage', 'cafe', 'café', 'restaurant', 'coffee', 'bakery'],
+            'retail_ecommerce' => ['retail', 'ecommerce', 'e-commerce', 'marketplace', 'merchant'],
+            'professional_services' => ['consulting', 'consultancy', 'legal', 'lawyer', 'accounting', 'audit', 'advisory'],
+            'technology_saas' => ['saas', 'software', 'technology', 'platform', 'startup'],
         ];
 
+        // Pass 1: word-prefix match (boundary before the alias). Catches
+        // "pharmacy" via "pharma", "fintech company" via "fintech", without the
+        // substring collisions of the old str_contains.
         foreach ($aliases as $key => $needles) {
             foreach ($needles as $alias) {
-                if (str_contains($needle, $alias)) {
+                if (preg_match('/(?<![\p{L}\p{N}])'.preg_quote($alias, '/').'/u', $needle) === 1) {
                     return $key;
                 }
             }

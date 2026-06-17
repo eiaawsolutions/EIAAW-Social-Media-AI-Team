@@ -47,7 +47,18 @@ final class JurisdictionResolver
         return $country === null ? self::DEFAULT : self::fromCountry($country);
     }
 
-    /** Map a single country string to a jurisdiction key. */
+    /**
+     * Map a single country string to a jurisdiction key.
+     *
+     * Matching is collision-safe (a bare str_contains on 2-letter aliases used
+     * to misfire — "Myanmar" contains "my", "Austria" contains "au", "New South
+     * Wales" contains "th"). Three passes, most-precise first:
+     *   1. exact match against any alias,
+     *   2. whole-word match (word boundaries) against any alias,
+     *   3. bare substring ONLY for long aliases (>= 4 chars, i.e. full country
+     *      names) — never for the 2/3-letter codes.
+     * Anything unresolved falls to the documented default (MY / APAC lens).
+     */
     public static function fromCountry(?string $country): string
     {
         $needle = mb_strtolower(trim((string) $country));
@@ -68,9 +79,26 @@ final class JurisdictionResolver
             'US' => ['united states', 'usa', 'us', 'america'],
         ];
 
+        // Pass 1: exact.
+        foreach ($map as $key => $needles) {
+            if (in_array($needle, $needles, true)) {
+                return $key;
+            }
+        }
+
+        // Pass 2: whole-word (handles "Kuala Lumpur, Malaysia", "MY office").
         foreach ($map as $key => $needles) {
             foreach ($needles as $alias) {
-                if ($needle === $alias || str_contains($needle, $alias)) {
+                if (preg_match('/\b'.preg_quote($alias, '/').'\b/u', $needle) === 1) {
+                    return $key;
+                }
+            }
+        }
+
+        // Pass 3: bare substring, long aliases only (full names; never codes).
+        foreach ($map as $key => $needles) {
+            foreach ($needles as $alias) {
+                if (mb_strlen($alias) >= 4 && str_contains($needle, $alias)) {
                     return $key;
                 }
             }

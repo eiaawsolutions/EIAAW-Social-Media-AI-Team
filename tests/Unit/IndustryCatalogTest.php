@@ -46,6 +46,30 @@ class IndustryCatalogTest extends TestCase
         $this->assertSame('other', IndustryCatalog::normalize(null));
     }
 
+    /**
+     * Regression: the old str_contains alias matching collided on short/embedded
+     * substrings (the 'it' alias matched inside "hospital"/"architecture";
+     * first-declared-wins sent "Health food store" to food_beverage). These lock
+     * the collision-safe word-prefix + specificity-ordered matching.
+     */
+    public function test_normalize_does_not_collide_on_embedded_substrings(): void
+    {
+        // "Hospital"/"Architecture" must NOT become technology_saas (old 'it' bug).
+        $this->assertSame('healthcare', IndustryCatalog::normalize('Hospital'));
+        $this->assertNotSame('technology_saas', IndustryCatalog::normalize('Architecture firm'));
+        // Specific vertical beats the broad one for multi-signal strings.
+        $this->assertSame('healthcare', IndustryCatalog::normalize('Health food store'));
+        $this->assertSame('beauty_cosmetics', IndustryCatalog::normalize('Beauty clinic'));
+    }
+
+    public function test_normalize_still_catches_word_prefixes(): void
+    {
+        // Prefix matching must still fire (pharma -> pharmacy, fintech company).
+        $this->assertSame('healthcare', IndustryCatalog::normalize('Pharmacy'));
+        $this->assertSame('financial_services', IndustryCatalog::normalize('Fintech company'));
+        $this->assertSame('food_beverage', IndustryCatalog::normalize('Specialty coffee roaster'));
+    }
+
     public function test_normalize_passes_through_a_canonical_key(): void
     {
         $this->assertSame('real_estate', IndustryCatalog::normalize('real_estate'));
@@ -79,7 +103,27 @@ class IndustryCatalogTest extends TestCase
         $this->assertSame('MY', JurisdictionResolver::fromCountry('MY'));
         $this->assertSame('SG', JurisdictionResolver::fromCountry('Singapore'));
         $this->assertSame('ID', JurisdictionResolver::fromCountry('Indonesia'));
+        // City, Country form resolves via whole-word match.
+        $this->assertSame('MY', JurisdictionResolver::fromCountry('Kuala Lumpur, Malaysia'));
+        $this->assertSame('AU', JurisdictionResolver::fromCountry('Sydney, Australia'));
         // Unknown → default (Malaysia/APAC lens).
         $this->assertSame(JurisdictionResolver::DEFAULT, JurisdictionResolver::fromCountry('Narnia'));
+    }
+
+    /**
+     * Regression: bare str_contains on 2-letter aliases misfired — "Myanmar"
+     * contains "my", "Austria"/"Saudi Arabia" contain "au", "New South Wales"
+     * contains "th". These must NOT resolve to MY/AU/TH; they fall to default.
+     */
+    public function test_jurisdiction_does_not_collide_on_two_letter_substrings(): void
+    {
+        // The old str_contains matched 'au' inside "Austria"/"Saudi Arabia" and
+        // 'th' inside "New South Wales" -> wrong AU/TH. They must now resolve to
+        // the documented default (MY), never to those wrong specific codes.
+        $this->assertNotSame('AU', JurisdictionResolver::fromCountry('Austria'));
+        $this->assertNotSame('AU', JurisdictionResolver::fromCountry('Saudi Arabia'));
+        $this->assertNotSame('TH', JurisdictionResolver::fromCountry('New South Wales'));
+        $this->assertSame(JurisdictionResolver::DEFAULT, JurisdictionResolver::fromCountry('Austria'));
+        $this->assertSame(JurisdictionResolver::DEFAULT, JurisdictionResolver::fromCountry('New South Wales'));
     }
 }
