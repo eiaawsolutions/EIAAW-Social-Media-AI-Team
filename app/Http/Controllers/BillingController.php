@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Services\Billing\SignupProvisioner;
 use App\Services\Billing\SignupProvisionResult;
 use App\Services\StripePriceCache;
+use App\Support\Legal\LegalDocuments;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -50,6 +51,9 @@ class BillingController extends Controller
             'name'           => ['required', 'string', 'max:120'],
             'email'          => ['required', 'string', 'email:rfc', 'max:190'],
             'workspace_name' => ['required', 'string', 'max:120'],
+            // Mandatory legal acceptance — the signup form's required checkbox.
+            // 'accepted' fails unless the box is ticked (value "1"/"on"/true).
+            'accept_terms'   => ['accepted'],
         ]);
 
         $email = strtolower($validated['email']);
@@ -117,6 +121,11 @@ class BillingController extends Controller
                 'email'          => $email,
                 'workspace_name' => $validated['workspace_name'],
                 'intent'         => 'signup',
+                // Carry the accepted legal version through Stripe so the
+                // provisioner can stamp it on the user — works for BOTH the
+                // success-redirect path AND the webhook safety net (the webhook
+                // has no request session, so metadata is the only viable carrier).
+                'legal_version'  => LegalDocuments::version(),
             ],
             'success_url'        => route('billing.success').'?session_id={CHECKOUT_SESSION_ID}',
             'cancel_url'         => route('signup.picker', ['canceled' => 1]),

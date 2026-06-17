@@ -4,6 +4,7 @@ namespace App\Providers\Filament;
 
 use App\Filament\Agency\Pages\AutonomyLane;
 use App\Filament\Agency\Pages\BrandCorpusSeed;
+use App\Filament\Agency\Pages\LegalAcceptance;
 use App\Filament\Agency\Pages\LiveFeed;
 use App\Filament\Agency\Pages\Performance;
 use App\Filament\Agency\Pages\SetupWizard;
@@ -12,6 +13,7 @@ use App\Filament\Agency\Widgets\WelcomeBannerWidget;
 use App\Http\Middleware\RedirectToSetupIfIncomplete;
 use App\Filament\Agency\Pages\Billing;
 use App\Filament\Agency\Pages\TrialExpired;
+use App\Http\Middleware\EnforceLegalAcceptance;
 use App\Http\Middleware\EnforceTrialOrSubscription;
 use Filament\Auth\MultiFactor\App\AppAuthentication;
 use Filament\Navigation\NavigationItem;
@@ -84,6 +86,7 @@ class AgencyPanelProvider extends PanelProvider
                 Performance::class,
                 Billing::class,
                 TrialExpired::class,
+                LegalAcceptance::class,
                 Dashboard::class,
             ])
             // Super-admin-only sidebar link to the HQ admin panel (separate
@@ -117,6 +120,9 @@ class AgencyPanelProvider extends PanelProvider
             ->authMiddleware([
                 Authenticate::class,
                 EnforceTrialOrSubscription::class,
+                // Runs LAST: only a valid, paying, authenticated user is ever
+                // shown the legal-acceptance wall (see EnforceLegalAcceptance).
+                EnforceLegalAcceptance::class,
             ])
             ->renderHook(
                 PanelsRenderHook::HEAD_END,

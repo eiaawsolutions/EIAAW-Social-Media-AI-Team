@@ -125,9 +125,13 @@
       </div>
       <div class="footer-col">
         <strong>Legal</strong>
-        <a href="/privacy">Privacy</a>
         <a href="/terms">Terms</a>
+        <a href="/acceptable-use">Acceptable Use</a>
+        <a href="/ai-disclaimer">AI Content</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/dpa">Data Processing</a>
         <a href="/security">Security</a>
+        <a href="/legal">All legal</a>
       </div>
     </div>
     <div class="footer-bottom">
