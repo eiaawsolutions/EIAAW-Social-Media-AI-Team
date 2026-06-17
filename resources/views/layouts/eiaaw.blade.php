@@ -142,5 +142,13 @@
 
 <script src="/brand/eiaaw-motion.js" defer></script>
 @stack('scripts')
+
+{{-- Floating support chatbot on EVERY public page (landing, legal, signup,
+     enterprise). Surface 'landing' = sale-conversion/public mode; the server
+     re-derives + clamps the surface, so this is a hint, not a trust boundary.
+     The Filament panels inject their own surfaces ('client'/'hq') via render
+     hooks. The AI is gated behind a name+email+phone contact form (smt-chat.js)
+     before it answers anything. --}}
+@include('partials.smt-chat-widget', ['surface' => 'landing'])
 </body>
 </html>

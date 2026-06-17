@@ -76,9 +76,10 @@ class AdminPanelProvider extends PanelProvider
                 Authenticate::class,
             ])
             // Floating support chatbot — HQ surface (guide-steps + enquiry).
-            // Injected at body-end so it floats over every HQ page. The server
-            // re-derives the surface and won't serve the guide prompt to an
-            // unauthenticated caller; here the operator is always authenticated.
+            // Injected at body-end so it floats over every HQ page, including the
+            // HQ login screen (the simple auth layout renders BODY_END too). The
+            // server re-derives the surface and clamps it to 'landing' for an
+            // unauthenticated caller, so the login page gets the public widget.
             ->renderHook(
                 PanelsRenderHook::BODY_END,
                 fn (): string => Blade::render("@include('partials.smt-chat-widget', ['surface' => 'hq'])"),

@@ -320,7 +320,5 @@
 
 @endsection
 
-@push('scripts')
-  {{-- Floating support chatbot — landing surface (sale-conversion mode). --}}
-  @include('partials.smt-chat-widget', ['surface' => 'landing'])
-@endpush
+{{-- The floating support chatbot is now injected once for every public page by
+     the shared layout (layouts/eiaaw.blade.php), so it is no longer pushed here. --}}

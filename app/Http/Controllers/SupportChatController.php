@@ -99,13 +99,17 @@ class SupportChatController extends Controller
             'surface' => ['nullable', 'string', 'max:16'],
         ]);
 
-        $surface = ChatbotPrompts::normaliseSurface($data['surface'] ?? null);
+        // Clamp the untrusted client surface the same way chat() does: a logged-out
+        // visitor can't mislabel a lead as 'client'/'hq' by posting that surface
+        // (it falls back to 'landing'), so the HQ surface filter stays trustworthy.
+        $surface = $this->resolveSurface(ChatbotPrompts::normaliseSurface($data['surface'] ?? null), $request);
         $user = $request->user();
 
         $enquiry = SupportEnquiry::create([
             'workspace_id' => $user?->current_workspace_id,
             'user_id' => $user?->id,
             'surface' => $surface,
+            'kind' => 'enquiry',
             'name' => trim($data['name']),
             'email' => trim($data['email']),
             'phone' => trim((string) ($data['phone'] ?? '')),
@@ -117,8 +121,65 @@ class SupportChatController extends Controller
             'status' => 'new',
         ]);
 
-        // Notify HQ. Soft-fail: the lead is already persisted, so a mail outage
-        // must not lose it or 500 the visitor — log and still return success.
+        $this->notifyHqOfEnquiry($enquiry);
+
+        return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Contact gate: collect name + email + phone (company optional) BEFORE the
+     * AI assistant answers any question. Posted by the floating widget the first
+     * time a visitor opens the "Talk to AI agent" panel. Stored as a 'chat_gate'
+     * lead (distinct from the "Talk to us" enquiry above) and HQ is notified.
+     *
+     * Unlike contact(), PHONE is required here — that's the whole point of the
+     * gate. Lead Generation Contract: we persist only what the visitor actually
+     * submitted; `message` is a labelled system note (not fabricated contact
+     * data) because the column is NOT NULL and there's no free-text on the gate.
+     */
+    public function identify(Request $request)
+    {
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+            'email' => ['required', 'email:rfc', 'max:160'],
+            'phone' => ['required', 'string', 'max:40'],
+            'company' => ['nullable', 'string', 'max:160'],
+            'surface' => ['nullable', 'string', 'max:16'],
+        ]);
+
+        // Same auth-aware clamp as chat()/contact(): an anonymous caller can't
+        // tag a chat_gate lead as a panel surface by spoofing surface=hq/client.
+        $surface = $this->resolveSurface(ChatbotPrompts::normaliseSurface($data['surface'] ?? null), $request);
+        $user = $request->user();
+
+        $enquiry = SupportEnquiry::create([
+            'workspace_id' => $user?->current_workspace_id,
+            'user_id' => $user?->id,
+            'surface' => $surface,
+            'kind' => 'chat_gate',
+            'name' => trim($data['name']),
+            'email' => trim($data['email']),
+            'phone' => trim((string) $data['phone']),
+            'company' => trim((string) ($data['company'] ?? '')),
+            'message' => '[Chat gate] Visitor started an AI chat conversation.',
+            'ip_hash' => hash('sha256', (string) $request->ip()),
+            'user_agent' => substr((string) $request->userAgent(), 0, 255),
+            'referer' => substr((string) $request->headers->get('referer', ''), 0, 255),
+            'status' => 'new',
+        ]);
+
+        $this->notifyHqOfEnquiry($enquiry);
+
+        return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Email HQ that a new lead landed. Soft-fail by design: the row is already
+     * persisted, so a mail outage must not lose the lead or 500 the visitor —
+     * log and let the caller return success. Shared by contact() + identify().
+     */
+    private function notifyHqOfEnquiry(SupportEnquiry $enquiry): void
+    {
         try {
             $to = (string) config('mail.support_enquiry.to', 'eiaawsolutions@gmail.com');
             $mailer = (string) config('mail.support_enquiry.mailer', config('mail.default'));
@@ -126,11 +187,10 @@ class SupportChatController extends Controller
         } catch (\Throwable $e) {
             Log::error('SupportChatController: enquiry notification email failed', [
                 'enquiry_id' => $enquiry->id,
+                'kind' => $enquiry->kind,
                 'error' => $e->getMessage(),
             ]);
         }
-
-        return response()->json(['ok' => true]);
     }
 
     /**
