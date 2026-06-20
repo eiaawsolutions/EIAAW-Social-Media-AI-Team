@@ -52,12 +52,17 @@ class CorpusBackfillPublished extends Command
         $skippedNoBrand = 0;
         $embedFailures = 0;
 
+        // NB: no ->orderBy() here. chunkById() paginates with `WHERE id > ?
+        // ORDER BY id` — adding any other ordering (e.g. orderByDesc(
+        // published_at)) corrupts that cursor, so rows get re-scanned and the
+        // counts over-report (observed 270 posts → 305 "would ingest" in a prod
+        // dry-run). A backfill processes the whole set, so ordering is cosmetic;
+        // we let chunkById own the id ordering and stay exactly-once.
         $query = ScheduledPost::query()
             ->with(['draft', 'brand.workspace'])
             ->where('status', 'published')
             ->where('published_at', '>=', $since)
-            ->when($brandId !== null, fn ($q) => $q->where('brand_id', $brandId))
-            ->orderByDesc('published_at');
+            ->when($brandId !== null, fn ($q) => $q->where('brand_id', $brandId));
 
         $total = (clone $query)->count();
         $this->info("Scanning {$total} published post(s) since {$since->toDateString()}".($brandId ? " for brand #{$brandId}" : '').'.');
