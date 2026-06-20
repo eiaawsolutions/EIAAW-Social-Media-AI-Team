@@ -614,13 +614,30 @@ class GrowthStrategistAgent extends BaseAgent
             // post_metrics aggregates; left null here (current reading optional),
             // surfaced honestly as "—" until a first-party reading exists.
 
+            $progressPct = BrandGrowthGoal::progressPct($goal->baseline_value, $goal->target_value, $current);
+
+            // Pace = progress vs. linear time elapsed in the goal window. A goal
+            // at 30% with 60% of its window gone is 'lagging'. Both the verdict
+            // and the expected number are real-reading-only (null progress →
+            // null pace) so the Strategist applies pressure only on evidence.
+            $start = $goal->window_starts_on ? $goal->window_starts_on->copy()->startOfDay() : null;
+            $end = $goal->window_ends_on ? $goal->window_ends_on->copy()->endOfDay() : null;
+            $paceStatus = ($start && $end)
+                ? BrandGrowthGoal::paceStatus($progressPct, $start, $end, now())
+                : null;
+            $expectedPct = ($start && $end)
+                ? BrandGrowthGoal::expectedPct($start, $end, now())
+                : null;
+
             $out[] = [
                 'target_metric' => $goal->target_metric,
                 'platform' => $goal->platform,
                 'target_value' => $goal->target_value,
                 'baseline_value' => $goal->baseline_value,
                 'current_value' => $current,
-                'progress_pct' => BrandGrowthGoal::progressPct($goal->baseline_value, $goal->target_value, $current),
+                'progress_pct' => $progressPct,
+                'expected_pct' => $expectedPct,
+                'pace_status' => $paceStatus,
                 'window_ends_on' => $goal->window_ends_on?->toDateString(),
             ];
         }

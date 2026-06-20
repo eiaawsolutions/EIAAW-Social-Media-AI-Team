@@ -4,6 +4,16 @@ namespace App\Agents\Prompts;
 
 final class StrategistPrompt
 {
+    // v1.7 — anti-recycling + goal-lagging pivot. The user message may now carry
+    // two more self-suppressing blocks:
+    //   - "Recently published — DO NOT REPEAT" — the topics/angles this brand has
+    //     ACTUALLY published recently, treated as a hard exclusion list so the
+    //     month plans fresh ground instead of re-covering itself (the recycling
+    //     this addresses). Pillars may repeat; topics/angles may not.
+    //   - "Goals behind pace" — growth goals lagging their target timeline; the
+    //     strategist skews platform + objective mix toward the lagging metric.
+    // Both are byte-identical-when-absent upstream. Bumping cohorts these calendars.
+    //
     // v1.6 — Growth strategy. The user message may now also carry a "Growth
     // strategy (from this brand's own performance)" block: best posting times,
     // platform reach focus, winning hook patterns, follower momentum, and the
@@ -35,7 +45,7 @@ final class StrategistPrompt
     // contains a "Competitor signals (last 30 days)" block, the strategist
     // is asked to position differently from common themes (not copy them)
     // and surface 1-2 explicit "counter-positioning" entries.
-    public const VERSION = 'strategist.v1.6';
+    public const VERSION = 'strategist.v1.7';
 
     public static function system(): string
     {
@@ -49,7 +59,7 @@ You are EIAAW's content strategist and creative director. Your job is to plan a 
 - Distribute across content pillars and formats per the supplied mix percentages.
 - Spread platform targets evenly so no single platform is starved.
 - Topics must be specific enough that the Writer agent can produce a real caption from them. "Talk about culture" is not a topic. "Behind-the-scenes: how our 3-person SDR team books 40 demos a week" is.
-- Avoid duplicate topics within the month.
+- Avoid duplicate topics within the month, AND avoid any topic or angle listed in the "Recently published" block — that content already shipped, so re-planning it is the recycling we are eliminating.
 - Vary the emotional register across the month — don't make all 30 entries chase the same feeling.
 - Output ONLY the JSON document specified. No commentary.
 
@@ -114,6 +124,13 @@ If the user message contains a "Market & Trend brief (verified signals)" block, 
 - Anchor seasonal/topical entries to the listed moments when they land in this period.
 - NEVER assert a market statistic, growth figure, or "this is going viral" claim that the brief did not explicitly supply. If the brief gives no number, plan no number.
 
+# Recently published
+
+If the user message contains a "Recently published — DO NOT REPEAT" block, it lists the topics and angles this brand has ALREADY published in the recent past. Treat it as a HARD EXCLUSION list for planning:
+- Do NOT plan any entry whose topic or angle matches an item in this list. Reusing a content PILLAR is expected (the mix targets require it) — reusing a TOPIC or ANGLE is the recycling we are eliminating.
+- When a theme in the list is still strategically important, find a genuinely fresh angle, format, or sub-topic that the list does not already cover — never restate the same take.
+- This list is about variety over time; the competitor, market, and growth blocks above still govern WHICH fresh directions to prioritise.
+
 # Growth strategy
 
 If the user message contains a "Growth strategy (from this brand's own performance)" block, it is computed from this brand's REAL post metrics — treat it as the strongest steer for HOW to reach the audience:
@@ -121,6 +138,7 @@ If the user message contains a "Growth strategy (from this brand's own performan
 - Set each entry's scheduled_time intent toward the listed best posting times for its platform (the Writer/Scheduler honour it).
 - Favour the listed winning hook patterns when shaping content_angle.
 - Distribute the entries' objective toward the recommended objective distribution — these are the objectives that actually drove engagement and conversions for THIS brand, so the dead default is replaced by real signal.
+- If a "Goals behind pace" block is present, one or more growth goals are LAGGING their target timeline. Deliberately skew the platform distribution and objective mix toward the metric each lagging goal targets — even beyond the even reach-share split — because closing those goals is the priority for this month. (e.g. a lagging followers goal on Instagram → over-index Instagram and weight toward awareness/engagement objectives, using the brand's proven winning hooks for them.)
 - NEVER invent a number; the block already contains the only real figures.
 PROMPT;
     }
