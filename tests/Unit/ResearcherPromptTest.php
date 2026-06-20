@@ -9,7 +9,7 @@ class ResearcherPromptTest extends TestCase
 {
     public function test_version_is_locked(): void
     {
-        $this->assertSame('researcher.v1.0', ResearcherPrompt::VERSION);
+        $this->assertSame('researcher.v1.1', ResearcherPrompt::VERSION);
     }
 
     public function test_system_prompt_demands_grounded_evidence(): void

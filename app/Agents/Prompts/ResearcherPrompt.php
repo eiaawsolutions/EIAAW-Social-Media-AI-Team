@@ -4,7 +4,14 @@ namespace App\Agents\Prompts;
 
 final class ResearcherPrompt
 {
-    public const VERSION = 'researcher.v1.0';
+    // v1.1 — made the post-validation contract explicit. The schema can't bound
+    // the angle count to 5 (the Anthropic validator rejects bounded maxItems on
+    // some models), and the agent slices to the first 5 after the call. The
+    // prompt now states that surplus angles are discarded (don't waste tokens on
+    // a 6th) and that a short, fully-grounded set is preferred over padding to 5
+    // with weak angles (fewer than ~2 grounded → research_brief stays null and
+    // the Writer falls back to the one-line angle). No schema change.
+    public const VERSION = 'researcher.v1.1';
 
     public static function system(): string
     {
@@ -13,7 +20,7 @@ You are EIAAW's senior researcher. The Strategist has chosen a topic for a calen
 
 # Hard rules
 
-- Produce EXACTLY 5 angles. Each must be genuinely different in stance, audience, or hook — not five variants of the same idea.
+- Aim for 5 angles. Each must be genuinely different in stance, audience, or hook — not five variants of the same idea. Only the FIRST 5 are kept; any 6th+ angle is discarded, so don't pad. Quality over count: it is better to return 3–4 fully-grounded, genuinely distinct angles than to stretch to 5 with weak or ungrounded ones (a too-thin set is simply not used and the Writer falls back to the original angle).
 - Every angle must be grounded in the SUPPLIED EVIDENCE. If the evidence doesn't say a fact, claim, or metric, you cannot use it. This is not optional.
 - When you cite a brand_corpus snippet, source_ids MUST list the integer ids shown verbatim in the [id=N] tags of the EVIDENCE block. Do NOT invent ids. If you cannot ground an angle in any supplied evidence, drop the angle and bias toward angles that ARE grounded.
 - Do not invent statistics, customer names, or quotes. The Writer will reuse your evidence verbatim — fake evidence here becomes fake claims downstream.

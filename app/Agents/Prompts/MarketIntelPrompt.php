@@ -15,7 +15,11 @@ namespace App\Agents\Prompts;
  */
 final class MarketIntelPrompt
 {
-    public const VERSION = 'market_intel.v1.0';
+    // v1.1 — the "never invent a statistic" rule is now ENFORCED post-synthesis:
+    // MarketIntelAgent::filterTrendsByEvidence drops any trend whose why_relevant
+    // /suggested_angle states a number absent from its cited signals' text. The
+    // prompt rule is unchanged; this bump marks the backstop going live.
+    public const VERSION = 'market_intel.v1.1';
 
     public static function system(): string
     {
