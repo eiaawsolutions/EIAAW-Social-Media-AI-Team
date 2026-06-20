@@ -94,4 +94,53 @@ class DraftMediaStalenessTest extends TestCase
         $this->assertNull($draft->mediaBodyHash());
         $this->assertTrue($draft->mediaIsStaleForBody());
     }
+
+    // ── distillationIsFreshForBody — gates the distiller cache ──────────────
+
+    public function test_distillation_fresh_when_stamp_matches_current_body(): void
+    {
+        $body = 'A caption about reliability and on-time publishing.';
+        $draft = $this->draft([
+            'body' => $body,
+            'branding_payload' => [
+                'quote' => 'Posts go out on time.',
+                'distilled_body_hash' => Draft::hashBody($body),
+            ],
+        ]);
+
+        $this->assertTrue($draft->distillationIsFreshForBody());
+    }
+
+    public function test_distillation_stale_when_stamp_is_for_a_different_body(): void
+    {
+        // The #436 case: cache exists but was distilled from an OLDER body —
+        // the caption never changed through the editor, yet the distillation
+        // doesn't match. Must read as a cache miss.
+        $draft = $this->draft([
+            'body' => 'Who is SMT best suited for and why.',
+            'branding_payload' => [
+                'quote' => 'Flat per-brand pricing makes the math transparent.',
+                'distilled_body_hash' => Draft::hashBody('A completely different older caption about pricing.'),
+            ],
+        ]);
+
+        $this->assertFalse($draft->distillationIsFreshForBody());
+    }
+
+    public function test_distillation_stale_when_stamp_is_missing(): void
+    {
+        // Legacy cache that predates the stamp → must re-distil, never trust it.
+        $draft = $this->draft([
+            'branding_payload' => ['quote' => 'Some old quote', 'voiceover' => 'Some old voiceover'],
+        ]);
+
+        $this->assertFalse($draft->distillationIsFreshForBody());
+    }
+
+    public function test_distillation_stale_when_no_payload_at_all(): void
+    {
+        $draft = $this->draft(['branding_payload' => null]);
+
+        $this->assertFalse($draft->distillationIsFreshForBody());
+    }
 }

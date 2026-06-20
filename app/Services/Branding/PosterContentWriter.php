@@ -83,11 +83,15 @@ PROMPT;
      */
     public function distil(Draft $draft, Brand $brand): array
     {
+        // Cache gated on the body fingerprint — a poster distilled from an older
+        // body (caption edited since, or distilled pre-edit) is a MISS so the
+        // poster reflects the live caption. See Draft::distillationIsFreshForBody().
         $cached = $draft->branding_payload;
         if (is_array($cached)
             && ! empty($cached['poster_title'])
             && ! empty($cached['poster_points'])
-            && is_array($cached['poster_points'])) {
+            && is_array($cached['poster_points'])
+            && $draft->distillationIsFreshForBody()) {
             return [
                 'title' => (string) $cached['poster_title'],
                 'points' => array_values(array_map('strval', $cached['poster_points'])),
@@ -165,9 +169,11 @@ PROMPT;
      */
     public function distilPanels(Draft $draft, Brand $brand): array
     {
-        // Cache check.
+        // Cache check — gated on the body fingerprint so panels distilled from an
+        // older body are a MISS and rebuilt from the live caption.
         $cached = $draft->branding_payload;
-        if (is_array($cached) && ! empty($cached['infographic_panels']) && is_array($cached['infographic_panels'])) {
+        if (is_array($cached) && ! empty($cached['infographic_panels']) && is_array($cached['infographic_panels'])
+            && $draft->distillationIsFreshForBody()) {
             return [
                 'title' => (string) ($cached['infographic_title'] ?? ''),
                 'panels' => $this->normalizePanels($cached['infographic_panels']),
@@ -177,8 +183,13 @@ PROMPT;
         }
 
         // Preferred: build panels straight from the Writer's carousel slides —
-        // no LLM call needed, and it matches the planned narrative exactly.
-        $slides = $this->carouselSlides($draft);
+        // no LLM call needed, and it matches the planned narrative exactly. But
+        // carousel_slides live in platform_payload, which is Writer-derived and
+        // NOT body-gated: a since-edited (or never-matching) caption can leave
+        // stale slides behind. Only trust them when the distillation is fresh for
+        // the current body; otherwise fall through to the body-anchored LLM path
+        // so the infographic reflects the live caption, not the old slide arc.
+        $slides = $draft->distillationIsFreshForBody() ? $this->carouselSlides($draft) : [];
         if (count($slides) >= 2) {
             $panels = [];
             foreach ($slides as $slide) {
@@ -441,6 +452,7 @@ PROMPT;
             $payload['infographic_panels'] = $artifact['panels'];
             $payload['infographic_footer'] = $artifact['footer'];
             $payload['infographic_distilled_at'] = now()->toIso8601String();
+            $payload['distilled_body_hash'] = Draft::hashBody($draft->body);
             $draft->forceFill(['branding_payload' => $payload])->save();
         } catch (\Throwable $e) {
             Log::warning('PosterContentWriter: infographic cache persist failed (continuing)', [
@@ -485,6 +497,7 @@ PROMPT;
             $payload['poster_title'] = $title;
             $payload['poster_points'] = array_values($points);
             $payload['poster_distilled_at'] = now()->toIso8601String();
+            $payload['distilled_body_hash'] = Draft::hashBody($draft->body);
             $draft->forceFill(['branding_payload' => $payload])->save();
         } catch (\Throwable $e) {
             Log::warning('PosterContentWriter: cache persist failed (continuing)', [

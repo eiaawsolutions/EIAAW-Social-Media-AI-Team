@@ -46,15 +46,19 @@ class QuoteWriterReDistillTest extends TestCase
         return $draft;
     }
 
-    public function test_returns_cache_without_calling_llm_when_payload_present(): void
+    public function test_returns_cache_without_calling_llm_when_payload_fresh_for_body(): void
     {
         $gateway = Mockery::mock(LlmGateway::class);
         $gateway->shouldNotReceive('call');
 
+        $body = 'We screen for competence, not confidence, and here is how.';
         $draft = $this->draft([
+            'body' => $body,
             'branding_payload' => [
                 'quote' => 'We screen for competence, not confidence.',
                 'voiceover' => 'We stopped rewarding confidence. We started measuring what people can do.',
+                // Stamp matching the CURRENT body → cache is fresh.
+                'distilled_body_hash' => \App\Models\Draft::hashBody($body),
             ],
         ]);
 
@@ -62,6 +66,43 @@ class QuoteWriterReDistillTest extends TestCase
 
         $this->assertSame('cache', $result['source']);
         $this->assertSame('We screen for competence, not confidence.', $result['quote']);
+    }
+
+    public function test_re_distills_when_cache_present_but_stale_for_body(): void
+    {
+        // The #436 case: a quote+voiceover ARE cached, but were distilled from a
+        // DIFFERENT (older) body — no editor edit happened. The hash gate must
+        // treat this as a miss and re-distil from the current body, so the LLM
+        // IS called despite a non-empty cache.
+        $gateway = Mockery::mock(LlmGateway::class);
+        $gateway->shouldReceive('call')
+            ->once()
+            ->andReturn(new LlmCallResult(
+                modelId: 'claude-haiku-4-5',
+                promptVersion: QuoteWriter::PROMPT_VERSION,
+                rawText: '{}',
+                parsedJson: [
+                    'quote' => 'Distilled from the actual current caption.',
+                    'voiceover' => 'A fresh voiceover that reflects the caption stored on the draft right now.',
+                ],
+                inputTokens: 120, outputTokens: 60, latencyMs: 40, costUsd: 0.0005,
+                stopReason: 'end_turn', rawResponse: [],
+            ));
+
+        $draft = $this->draft([
+            'body' => 'Who is SMT best suited for and why.',
+            'branding_payload' => [
+                'quote' => 'Flat per-brand pricing makes the math transparent.',
+                'voiceover' => 'Per-seat pricing was built for enterprise budgets, not boutique agencies at all.',
+                // Stamp for a DIFFERENT body → stale → must re-distil.
+                'distilled_body_hash' => \App\Models\Draft::hashBody('An old caption about per-seat pricing math.'),
+            ],
+        ]);
+
+        $result = (new QuoteWriter($gateway))->distil($draft, $this->brand());
+
+        $this->assertSame('llm', $result['source']);
+        $this->assertSame('Distilled from the actual current caption.', $result['quote']);
     }
 
     public function test_re_distills_from_edited_body_when_payload_cleared(): void

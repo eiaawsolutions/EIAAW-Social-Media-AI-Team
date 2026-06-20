@@ -107,9 +107,15 @@ PROMPT;
     public function distil(Draft $draft, Brand $brand): array
     {
         // Cache check — avoid burning a second Haiku call when Video runs after
-        // Designer for the same draft.
+        // Designer for the same draft. Gated on the body fingerprint: a cached
+        // quote/voiceover is only reused when it was distilled from the CURRENT
+        // body. A stale cache (caption edited since, or distilled from an older
+        // body the Writer produced) is treated as a miss and re-distilled, so
+        // the image/video always reflect the live caption — even if the operator
+        // never went through the editor. See Draft::distillationIsFreshForBody().
         $cached = $draft->branding_payload;
-        if (is_array($cached) && ! empty($cached['quote']) && ! empty($cached['voiceover'])) {
+        if (is_array($cached) && ! empty($cached['quote']) && ! empty($cached['voiceover'])
+            && $draft->distillationIsFreshForBody()) {
             return [
                 'quote' => (string) $cached['quote'],
                 'voiceover' => (string) $cached['voiceover'],
@@ -161,15 +167,17 @@ PROMPT;
             'source' => 'llm',
         ];
 
-        // Cache on the draft so Video reuses Designer's distillation.
+        // Cache on the draft so Video reuses Designer's distillation. MERGE into
+        // the existing payload (don't overwrite) so poster/infographic keys and
+        // the media_body_hash survive, and stamp distilled_body_hash so the
+        // cache self-invalidates when the body changes.
         try {
-            $draft->forceFill([
-                'branding_payload' => [
-                    'quote' => $artifact['quote'],
-                    'voiceover' => $artifact['voiceover'],
-                    'distilled_at' => now()->toIso8601String(),
-                ],
-            ])->save();
+            $payload = is_array($draft->branding_payload) ? $draft->branding_payload : [];
+            $payload['quote'] = $artifact['quote'];
+            $payload['voiceover'] = $artifact['voiceover'];
+            $payload['distilled_at'] = now()->toIso8601String();
+            $payload['distilled_body_hash'] = Draft::hashBody($draft->body);
+            $draft->forceFill(['branding_payload' => $payload])->save();
         } catch (\Throwable $e) {
             Log::warning('QuoteWriter: cache persist failed (continuing)', [
                 'draft_id' => $draft->id,

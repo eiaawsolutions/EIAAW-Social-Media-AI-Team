@@ -185,6 +185,26 @@ class Draft extends Model
     }
 
     /**
+     * Whether the cached distillation (quote / voiceover / poster / infographic
+     * in branding_payload) was produced from the CURRENT body. The distillers
+     * stamp branding_payload.distilled_body_hash when they cache; this returns
+     * true only when that stamp matches the current body hash.
+     *
+     * Returns false when the stamp is missing — so any draft whose cache
+     * predates this bookkeeping (or was distilled from an older body, e.g. the
+     * Writer ran on a since-edited caption) is treated as a cache MISS and
+     * re-distilled. This is the gate that makes "Generate image/video" rebuild
+     * from the live caption even when the operator never went through the editor.
+     */
+    public function distillationIsFreshForBody(): bool
+    {
+        $payload = is_array($this->branding_payload) ? $this->branding_payload : [];
+        $stamped = $payload['distilled_body_hash'] ?? null;
+
+        return is_string($stamped) && $stamped !== '' && $stamped === $this->bodyHash();
+    }
+
+    /**
      * The body hash the current media was generated from. Stamped into
      * branding_payload.media_body_hash by DesignerAgent when it persists an
      * asset; cleared (with the rest of branding_payload) when the caption is
