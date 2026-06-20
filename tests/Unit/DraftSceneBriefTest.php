@@ -24,6 +24,16 @@ class DraftSceneBriefTest extends TestCase
             }
         }
 
+        // These tests exercise the NORMAL path where the distillation matches the
+        // body, so the authored headline/CTA/visual_direction are trusted. Stamp
+        // a fresh distilled_body_hash so the freshness gate
+        // (Draft::distillationIsFreshForBody) reads true.
+        $bp = is_array($draft->branding_payload) ? $draft->branding_payload : [];
+        if (! array_key_exists('distilled_body_hash', $bp)) {
+            $bp['distilled_body_hash'] = Draft::hashBody($draft->body);
+            $draft->setAttribute('branding_payload', $bp);
+        }
+
         $entry = new CalendarEntry(array_merge([
             'visual_direction' => 'A real hiring manager reviewing CVs at a sunlit desk',
         ], $entryAttrs));

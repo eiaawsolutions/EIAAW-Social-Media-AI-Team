@@ -47,7 +47,20 @@ final class DraftSceneBrief
     {
         $parts = [];
 
-        $hook = self::hook($draft);
+        // Some scripted signals are NOT body-gated: the hook comes from
+        // platform_payload.headline, the CTA from platform_payload.cta, and the
+        // art direction from the calendar entry's visual_direction — all authored
+        // by the Writer/Strategist for the ORIGINAL post and never refreshed when
+        // the caption is edited. When the distillation isn't fresh for the
+        // current body (caption drifted from what these were authored for), drop
+        // them and anchor purely to the body + freshly re-distilled quote, so an
+        // edited/mismatched caption can't drag stale headline/CTA/art-direction
+        // into the visual. See Draft::distillationIsFreshForBody().
+        $derivedTrustworthy = $draft->distillationIsFreshForBody();
+
+        // Hook: trust the authored headline only while it's still fresh for the
+        // body; otherwise fall back to the body's first sentence (body-anchored).
+        $hook = $derivedTrustworthy ? self::hook($draft) : self::bodyFirstSentence($draft);
         if ($hook !== '') {
             $parts[] = "The post's hook: \"{$hook}\"";
         }
@@ -57,9 +70,11 @@ final class DraftSceneBrief
             $parts[] = "Its core message: \"{$quote}\"";
         }
 
-        $cta = self::cta($draft);
-        if ($cta !== '') {
-            $parts[] = "Call to action: {$cta}";
+        if ($derivedTrustworthy) {
+            $cta = self::cta($draft);
+            if ($cta !== '') {
+                $parts[] = "Call to action: {$cta}";
+            }
         }
 
         $emotion = self::targetEmotion($draft);
@@ -67,9 +82,11 @@ final class DraftSceneBrief
             $parts[] = "Evoke this feeling: {$emotion}";
         }
 
-        $direction = trim((string) ($draft->calendarEntry?->visual_direction ?? ''));
-        if ($direction !== '') {
-            $parts[] = "Art direction: {$direction}";
+        if ($derivedTrustworthy) {
+            $direction = trim((string) ($draft->calendarEntry?->visual_direction ?? ''));
+            if ($direction !== '') {
+                $parts[] = "Art direction: {$direction}";
+            }
         }
 
         $lead = self::bodyLead($draft, $contextWords);
@@ -109,6 +126,15 @@ final class DraftSceneBrief
 
         // Fall back to the first sentence of the body — that line IS the hook
         // per the Writer's contract (the body must open with it).
+        return self::bodyFirstSentence($draft);
+    }
+
+    /**
+     * The body's first sentence — always body-anchored, used as the hook when
+     * the authored headline can't be trusted (distillation stale for the body).
+     */
+    private static function bodyFirstSentence(Draft $draft): string
+    {
         $body = trim(strip_tags((string) $draft->body));
         if ($body === '') {
             return '';
