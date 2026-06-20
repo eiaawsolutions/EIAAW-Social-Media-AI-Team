@@ -598,15 +598,34 @@ class DraftResource extends Resource
                     ->action(function (Draft $r): void {
                         @set_time_limit(600);
 
-                        // If the still no longer matches the (edited) caption,
-                        // regenerate it FIRST so the video's keyframe reflects the
-                        // current text — otherwise VideoAgent animates an
-                        // off-message still. A draft with no still at all skips
-                        // straight to text-to-video inside VideoAgent.
                         $keyframeNote = '';
                         if ($r->mediaIsStaleForBody()) {
+                            // The still no longer matches the (edited) caption:
+                            // regenerate it FIRST so the keyframe reflects the
+                            // current text. DesignerAgent clears asset_url itself,
+                            // so the prior video is dropped here too — VideoAgent
+                            // then animates the fresh on-message still.
                             $keyframeNote = self::refreshStillForKeyframe($r);
                             $r->refresh();
+                        } elseif (Draft::urlIsVideo($r->asset_url)) {
+                            // Re-clicking "Generate video" on a draft that ALREADY
+                            // has a video: VideoAgent's idempotency guard would
+                            // no-op ("already-has-video") and return the same clip
+                            // — looking like nothing happened. Clear asset_url so a
+                            // fresh clip is generated. stillUrlForKeyframe() then
+                            // recovers the last IMAGE from asset_urls history as the
+                            // keyframe (the still is still current). Mirrors how
+                            // pickImage/forceAiImage clear asset_url before re-run.
+                            // Keep the outgoing video in asset_urls history first so
+                            // it isn't lost (VideoAgent's history-push sees a null
+                            // asset_url once we clear it).
+                            $history = is_array($r->asset_urls) ? $r->asset_urls : [];
+                            if ($r->asset_url && ! in_array($r->asset_url, $history, true)) {
+                                $history[] = $r->asset_url;
+                            }
+                            $r->update(['asset_url' => null, 'asset_urls' => array_values($history)]);
+                            $r->refresh();
+                            $keyframeNote = ' · regenerated a fresh clip';
                         }
 
                         try {
@@ -845,6 +864,10 @@ class DraftResource extends Resource
 
         if ($draft->mediaIsStaleForBody()) {
             return 'The caption changed since this still was made. We\'ll first regenerate the image from the edited caption (one AI image), then build a short vertical video around that fresh still. The old still moves into the asset history.';
+        }
+
+        if (Draft::urlIsVideo($draft->asset_url)) {
+            return 'This draft already has a video. Generates a fresh vertical clip around the existing still keyframe (the current video moves into the asset history).';
         }
 
         return 'Uses the current still as the keyframe and generates a short vertical video around it. The old still moves into the asset history.';
