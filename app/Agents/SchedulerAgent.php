@@ -26,6 +26,14 @@ class SchedulerAgent extends BaseAgent
     public function role(): string { return 'scheduler'; }
     public function promptVersion(): string { return 'scheduler.v1.0'; }
 
+    /** Draft statuses a draft may be in to be (re)scheduled. Pure — unit-testable. */
+    public const SCHEDULABLE_STATUSES = ['approved', 'scheduled'];
+
+    public static function isSchedulableStatus(?string $status): bool
+    {
+        return in_array((string) $status, self::SCHEDULABLE_STATUSES, true);
+    }
+
     protected function handle(Brand $brand, array $input): AgentResult
     {
         $draftId = $input['draft_id'] ?? null;
@@ -39,7 +47,7 @@ class SchedulerAgent extends BaseAgent
             return AgentResult::fail('Draft not found for this brand.');
         }
 
-        if (! in_array($draft->status, ['approved', 'scheduled'])) {
+        if (! self::isSchedulableStatus($draft->status)) {
             return AgentResult::fail("Draft is in status '{$draft->status}' — only approved drafts can be scheduled.");
         }
 

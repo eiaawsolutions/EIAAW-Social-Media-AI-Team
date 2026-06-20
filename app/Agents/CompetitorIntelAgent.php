@@ -42,6 +42,13 @@ class CompetitorIntelAgent extends BaseAgent
     }
 
     public function role(): string { return 'competitor_intel'; }
+
+    // NOTE: CompetitorIntelAgent makes NO LLM call — it fetches competitor ads
+    // (Meta Ad Library + LinkedIn via Firecrawl), normalises, and upserts them.
+    // This promptVersion is AUDIT TELEMETRY only (stamps the audit log so this
+    // ingestion stage is traceable); it does not route an LLM. The LlmGateway
+    // inherited from BaseAgent is unused here — the synthesis over these ads is
+    // CompetitorStrategistAgent's job.
     public function promptVersion(): string { return 'competitor_intel.v1.0'; }
 
     protected function handle(Brand $brand, array $input): AgentResult

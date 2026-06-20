@@ -43,6 +43,11 @@ class GrowthStrategistAgent extends BaseAgent
 
     private const WINDOW_DAYS = 30;
 
+    /** cta_styles are short button-label phrasings — bound them so a model that
+     *  emits a paragraph (or a flood) doesn't poison the Writer's guidance. */
+    public const MAX_CTA_LENGTH = 80;
+    public const MAX_CTA_STYLES = 5;
+
     public function __construct(
         LlmGateway $llm,
         private readonly AccountGrowthService $growth,
@@ -487,11 +492,18 @@ class GrowthStrategistAgent extends BaseAgent
                     $hooks[$h] = true;
                 }
             }
+            // cta_styles are freeform phrasings (no enum), so bound them the way
+            // hook_patterns are bounded by the enum: drop blanks and anything too
+            // long to be a real CTA button label, dedupe, and cap the count.
             $ctas = [];
             foreach ((array) ($g['cta_styles'] ?? []) as $c) {
                 $c = trim((string) $c);
-                if ($c !== '') {
-                    $ctas[$c] = true;
+                if ($c === '' || mb_strlen($c) > self::MAX_CTA_LENGTH) {
+                    continue;
+                }
+                $ctas[$c] = true;
+                if (count($ctas) >= self::MAX_CTA_STYLES) {
+                    break;
                 }
             }
             if ($hooks === [] && $ctas === []) {

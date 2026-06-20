@@ -12,10 +12,11 @@ class StrategistPromptTest extends TestCase
         // v1.1 added Competitor signals; v1.2 the creative-director enrichment;
         // v1.5 the Strategy Briefing (competitor-strategy synthesis + market &
         // trend brief); v1.6 the Growth strategy block; v1.7 the anti-recycling
-        // "Recently published" exclusion + the goal-lagging pivot. The bump must
-        // be visible so the optimizer treats prior calendars as a different
-        // prompt-version input cohort.
-        $this->assertSame('strategist.v1.7', StrategistPrompt::VERSION);
+        // "Recently published" exclusion + the goal-lagging pivot; v1.8 reworded
+        // the unrecoverable scheduled_time instruction. The bump must be visible
+        // so the optimizer treats prior calendars as a different prompt-version
+        // input cohort.
+        $this->assertSame('strategist.v1.8', StrategistPrompt::VERSION);
     }
 
     public function test_system_prompt_includes_recently_published_and_lagging_goal_directives(): void

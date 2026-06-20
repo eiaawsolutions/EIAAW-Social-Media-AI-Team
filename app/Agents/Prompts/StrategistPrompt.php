@@ -4,6 +4,13 @@ namespace App\Agents\Prompts;
 
 final class StrategistPrompt
 {
+    // v1.8 — scheduled_time drift fix. The Growth-strategy section previously
+    // told the model to "Set each entry's scheduled_time intent", but the entry
+    // schema has no scheduled_time field — the instruction was unrecoverable.
+    // Reworded: best posting times are applied by the auto-scheduler when the
+    // entry is queued; the model uses the best-time signal only to weight
+    // platform volume. No schema change.
+    //
     // v1.7 — anti-recycling + goal-lagging pivot. The user message may now carry
     // two more self-suppressing blocks:
     //   - "Recently published — DO NOT REPEAT" — the topics/angles this brand has
@@ -45,7 +52,7 @@ final class StrategistPrompt
     // contains a "Competitor signals (last 30 days)" block, the strategist
     // is asked to position differently from common themes (not copy them)
     // and surface 1-2 explicit "counter-positioning" entries.
-    public const VERSION = 'strategist.v1.7';
+    public const VERSION = 'strategist.v1.8';
 
     public static function system(): string
     {
@@ -135,7 +142,7 @@ If the user message contains a "Recently published — DO NOT REPEAT" block, it 
 
 If the user message contains a "Growth strategy (from this brand's own performance)" block, it is computed from this brand's REAL post metrics — treat it as the strongest steer for HOW to reach the audience:
 - Lean the platform distribution toward the platforms with the highest reach share; don't starve a high-reach platform for an even split.
-- Set each entry's scheduled_time intent toward the listed best posting times for its platform (the Writer/Scheduler honour it).
+- The listed best posting times are applied automatically by the scheduler when each entry is queued — you do NOT emit a time. Use the best-time signal only to judge which platforms deserve more of the month's volume (a platform with strong best-time reach earns more entries).
 - Favour the listed winning hook patterns when shaping content_angle.
 - Distribute the entries' objective toward the recommended objective distribution — these are the objectives that actually drove engagement and conversions for THIS brand, so the dead default is replaced by real signal.
 - If a "Goals behind pace" block is present, one or more growth goals are LAGGING their target timeline. Deliberately skew the platform distribution and objective mix toward the metric each lagging goal targets — even beyond the even reach-share split — because closing those goals is the priority for this month. (e.g. a lagging followers goal on Instagram → over-index Instagram and weight toward awareness/engagement objectives, using the brand's proven winning hooks for them.)

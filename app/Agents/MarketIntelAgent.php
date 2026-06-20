@@ -115,6 +115,13 @@ class MarketIntelAgent extends BaseAgent
 
         $allowedIds = $signals->pluck('id')->map(fn ($i) => (int) $i)->all();
 
+        // id → the text the model actually saw for each signal (title + snippet),
+        // so the numeric-claim guard can confirm a trend's figures came from a
+        // cited signal rather than being invented.
+        $signalTexts = $signals->mapWithKeys(fn (MarketSignal $s): array => [
+            (int) $s->id => trim((string) $s->title).' '.trim((string) $s->snippet),
+        ])->all();
+
         $result = $this->llm->call(
             promptVersion: $this->promptVersion(),
             systemPrompt: MarketIntelPrompt::system(),
@@ -135,7 +142,7 @@ class MarketIntelAgent extends BaseAgent
 
         // Post-synthesis evidence filter: drop any trend whose cited ids don't
         // resolve to real signals; keep only the real ids on survivors.
-        $trends = self::filterTrendsByEvidence($payload['trends'] ?? [], $allowedIds);
+        $trends = self::filterTrendsByEvidence($payload['trends'] ?? [], $allowedIds, $signalTexts);
         $verifiedSignalCount = self::countCitedSignals($trends);
 
         if ($trends === [] || $verifiedSignalCount === 0) {
@@ -274,7 +281,7 @@ class MarketIntelAgent extends BaseAgent
      * @param  array<int,int>    $allowedIds
      * @return array<int,array<string,mixed>>
      */
-    public static function filterTrendsByEvidence(array $trends, array $allowedIds): array
+    public static function filterTrendsByEvidence(array $trends, array $allowedIds, array $signalTexts = []): array
     {
         $allowed = array_flip(array_map('intval', $allowedIds));
         $out = [];
@@ -299,15 +306,63 @@ class MarketIntelAgent extends BaseAgent
             if ($validIds === []) {
                 continue; // uncited or only-hallucinated-citation trend — discard
             }
+
+            $why = trim((string) ($trend['why_relevant'] ?? ''));
+            $angle = trim((string) ($trend['suggested_angle'] ?? ''));
+
+            // Numeric-claim guard: a statistic in the narrative must appear in at
+            // least ONE of this trend's cited signals' text. Citation-ID validity
+            // alone doesn't stop the model asserting "65% growth" that no signal
+            // supports — so when signal texts are supplied, drop any trend whose
+            // why_relevant/suggested_angle invents a number. Skipped when no
+            // signalTexts map is given (backward-compatible).
+            if ($signalTexts !== []) {
+                $citedText = '';
+                foreach ($validIds as $id) {
+                    $citedText .= ' '.(string) ($signalTexts[$id] ?? '');
+                }
+                if (! self::numericClaimsGrounded($why.' '.$angle, $citedText)) {
+                    continue;
+                }
+            }
+
             $out[] = [
                 'trend' => $name,
                 'evidence_signal_ids' => $validIds,
-                'why_relevant' => trim((string) ($trend['why_relevant'] ?? '')),
-                'suggested_angle' => trim((string) ($trend['suggested_angle'] ?? '')),
+                'why_relevant' => $why,
+                'suggested_angle' => $angle,
             ];
         }
 
         return $out;
+    }
+
+    /**
+     * True when every number that appears in $narrative also appears (as a
+     * digit run) in $evidence. A narrative with no numbers is trivially grounded.
+     * Pure — used to drop trends that invent a statistic no cited signal supports.
+     * Compares bare digit runs so "40%", "40 percent", and "up 40 points" all
+     * match an evidence "40"; we intentionally ignore the unit, only guarding
+     * that the figure itself was actually present in the source.
+     */
+    public static function numericClaimsGrounded(string $narrative, string $evidence): bool
+    {
+        preg_match_all('/\d+/', $narrative, $narrativeNums);
+        $nums = $narrativeNums[0] ?? [];
+        if ($nums === []) {
+            return true;
+        }
+
+        preg_match_all('/\d+/', $evidence, $evidenceNums);
+        $evidenceSet = array_flip($evidenceNums[0] ?? []);
+
+        foreach ($nums as $n) {
+            if (! isset($evidenceSet[$n])) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

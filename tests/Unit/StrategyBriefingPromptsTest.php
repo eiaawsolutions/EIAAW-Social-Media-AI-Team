@@ -32,7 +32,7 @@ class StrategyBriefingPromptsTest extends TestCase
 
     public function test_market_intel_prompt_version_and_cited_evidence_rule(): void
     {
-        $this->assertSame('market_intel.v1.0', MarketIntelPrompt::VERSION);
+        $this->assertSame('market_intel.v1.1', MarketIntelPrompt::VERSION);
 
         $system = MarketIntelPrompt::system();
         // Every trend must cite a supplied signal id.

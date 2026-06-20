@@ -80,20 +80,32 @@ class DesignerAgent extends BaseAgent
         return self::FAL_PRICING_USD[$model] ?? 0.003;
     }
 
+    /** Upper bound on a model-supplied carousel hook-slide visual_direction
+     *  before it is interpolated into the FAL prompt (defensive — the value
+     *  comes from draft.platform_payload, i.e. LLM output). */
+    public const MAX_HOOK_SLIDE_CHARS = 280;
+
     public function role(): string
     {
         return 'designer';
     }
 
-    // v1.5 — the image is now anchored to the SCRIPTED post content via
+    // v1.6 — defensive bound on the carousel hook-slide visual_direction read
+    // from draft.platform_payload before it enters the prompt (was interpolated
+    // unbounded). v1.5 — the image is anchored to the SCRIPTED post content via
     // DraftSceneBrief (hook + distilled quote + CTA + target emotion +
-    // visual_direction), not a raw truncated body slice. The poster now
-    // depicts what the caption actually says, in lockstep with the video
-    // built from the same brief. v1.4 retained: ImageCreativeDirection realism
-    // contract + structured negative_prompt.
+    // visual_direction), not a raw truncated body slice. The poster depicts
+    // what the caption actually says, in lockstep with the video built from the
+    // same brief. v1.4 retained: ImageCreativeDirection realism contract +
+    // structured negative_prompt.
+    //
+    // NOTE: DesignerAgent makes NO LLM call — image generation goes to FAL.AI.
+    // This promptVersion is AUDIT TELEMETRY only (it stamps the audit log + cost
+    // ledger so prompt-construction changes are traceable); it does not route an
+    // LLM. The LlmGateway inherited from BaseAgent is unused here.
     public function promptVersion(): string
     {
-        return 'designer.v1.5';
+        return 'designer.v1.6';
     }
 
     protected function handle(Brand $brand, array $input): AgentResult
@@ -487,7 +499,12 @@ class DesignerAgent extends BaseAgent
             return '';
         }
 
-        return trim((string) ($first['visual_direction'] ?? $first['title'] ?? ''));
+        // Bound the model-supplied direction before it enters the FAL prompt.
+        return mb_substr(
+            trim((string) ($first['visual_direction'] ?? $first['title'] ?? '')),
+            0,
+            self::MAX_HOOK_SLIDE_CHARS,
+        );
     }
 
     private function buildPrompt(Brand $brand, Draft $draft): string

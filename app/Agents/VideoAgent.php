@@ -117,6 +117,11 @@ class VideoAgent extends BaseAgent
     // passed to Veo as SPOKEN DIALOGUE so the model narrates the post copy in
     // its own native synced audio — no separate Kokoro voiceover/music pass.
     // v1.4 retained: scene-brief anchoring + lockstep with the Designer still.
+    //
+    // NOTE: VideoAgent makes NO LLM call — generation goes to FAL.AI Veo 3.
+    // This promptVersion is AUDIT TELEMETRY only (stamps the audit log + cost
+    // ledger so prompt-construction changes are traceable); it does not route an
+    // LLM. The LlmGateway inherited from BaseAgent is unused here.
     public function promptVersion(): string { return 'video.veo3.v2.0'; }
 
     protected function handle(Brand $brand, array $input): AgentResult

@@ -9,7 +9,9 @@ class ComplianceLegalPromptTest extends TestCase
 {
     public function test_version_is_pinned(): void
     {
-        $this->assertSame('compliance.legal.v1.0', ComplianceLegalPrompt::VERSION);
+        // Bumped to v1.1 when the input-contract header + a worked example were
+        // added (the scoring rubric + jailbreak defence are unchanged).
+        $this->assertSame('compliance.legal.v1.1', ComplianceLegalPrompt::VERSION);
     }
 
     public function test_system_prompt_frames_must_vs_should_and_precision(): void

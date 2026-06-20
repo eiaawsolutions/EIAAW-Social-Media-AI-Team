@@ -4,7 +4,16 @@ namespace App\Agents\Prompts;
 
 final class RepurposePrompt
 {
-    public const VERSION = 'repurpose.v1.0';
+    // v1.1 — context parity with Writer v1.4–v1.6. The user message now carries
+    // (when the calendar entry has them) the Researcher's deepened angle, the
+    // Strategist's creative intent (target_emotion + content_angle), and the
+    // brand's proven per-objective hook/CTA guidance — injected by RepurposeAgent
+    // via the shared RendersWriterContext trait. This prompt now instructs the
+    // model to honour those signals, and to emit carousel_slides for carousel
+    // entries (the inherited Writer schema already permits the field and the
+    // Designer consumes it). Self-suppressing upstream: an un-enriched brand's
+    // message is byte-identical to v1.0, so prior derivatives stay a clean cohort.
+    public const VERSION = 'repurpose.v1.1';
 
     public static function system(string $platform, ?int $workspaceId = null): string
     {
@@ -41,6 +50,18 @@ VIDEO/REEL → CAPTION:
 # Branded artefacts (REQUIRED on every derivative)
 
 Same as Writer: produce `quote` (6–14 words, sentence case) and `voiceover` (25–45 words). For derivatives the quote and voiceover should ECHO the master's quote/voiceover where they exist — same principled idea, lightly re-cut to match the platform.
+
+# Strategist & growth context (when supplied)
+
+The user message may include some of these blocks — use them, but the MASTER is still the source of the core message:
+- "Research brief — 5 angles": the Strategist/Researcher deepened this topic into angles. Let the closest angle steer the derivative's hook for THIS platform — don't invent a new thesis the master doesn't support.
+- "Target emotion" / "Content angle": the planned feeling and hook direction. Make the {$platformLabel} opening evoke that emotion and build from that angle.
+- "Proven hook patterns / CTA styles for this objective": patterns that have measurably worked for THIS brand on THIS objective. Prefer them for the hook + CTA when they fit the master's message — never force one that doesn't.
+When none of these are present, repurpose from the master alone exactly as before.
+
+# Carousel derivatives (ONLY when the entry format is "carousel")
+
+When the calendar entry's format is "carousel", populate `carousel_slides` with a slide-by-slide arc the Designer turns into per-slide art: hook slide → value/proof slides (one idea each) → emotional payoff → CTA slide. Each slide needs `title` (≤7 words), `body` (≤25 words), and `visual_direction`. 4–8 slides. Adapt the master's spine into the slide arc — don't restate the master body verbatim. For non-carousel formats, OMIT `carousel_slides` entirely.
 
 # Platform-specific guidance
 

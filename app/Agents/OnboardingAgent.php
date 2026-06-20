@@ -42,6 +42,17 @@ class OnboardingAgent extends BaseAgent
     public function role(): string { return 'onboarding'; }
     public function promptVersion(): string { return OnboardingPrompt::VERSION; }
 
+    /**
+     * Whether a synthesised brand-style.md is long enough to be a real style
+     * guide. The prompt targets 600-1200 words; we hard-floor at
+     * OnboardingPrompt::MIN_STYLE_WORDS to reject a truncated/broken generation
+     * before it's persisted. Pure (no DB / no I/O) so it's unit-testable.
+     */
+    public static function isAcceptableStyleLength(string $brandStyleMd): bool
+    {
+        return str_word_count(trim($brandStyleMd)) >= OnboardingPrompt::MIN_STYLE_WORDS;
+    }
+
     protected function handle(Brand $brand, array $input): AgentResult
     {
         if (empty($brand->website_url)) {
@@ -82,6 +93,18 @@ class OnboardingAgent extends BaseAgent
                 'raw_sample' => substr($result->rawText, 0, 200),
             ]);
             return AgentResult::fail('The brand voice synthesis came back unstructured. Try again — the model occasionally needs a second attempt.');
+        }
+
+        // Reject an obviously-truncated brand-style.md rather than persisting a
+        // half-written style guide (the prompt targets 600-1200 words). A
+        // sub-floor document is a broken generation, not a usable voice spec —
+        // surface the same "try again" path the unstructured branch uses.
+        if (! self::isAcceptableStyleLength((string) $payload['brand_style_md'])) {
+            Log::warning('Onboarding: brand_style_md below word-count floor', [
+                'brand_id' => $brand->id,
+                'word_count' => str_word_count((string) $payload['brand_style_md']),
+            ]);
+            return AgentResult::fail('The brand voice came back too short to be usable. Try again — the model occasionally truncates the first attempt.');
         }
 
         // 3. Persist BrandStyle (versioned + bump current pointer)

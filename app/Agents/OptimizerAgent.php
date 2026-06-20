@@ -240,21 +240,37 @@ class OptimizerAgent extends BaseAgent
         arsort($formatMix);
         arsort($platformMix);
 
-        $topPillar = array_key_first($pillarMix);
+        $topPillar = array_key_first($pillarMix);   // null when the dimension is empty
         $topFormat = array_key_first($formatMix);
         $topPlatform = array_key_first($platformMix);
 
         $totalImpr = (int) $rows->sum(fn ($r) => (int) ($r->impressions ?? 0));
         $totalEng = (int) $rows->sum(fn ($r) => $this->engagement($r));
 
+        // Build each clause independently. When a dimension has no labelled posts
+        // (every post had a null pillar/format/platform), array_key_first returns
+        // null — substitute a neutral phrase instead of coercing null to an empty
+        // token, which used to garble the sentence ("; format is winning ...").
+        $reach = $topPlatform !== null
+            ? sprintf('%s reached the most', ucfirst((string) $topPlatform))
+            : 'No single platform led';
+
+        $pillarClause = $topPillar !== null
+            ? sprintf('%s pillar is your best-performing voice', ucfirst(str_replace('_', ' ', (string) $topPillar)))
+            : 'No clear pillar leader yet';
+
+        $formatClause = $topFormat !== null
+            ? sprintf('%s format is winning the algorithm', str_replace('_', ' ', (string) $topFormat))
+            : 'no clear format leader yet';
+
         return sprintf(
-            'Across %d posts: %s reached the most with %s impressions and %s engagement. %s pillar is your best-performing voice; %s format is winning the algorithm. Strategist will weight the next calendar toward this mix.',
+            'Across %d posts: %s with %s impressions and %s engagement. %s; %s. Strategist will weight the next calendar toward this mix.',
             $rows->count(),
-            ucfirst((string) $topPlatform),
+            $reach,
             number_format($totalImpr),
             number_format($totalEng),
-            ucfirst(str_replace('_', ' ', (string) $topPillar)),
-            str_replace('_', ' ', (string) $topFormat),
+            $pillarClause,
+            $formatClause,
         );
     }
 }

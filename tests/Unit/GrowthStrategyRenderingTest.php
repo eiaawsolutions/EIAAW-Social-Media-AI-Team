@@ -114,7 +114,7 @@ class GrowthStrategyRenderingTest extends TestCase
 
     public function test_growth_strategist_prompt_version_and_no_numeric_schema(): void
     {
-        $this->assertSame('growth_strategist.v1.0', GrowthStrategistPrompt::VERSION);
+        $this->assertSame('growth_strategist.v1.1', GrowthStrategistPrompt::VERSION);
 
         $system = GrowthStrategistPrompt::system();
         $this->assertStringContainsString('Do NOT output any numeric metric', $system);
@@ -129,9 +129,9 @@ class GrowthStrategyRenderingTest extends TestCase
         $this->assertArrayNotHasKey('hook_performance', $props);
     }
 
-    public function test_strategist_prompt_bumped_to_v17_with_growth_section(): void
+    public function test_strategist_prompt_bumped_with_growth_section(): void
     {
-        $this->assertSame('strategist.v1.7', StrategistPrompt::VERSION);
+        $this->assertSame('strategist.v1.8', StrategistPrompt::VERSION);
         $this->assertStringContainsString('# Growth strategy', StrategistPrompt::system());
     }
 

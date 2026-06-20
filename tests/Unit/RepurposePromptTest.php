@@ -10,7 +10,9 @@ class RepurposePromptTest extends TestCase
 {
     public function test_version_is_locked(): void
     {
-        $this->assertSame('repurpose.v1.0', RepurposePrompt::VERSION);
+        // Bumped to v1.1 when Repurpose began injecting the Writer-evolved
+        // research/creative/growth context + carousel-slide instruction.
+        $this->assertSame('repurpose.v1.1', RepurposePrompt::VERSION);
     }
 
     public function test_system_prompt_forbids_verbatim_copy(): void
