@@ -904,12 +904,16 @@ class DraftResource extends Resource
      */
     private static function generateVideoModalDescription(Draft $draft): string
     {
-        if (empty($draft->asset_url)) {
-            return 'Generates a short vertical video for this draft from the current caption with AI.';
+        // Stale takes priority over "no primary asset": after a "Delete media" +
+        // caption edit, asset_url is null but a stale clip/still lingers in
+        // asset_urls history and the cached distillation is off-message — the
+        // action will regenerate the keyframe from the edited caption, so say so.
+        if ($draft->mediaIsStaleForBody()) {
+            return 'The caption changed since the last media was made. We\'ll first regenerate the image from the edited caption (one AI image), then build a short vertical video around that fresh still. Any old media moves into the asset history.';
         }
 
-        if ($draft->mediaIsStaleForBody()) {
-            return 'The caption changed since this still was made. We\'ll first regenerate the image from the edited caption (one AI image), then build a short vertical video around that fresh still. The old still moves into the asset history.';
+        if (empty($draft->asset_url)) {
+            return 'Generates a short vertical video for this draft from the current caption with AI.';
         }
 
         if (Draft::urlIsVideo($draft->asset_url)) {

@@ -441,6 +441,17 @@ class DesignerAgent extends BaseAgent
      * for this draft and written quote / voiceover / poster keys, so merging
      * (not replacing) preserves them. Hashes draft->body (unchanged during a
      * Designer run) so the stamp matches the exact caption this still depicts.
+     *
+     * media_body_hash is stamped UNCONDITIONALLY here: the asset was just
+     * generated from a brief built off the CURRENT body, so it depicts the
+     * current caption at this instant. Whether it later reads STALE is judged by
+     * Draft::mediaIsStaleForBody(), which ALSO requires the distillation (when
+     * one exists) to be fresh — that read-side check, not this stamp, is what
+     * catches the #436 desync where stale distilled signals were reused under a
+     * freshly-stamped media hash. Gating the stamp on distillationIsFreshForBody()
+     * would be wrong: the library / raw-photo paths persist media WITHOUT running
+     * a distiller, so they'd never satisfy that gate and would loop the
+     * regenerate forever.
      */
     private function brandingPayloadWithMediaHash(Draft $draft): array
     {
