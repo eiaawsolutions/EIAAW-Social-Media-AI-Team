@@ -11,10 +11,26 @@ class StrategistPromptTest extends TestCase
     {
         // v1.1 added Competitor signals; v1.2 the creative-director enrichment;
         // v1.5 the Strategy Briefing (competitor-strategy synthesis + market &
-        // trend brief); v1.6 the Growth strategy block. The bump must be visible
-        // so the optimizer treats prior calendars as a different prompt-version
-        // input cohort.
-        $this->assertSame('strategist.v1.6', StrategistPrompt::VERSION);
+        // trend brief); v1.6 the Growth strategy block; v1.7 the anti-recycling
+        // "Recently published" exclusion + the goal-lagging pivot. The bump must
+        // be visible so the optimizer treats prior calendars as a different
+        // prompt-version input cohort.
+        $this->assertSame('strategist.v1.7', StrategistPrompt::VERSION);
+    }
+
+    public function test_system_prompt_includes_recently_published_and_lagging_goal_directives(): void
+    {
+        $prompt = StrategistPrompt::system();
+
+        // Anti-recycling: the hard exclusion of already-shipped topics/angles.
+        $this->assertStringContainsString('Recently published', $prompt);
+        $this->assertStringContainsString('DO NOT REPEAT', $prompt);
+        // Reusing a pillar stays allowed; reusing a topic/angle is the target.
+        $this->assertStringContainsStringIgnoringCase('reusing a content pillar is expected', $prompt);
+
+        // Goal-lagging pivot: skew the month toward a lagging goal's metric.
+        $this->assertStringContainsString('Goals behind pace', $prompt);
+        $this->assertStringContainsStringIgnoringCase('lagging', $prompt);
     }
 
     public function test_system_prompt_includes_competitor_strategy_and_market_trend_sections(): void

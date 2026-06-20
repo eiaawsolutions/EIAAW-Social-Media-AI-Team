@@ -334,6 +334,14 @@ class SubmitScheduledPost implements ShouldQueue
         ]);
         // Bubble up to the draft so /agency/drafts shows it as published.
         $post->draft?->update(['status' => 'published']);
+
+        // Close the publish→corpus loop: embed this now-live post into
+        // brand_corpus so the Compliance dedup gate and the Writer's RAG learn
+        // from the brand's OWN history (previously only manual seeds landed
+        // there, so dedup was starved and the Strategist recycled topics).
+        // Dispatched, never inline — an embedding outage must not undo a
+        // verified publish.
+        IngestPublishedPostToCorpus::dispatch($post->id);
     }
 
     private function markFailed(ScheduledPost $post, string $reason, ?array $blotatoStatus = null): void

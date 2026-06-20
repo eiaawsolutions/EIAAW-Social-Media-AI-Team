@@ -9,6 +9,7 @@ use App\Agents\StrategistAgent;
 use App\Agents\WriterAgent;
 use App\Models\BrandGrowthGoal;
 use App\Services\Growth\BestTimeResolver;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 /**
@@ -128,9 +129,9 @@ class GrowthStrategyRenderingTest extends TestCase
         $this->assertArrayNotHasKey('hook_performance', $props);
     }
 
-    public function test_strategist_prompt_bumped_to_v16_with_growth_section(): void
+    public function test_strategist_prompt_bumped_to_v17_with_growth_section(): void
     {
-        $this->assertSame('strategist.v1.6', StrategistPrompt::VERSION);
+        $this->assertSame('strategist.v1.7', StrategistPrompt::VERSION);
         $this->assertStringContainsString('# Growth strategy', StrategistPrompt::system());
     }
 
@@ -138,5 +139,116 @@ class GrowthStrategyRenderingTest extends TestCase
     {
         $this->assertSame('writer.v1.6', WriterPrompt::VERSION);
         $this->assertStringContainsString('# Growth objective guidance', WriterPrompt::system('instagram'));
+    }
+
+    // ── Goal pace (goal-lagging pivot) ────────────────────────────────
+
+    public function test_pace_status_classifies_lagging_on_track_and_ahead(): void
+    {
+        $start = Carbon::parse('2026-06-01 00:00:00');
+        $end = Carbon::parse('2026-07-01 00:00:00');
+        $mid = Carbon::parse('2026-06-16 00:00:00'); // exactly half-elapsed → expected 50%
+
+        // 30% progress at the 50% mark → 20 points behind → lagging.
+        $this->assertSame('lagging', BrandGrowthGoal::paceStatus(30.0, $start, $end, $mid));
+        // 50% progress at the 50% mark → on track (within ±10pt tolerance).
+        $this->assertSame('on_track', BrandGrowthGoal::paceStatus(50.0, $start, $end, $mid));
+        // 75% progress at the 50% mark → 25 points ahead → ahead.
+        $this->assertSame('ahead', BrandGrowthGoal::paceStatus(75.0, $start, $end, $mid));
+    }
+
+    public function test_pace_status_returns_null_without_a_reading_or_window(): void
+    {
+        $start = Carbon::parse('2026-06-01 00:00:00');
+        $end = Carbon::parse('2026-07-01 00:00:00');
+        $mid = Carbon::parse('2026-06-16 00:00:00');
+
+        // No progress reading → null (never invent a verdict).
+        $this->assertNull(BrandGrowthGoal::paceStatus(null, $start, $end, $mid));
+        // Degenerate window (end ≤ start) → null.
+        $this->assertNull(BrandGrowthGoal::paceStatus(50.0, $end, $start, $mid));
+        // Before the window opens → null (no pace to judge yet).
+        $this->assertNull(BrandGrowthGoal::paceStatus(50.0, $start, $end, Carbon::parse('2026-05-01 00:00:00')));
+    }
+
+    public function test_expected_pct_is_linear_elapsed_and_clamped(): void
+    {
+        $start = Carbon::parse('2026-06-01 00:00:00');
+        $end = Carbon::parse('2026-07-01 00:00:00');
+
+        $this->assertSame(50.0, BrandGrowthGoal::expectedPct($start, $end, Carbon::parse('2026-06-16 00:00:00')));
+        // Past the deadline → clamped to 100 (now is clamped into the window).
+        $this->assertSame(100.0, BrandGrowthGoal::expectedPct($start, $end, Carbon::parse('2026-08-01 00:00:00')));
+        // Before the window / degenerate → null.
+        $this->assertNull(BrandGrowthGoal::expectedPct($start, $end, Carbon::parse('2026-05-01 00:00:00')));
+        $this->assertNull(BrandGrowthGoal::expectedPct($end, $start, Carbon::parse('2026-06-16 00:00:00')));
+    }
+
+    // ── Lagging-goals Strategist block ────────────────────────────────
+
+    public function test_lagging_goals_block_suppresses_when_nothing_lagging(): void
+    {
+        $this->assertSame('', StrategistAgent::renderLaggingGoalsBlock([]));
+        // An on-track goal produces no pressure.
+        $this->assertSame('', StrategistAgent::renderLaggingGoalsBlock([
+            ['target_metric' => 'followers', 'platform' => 'instagram', 'pace_status' => 'on_track', 'progress_pct' => 55.0],
+        ]));
+    }
+
+    public function test_lagging_goals_block_renders_only_lagging_and_biases_metric(): void
+    {
+        $block = StrategistAgent::renderLaggingGoalsBlock([
+            ['target_metric' => 'followers', 'platform' => 'instagram', 'pace_status' => 'lagging', 'progress_pct' => 30.0, 'expected_pct' => 60.0],
+            ['target_metric' => 'reach', 'platform' => 'tiktok', 'pace_status' => 'ahead', 'progress_pct' => 90.0, 'expected_pct' => 50.0],
+        ]);
+
+        $this->assertStringContainsString('# Goals behind pace', $block);
+        $this->assertStringContainsString('followers (instagram)', $block);
+        $this->assertStringContainsString('LAGGING', $block);
+        $this->assertStringContainsString('Over-index instagram', $block);
+        // Restated numbers, not invented ones.
+        $this->assertStringContainsString('30% reached', $block);
+        $this->assertStringContainsString('60% of the window elapsed', $block);
+        // The ahead goal is NOT pressured.
+        $this->assertStringNotContainsString('tiktok', $block);
+    }
+
+    // ── Recently-published anti-recycling block ───────────────────────
+
+    public function test_recently_published_block_suppresses_when_empty(): void
+    {
+        $this->assertSame('', StrategistAgent::renderRecentlyPublishedBlock([]));
+    }
+
+    public function test_recently_published_block_dedups_by_topic_and_lists_exclusions(): void
+    {
+        $block = StrategistAgent::renderRecentlyPublishedBlock([
+            ['topic' => 'Latte art for beginners', 'pillar' => 'educational', 'angle' => 'step-by-step', 'published_at' => Carbon::parse('2026-06-05')],
+            ['topic' => 'Meet our weekend barista', 'pillar' => 'community', 'published_at' => Carbon::parse('2026-06-02')],
+            // Duplicate topic (different case) → collapsed to the first occurrence.
+            ['topic' => 'latte ART for beginners', 'pillar' => 'educational', 'published_at' => Carbon::parse('2026-05-20')],
+        ]);
+
+        $this->assertStringContainsString('# Recently published — DO NOT REPEAT', $block);
+        $this->assertStringContainsString('Jun 5 · educational · "Latte art for beginners"', $block);
+        $this->assertStringContainsString('(angle: step-by-step)', $block);
+        $this->assertStringContainsString('Meet our weekend barista', $block);
+        // Reusing a pillar stays explicitly allowed; only the topic/angle is barred.
+        $this->assertStringContainsString('Re-using a PILLAR is fine', $block);
+        // Deduped: only ONE latte-art line.
+        $this->assertSame(1, substr_count(strtolower($block), 'latte art for beginners'));
+    }
+
+    public function test_recently_published_block_respects_limit(): void
+    {
+        $entries = [];
+        for ($i = 1; $i <= 50; $i++) {
+            $entries[] = ['topic' => "Topic number {$i}", 'pillar' => 'educational'];
+        }
+        $block = StrategistAgent::renderRecentlyPublishedBlock($entries, 90, 40);
+
+        // 40 listed, 41+ trimmed.
+        $this->assertStringContainsString('"Topic number 40"', $block);
+        $this->assertStringNotContainsString('"Topic number 41"', $block);
     }
 }

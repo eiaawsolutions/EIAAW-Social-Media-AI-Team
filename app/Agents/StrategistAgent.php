@@ -219,6 +219,22 @@ class StrategistAgent extends BaseAgent
         $growthBlock = $this->renderGrowthStrategy($brand);
         $growthSection = $growthBlock === '' ? '' : "\n".$growthBlock."\n";
 
+        // Goal-lagging pivot: when a growth goal is behind the pace it needs to
+        // hit its target by its deadline, tell the Strategist to skew the month
+        // toward the metric it targets. Suppressed to '' when nothing is lagging
+        // (or no goals/readings exist), so on-track brands plan unchanged.
+        $lagBlock = $this->renderLaggingGoals($brand);
+        $lagSection = $lagBlock === '' ? '' : "\n".$lagBlock."\n";
+
+        // Cross-month memory: the topics/angles this brand has ACTUALLY published
+        // recently, so the Strategist plans fresh ground instead of re-covering
+        // last month. Self-suppresses to '' for a brand with no published history
+        // (a brand-new account's prompt stays byte-identical to the pre-feature
+        // behaviour). Splices right before brand-style.md so it reads as a hard
+        // exclusion list the model carries into planning.
+        $recentBlock = $this->renderRecentlyPublished($brand);
+        $recentSection = $recentBlock === '' ? '' : "\n".$recentBlock."\n";
+
         $factsBlock = $brand->brandFactsBlock();
         $factsSection = $factsBlock === '' ? '' : "\n".$factsBlock."\n";
 
@@ -240,7 +256,7 @@ ACTIVE PLATFORMS: {$platformList}
 
 # Format mix targets
 {$formatLines}
-{$competitorSection}{$competitorStrategySection}{$marketTrendSection}{$growthSection}{$factsSection}{$legalSection}
+{$competitorSection}{$competitorStrategySection}{$marketTrendSection}{$growthSection}{$lagSection}{$recentSection}{$factsSection}{$legalSection}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 
@@ -630,5 +646,155 @@ MSG;
 
         return "# Growth strategy (from this brand's own performance)\n".implode("\n\n", $lines)
             ."\n\nThese are computed from this brand's REAL metrics. Lean platform + objective distribution and posting times toward what's working here, and favour the winning hook patterns. Never assert a number not shown above.";
+    }
+
+    /**
+     * Read the current growth brief's goal_progress and surface only the goals
+     * whose pace_status is 'lagging' (computed by GrowthStrategistAgent from
+     * real readings). Returns '' when no current brief, no goals, or nothing is
+     * lagging, so on-track brands plan unchanged.
+     */
+    private function renderLaggingGoals(Brand $brand): string
+    {
+        $brief = GrowthStrategyBrief::currentForBrand($brand->id)->first();
+        if (! $brief) {
+            return '';
+        }
+
+        return self::renderLaggingGoalsBlock((array) ($brief->goal_progress ?? []));
+    }
+
+    /**
+     * Pure renderer for the goals-behind-pace directive — no DB. Filters the
+     * goal_progress rows to those flagged 'lagging' and turns each into a
+     * concrete "bias toward X" line the Strategist acts on. Returns '' when
+     * nothing is lagging (suppression). All numbers are restated from the brief
+     * (real readings); none are invented.
+     *
+     * @param  array<int,array<string,mixed>>  $goalProgress  rows from GrowthStrategyBrief.goal_progress
+     */
+    public static function renderLaggingGoalsBlock(array $goalProgress): string
+    {
+        $lines = [];
+        foreach ($goalProgress as $g) {
+            if (! is_array($g) || ($g['pace_status'] ?? null) !== 'lagging') {
+                continue;
+            }
+            $metric = trim((string) ($g['target_metric'] ?? ''));
+            if ($metric === '') {
+                continue;
+            }
+            $platform = trim((string) ($g['platform'] ?? ''));
+            $scope = $platform !== '' ? " ({$platform})" : '';
+            $progress = $g['progress_pct'] !== null ? round((float) $g['progress_pct']).'% reached' : 'progress not yet measurable';
+            $expected = isset($g['expected_pct']) && $g['expected_pct'] !== null
+                ? ', ~'.round((float) $g['expected_pct']).'% of the window elapsed'
+                : '';
+
+            $line = "- {$metric}{$scope}: {$progress}{$expected} — LAGGING.";
+            $line .= "\n  → Over-index ".($platform !== '' ? "{$platform} in the platform split" : 'the platform(s) tied to this metric')
+                ." and weight the objective mix toward the objective that drives {$metric}, using the brand's proven winning hooks for it.";
+            $lines[] = $line;
+        }
+
+        if ($lines === []) {
+            return '';
+        }
+
+        return "# Goals behind pace (bias the month toward closing these)\n".implode("\n", $lines)
+            ."\n\nThese goals are behind the timeline they need to hit their target. Make closing them the priority for this month — skew platform distribution and objective mix toward the metric each one targets, even beyond the even reach-share split.";
+    }
+
+    /**
+     * Read the topics/angles this brand has ACTUALLY published recently, sourced
+     * from published ScheduledPosts → Draft → CalendarEntry (published_at is the
+     * ground truth that something shipped — more reliable than CalendarEntry
+     * status, which can lag). Deduped by topic, newest first, capped. Returns ''
+     * when there's no published history in the window, so the section is
+     * suppressed (a brand-new account's prompt stays byte-identical).
+     *
+     * @return string
+     */
+    private function renderRecentlyPublished(Brand $brand, int $days = 90, int $limit = 40): string
+    {
+        $since = Carbon::now()->subDays($days);
+
+        // One row per published post with its planned topic/angle/pillar + the
+        // real publish date. Join through drafts → calendar_entries so we read
+        // the human-meaningful topic, not the raw caption body.
+        $rows = DB::table('scheduled_posts as sp')
+            ->join('drafts as d', 'd.id', '=', 'sp.draft_id')
+            ->join('calendar_entries as ce', 'ce.id', '=', 'd.calendar_entry_id')
+            ->where('sp.brand_id', $brand->id)
+            ->where('sp.status', 'published')
+            ->where('sp.published_at', '>=', $since)
+            ->whereNotNull('ce.topic')
+            ->orderByDesc('sp.published_at')
+            ->limit(200) // bound the scan; dedup below trims to $limit distinct topics
+            ->get(['ce.topic', 'ce.angle', 'ce.pillar', 'sp.published_at']);
+
+        $entries = [];
+        foreach ($rows as $r) {
+            $topic = trim((string) ($r->topic ?? ''));
+            if ($topic === '') {
+                continue;
+            }
+            $entries[] = [
+                'topic' => $topic,
+                'angle' => trim((string) ($r->angle ?? '')),
+                'pillar' => trim((string) ($r->pillar ?? '')),
+                'published_at' => $r->published_at ? Carbon::parse($r->published_at) : null,
+            ];
+        }
+
+        return self::renderRecentlyPublishedBlock($entries, $days, $limit);
+    }
+
+    /**
+     * Pure renderer for the recently-published exclusion block — no DB, so it is
+     * unit-testable without a database. Dedups by topic (case-insensitive),
+     * keeps the first (newest) occurrence, caps at $limit lines. Returns '' when
+     * there is nothing to exclude (suppression).
+     *
+     * @param  array<int,array{topic:string,angle?:string,pillar?:string,published_at?:?\Illuminate\Support\Carbon}>  $entries
+     */
+    public static function renderRecentlyPublishedBlock(array $entries, int $days = 90, int $limit = 40): string
+    {
+        $seen = [];
+        $lines = [];
+        foreach ($entries as $e) {
+            $topic = trim((string) ($e['topic'] ?? ''));
+            if ($topic === '') {
+                continue;
+            }
+            $key = mb_strtolower($topic);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+
+            $pillar = trim((string) ($e['pillar'] ?? ''));
+            $angle = trim((string) ($e['angle'] ?? ''));
+            $when = ($e['published_at'] ?? null) instanceof Carbon ? $e['published_at']->format('M j') : null;
+
+            $prefix = $when ? "- {$when} · " : '- ';
+            $line = $prefix.($pillar !== '' ? "{$pillar} · " : '')."\"{$topic}\"";
+            if ($angle !== '') {
+                $line .= " (angle: {$angle})";
+            }
+            $lines[] = $line;
+
+            if (count($lines) >= $limit) {
+                break;
+            }
+        }
+
+        if ($lines === []) {
+            return '';
+        }
+
+        return "# Recently published — DO NOT REPEAT these topics or angles (last {$days} days)\n"
+            .implode("\n", $lines)
+            ."\n\nThis content already shipped for this brand. Plan topics and angles that are clearly DISTINCT from the list above. Re-using a PILLAR is fine (the mix targets require it); re-using a TOPIC or ANGLE is not — find a fresh take.";
     }
 }
