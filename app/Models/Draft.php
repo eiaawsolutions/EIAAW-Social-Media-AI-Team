@@ -205,6 +205,48 @@ class Draft extends Model
     }
 
     /**
+     * The branding_payload keys that hold body-DERIVED distilled signals — the
+     * content a quote card / poster / infographic / video voiceover is rendered
+     * FROM. Their presence means "a distiller ran for this draft", independent
+     * of whether the freshness STAMP (distilled_body_hash) was written — older
+     * caches and partial re-distils have the signals but no stamp. Excludes
+     * bookkeeping keys (media_body_hash, distilled_body_hash, *_at, source).
+     */
+    private const DISTILLED_SIGNAL_KEYS = [
+        'quote', 'voiceover',
+        'poster_title', 'poster_points', 'poster_footer',
+        'infographic_title', 'infographic_panels', 'infographic_footer',
+    ];
+
+    /**
+     * Whether this draft carries any body-derived distilled signal (see
+     * DISTILLED_SIGNAL_KEYS) — i.e. a distiller ran and its output is cached on
+     * the draft. Distinguishes distillation-backed media (EIAAW quote card /
+     * poster / infographic) from library / raw-photo media that runs no
+     * distiller. Presence of the SIGNALS, not the freshness stamp, is the test:
+     * the #436-class breakage has the signals (quote/voiceover/infographic_*)
+     * but a missing distilled_body_hash, so a stamp-only check would miss it.
+     * mediaIsStaleForBody() uses this so non-distilled media isn't marked
+     * perpetually stale, while stale distilled media IS caught even without a
+     * stamp.
+     */
+    public function hasDistilledSignals(): bool
+    {
+        $payload = is_array($this->branding_payload) ? $this->branding_payload : [];
+        foreach (self::DISTILLED_SIGNAL_KEYS as $key) {
+            $v = $payload[$key] ?? null;
+            if (is_string($v) && trim($v) !== '') {
+                return true;
+            }
+            if (is_array($v) && $v !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * The body hash the current media was generated from. Stamped into
      * branding_payload.media_body_hash by DesignerAgent when it persists an
      * asset; cleared (with the rest of branding_payload) when the caption is
@@ -226,19 +268,72 @@ class Draft extends Model
      * the media should be regenerated from the edited text before being reused
      * (e.g. as a video keyframe) rather than animated as-is.
      *
-     * Treats a MISSING media hash on a draft that has an asset as stale: such a
-     * draft was either generated before this bookkeeping existed or had its
-     * branding_payload cleared by an edit, and we'd rather pay one regeneration
-     * than risk shipping an off-message visual. Returns false when there is no
-     * media yet (nothing to be stale).
+     * Two ways media reads as stale:
+     *   1. The draft carries distilled signals (quote / poster_* /
+     *      infographic_*) that aren't provably fresh for the current body.
+     *      Distillation-backed media (the EIAAW quote card / poster /
+     *      infographic, and the video voiceover) is rendered FROM those signals.
+     *      If a distiller ran (the signals are present) but the distillation
+     *      isn't fresh (distillationIsFreshForBody() === false — stale OR
+     *      unstamped), the media built from it is stale too — even when
+     *      media_body_hash happens to equal bodyHash(). Checked FIRST because
+     *      the two stamps are written at different times by different code
+     *      (QuoteWriter stamps distilled_body_hash; DesignerAgent stamps
+     *      media_body_hash) and can disagree: the prod bug on draft #436 had
+     *      media_body_hash="fresh" over stale signals with NO distilled_body_hash
+     *      at all, so every staleness-aware path wrongly skipped the rebuild. We
+     *      gate on hasDistilledSignals() so library / raw-photo media (which
+     *      runs no distiller, hence no signals) isn't marked perpetually stale.
+     *   2. media_body_hash doesn't match the current body (classic edited-
+     *      caption case), OR is missing on a draft that has media (legacy /
+     *      cleared payload) — we'd rather pay one regeneration than ship an
+     *      off-message visual.
+     *
+     * "Has media" considers asset_url AND asset_urls history: deleting the
+     * primary asset (the "Delete media" action) nulls asset_url but leaves the
+     * generated clip/still in asset_urls — that media is still what a keyframe
+     * fallback or carousel reuse would surface, so it must remain subject to
+     * the staleness check. Returns false only when there is genuinely no media
+     * anywhere (nothing to be stale).
      */
     public function mediaIsStaleForBody(): bool
     {
-        if (empty($this->asset_url)) {
+        if (! $this->hasAnyMedia()) {
             return false;
         }
 
+        // A distiller ran but its output isn't provably fresh → media built from
+        // it is stale, regardless of media_body_hash (the two stamps can desync).
+        // Gated on signal presence so library/photo media (no distiller) is
+        // exempt; uses the signals, not the stamp, so an unstamped stale cache
+        // (the #436 shape) is still caught.
+        if ($this->hasDistilledSignals() && ! $this->distillationIsFreshForBody()) {
+            return true;
+        }
+
         return $this->mediaBodyHash() !== $this->bodyHash();
+    }
+
+    /**
+     * Whether the draft has ANY generated media — the primary asset_url or any
+     * entry in the asset_urls history. Used by the staleness gate so that
+     * deleting the primary asset (which leaves history intact) doesn't make the
+     * draft read as "no media, nothing stale".
+     */
+    public function hasAnyMedia(): bool
+    {
+        if (! empty($this->asset_url)) {
+            return true;
+        }
+
+        $history = is_array($this->asset_urls) ? $this->asset_urls : [];
+        foreach ($history as $u) {
+            if (is_string($u) && $u !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -23,6 +23,9 @@ class DraftMediaStalenessTest extends TestCase
         if (array_key_exists('asset_url', $attrs)) {
             $draft->setAttribute('asset_url', $attrs['asset_url']);
         }
+        if (array_key_exists('asset_urls', $attrs)) {
+            $draft->setAttribute('asset_urls', $attrs['asset_urls']);
+        }
 
         return $draft;
     }
@@ -93,6 +96,119 @@ class DraftMediaStalenessTest extends TestCase
 
         $this->assertNull($draft->mediaBodyHash());
         $this->assertTrue($draft->mediaIsStaleForBody());
+    }
+
+    // ── The #436 desync: media_body_hash "fresh" over a stale distillation ──
+
+    public function test_media_is_stale_when_distillation_signals_are_stale_despite_a_fresh_media_hash(): void
+    {
+        // The exact prod shape of draft #436: media_body_hash equals the CURRENT
+        // body (so the old gate read "fresh"), but the distilled signals
+        // (quote/voiceover/infographic_*) are from an older caption and carry NO
+        // distilled_body_hash. The media is rendered FROM those stale signals, so
+        // it must read as stale and force a rebuild.
+        $body = 'Who is SMT best suited for and why.';
+        $draft = $this->draft([
+            'body' => $body,
+            'asset_url' => 'https://cdn.example/still.jpg',
+            'branding_payload' => [
+                'quote' => 'Flat per-brand pricing makes the math transparent.',
+                'voiceover' => 'Per-seat pricing was built for enterprise budgets.',
+                'infographic_title' => 'Per-seat vs flat',
+                'media_body_hash' => Draft::hashBody($body),
+            ],
+        ]);
+
+        $this->assertSame($draft->mediaBodyHash(), $draft->bodyHash(), 'precondition: media hash reads fresh');
+        $this->assertFalse($draft->distillationIsFreshForBody(), 'precondition: distillation is not fresh');
+        $this->assertTrue(
+            $draft->mediaIsStaleForBody(),
+            'media built from stale distilled signals must read stale even when media_body_hash matches',
+        );
+    }
+
+    public function test_media_stays_fresh_when_distillation_is_stamped_fresh_and_media_hash_matches(): void
+    {
+        $body = 'A caption about reliable on-time publishing.';
+        $draft = $this->draft([
+            'body' => $body,
+            'asset_url' => 'https://cdn.example/still.jpg',
+            'branding_payload' => [
+                'quote' => 'Posts go out on time.',
+                'distilled_body_hash' => Draft::hashBody($body),
+                'media_body_hash' => Draft::hashBody($body),
+            ],
+        ]);
+
+        $this->assertFalse($draft->mediaIsStaleForBody());
+    }
+
+    public function test_library_media_with_no_distilled_signals_is_not_marked_stale_by_a_missing_distill_stamp(): void
+    {
+        $body = 'A client-brand caption with a library image.';
+        $draft = $this->draft([
+            'body' => $body,
+            'asset_url' => 'https://cdn.example/library.jpg',
+            'branding_payload' => ['media_body_hash' => Draft::hashBody($body)],
+        ]);
+
+        $this->assertFalse($draft->hasDistilledSignals());
+        $this->assertFalse($draft->distillationIsFreshForBody());
+        $this->assertFalse(
+            $draft->mediaIsStaleForBody(),
+            'non-distilled media whose media_body_hash matches must read fresh',
+        );
+    }
+
+    public function test_library_media_is_stale_when_caption_edited_even_without_distilled_signals(): void
+    {
+        $draft = $this->draft([
+            'body' => 'The edited client caption.',
+            'asset_url' => 'https://cdn.example/library.jpg',
+            'branding_payload' => ['media_body_hash' => Draft::hashBody('The original client caption.')],
+        ]);
+
+        $this->assertFalse($draft->hasDistilledSignals());
+        $this->assertTrue($draft->mediaIsStaleForBody());
+    }
+
+    public function test_media_in_history_only_after_primary_deleted_is_still_subject_to_staleness(): void
+    {
+        $body = 'Who is SMT best suited for and why.';
+        $draft = $this->draft([
+            'body' => $body,
+            'asset_url' => null,
+            'asset_urls' => [
+                'https://v3b.fal.media/files/b/old/clip-a.mp4',
+                'https://v3b.fal.media/files/b/old/clip-b.mp4',
+            ],
+            'branding_payload' => [
+                'quote' => 'Flat per-brand pricing makes the math transparent.',
+                'infographic_title' => 'Per-seat vs flat',
+                'media_body_hash' => Draft::hashBody($body),
+            ],
+        ]);
+
+        $this->assertTrue($draft->hasAnyMedia(), 'history media counts as media');
+        $this->assertTrue(
+            $draft->mediaIsStaleForBody(),
+            'history-only media over stale signals must read stale after primary delete',
+        );
+    }
+
+    public function test_no_media_anywhere_is_never_stale(): void
+    {
+        $draft = $this->draft([
+            'body' => 'Fresh caption, no media yet.',
+            'asset_url' => null,
+            'asset_urls' => [],
+            'branding_payload' => [
+                'quote' => 'A stale quote from an older body.',
+            ],
+        ]);
+
+        $this->assertFalse($draft->hasAnyMedia());
+        $this->assertFalse($draft->mediaIsStaleForBody());
     }
 
     // ── distillationIsFreshForBody — gates the distiller cache ──────────────
