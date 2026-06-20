@@ -112,6 +112,45 @@ trait RendersWriterContext
     }
 
     /**
+     * Corpus source_types whose source_id is looked up against brand_corpus.id
+     * (a bigint). A non-numeric id on these crashed the Compliance corpus query
+     * before PR #56 guarded it; this list mirrors that guard.
+     */
+    private static array $corpusSourceTypes = ['historical_post', 'website_page'];
+
+    /**
+     * Normalise the LLM-emitted grounding_sources before persisting. For a
+     * corpus citation (historical_post / website_page) whose source_id is NOT a
+     * plain numeric brand_corpus id — e.g. RepurposeAgent's invented
+     * source_id="master_432" referencing the master draft — the bogus id is
+     * dropped (the claim + excerpt + type are kept, so Compliance's substring
+     * match still verifies the citation). This stops a non-corpus id reaching
+     * the gate's bigint lookup at the SOURCE, complementing the Compliance guard.
+     * Malformed (non-array) entries are dropped. Pure — no DB.
+     *
+     * @param  array<int,mixed>  $sources
+     * @return array<int,array<string,mixed>>
+     */
+    public static function sanitizeGroundingSources(array $sources): array
+    {
+        $out = [];
+        foreach ($sources as $src) {
+            if (! is_array($src)) {
+                continue;
+            }
+            $type = (string) ($src['source_type'] ?? '');
+            $id = trim((string) ($src['source_id'] ?? ''));
+            // Drop a non-numeric id on a corpus citation; keep everything else.
+            if (in_array($type, self::$corpusSourceTypes, true) && $id !== '' && ! ctype_digit($id)) {
+                unset($src['source_id']);
+            }
+            $out[] = $src;
+        }
+
+        return $out;
+    }
+
+    /**
      * Pure renderer — no DB. Returns lines (each starting "\n- ") to append under
      * the calendar-entry block, or '' when there's nothing for this objective.
      * Mirrors renderCreativeIntent's suppression idiom.
