@@ -38,6 +38,8 @@ use InvalidArgumentException;
  */
 class RepurposeAgent extends BaseAgent
 {
+    use \App\Agents\Concerns\RendersWriterContext;
+
     protected array $requiredStages = ['brand_style'];
 
     public function __construct(LlmGateway $llm)
@@ -247,6 +249,16 @@ class RepurposeAgent extends BaseAgent
         if ($masterQuote !== '') $brandingExtras .= "\n- Master quote: {$masterQuote}";
         if ($masterVoiceover !== '') $brandingExtras .= "\n- Master voiceover: {$masterVoiceover}";
 
+        // Inject the SAME deepened context the Writer (v1.4–v1.6) consumes, via
+        // the shared RendersWriterContext trait. A derivative must be built from
+        // the Strategist's deepened angle + creative intent and the brand's
+        // proven hooks/CTAs for this objective — not the bare topic line. All
+        // three self-suppress to '' when absent, keeping an un-enriched brand's
+        // message byte-identical to the pre-feature version.
+        $creativeLines = $this->renderCreativeIntent($entry);
+        $growthGuidance = $this->renderGrowthObjectiveGuidance($brand, $entry);
+        $researchBlock = $this->renderResearchBrief($entry);
+
         return <<<MSG
 BRAND: {$brand->name}
 TARGET PLATFORM: {$platform}
@@ -256,8 +268,8 @@ SOURCE: master draft #{$master->id} ({$masterPlatform})
 - Topic: {$entry->topic}
 - Pillar: {$entry->pillar}
 - Format: {$entry->format}
-- Objective: {$entry->objective}
-
+- Objective: {$entry->objective}{$creativeLines}{$growthGuidance}
+{$researchBlock}
 # Master draft to repurpose (from {$masterPlatform})
 <<<MASTER
 {$master->body}
@@ -268,7 +280,7 @@ MASTER
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 
-Now produce the {$platform}-native derivative per the schema. Same hook + spine + CTA as the master, rewritten for {$platform}'s conventions. Only write the JSON object.
+Now produce the {$platform}-native derivative per the schema. Same hook + spine + CTA as the master, rewritten for {$platform}'s conventions. When a research angle / creative intent / proven hook is supplied above, honour it. Only write the JSON object.
 MSG;
     }
 }
