@@ -731,6 +731,23 @@ class ComplianceAgent extends BaseAgent
     }
 
     /**
+     * Whether a grounding source_id is a plain numeric brand_corpus id that is
+     * safe to use in a `WHERE id = ?` lookup against the bigint column. Anything
+     * non-numeric (e.g. RepurposeAgent's "master_432", or a "brand_style" label)
+     * must NOT reach the query — Postgres rejects it with SQLSTATE 22P02 and the
+     * compliance gate crashes. Pure — unit-testable.
+     */
+    public static function isQueryableCorpusId(mixed $sourceId): bool
+    {
+        if ($sourceId === null) {
+            return false;
+        }
+        $s = trim((string) $sourceId);
+
+        return $s !== '' && ctype_digit($s);
+    }
+
+    /**
      * Corpus verification (historical_post + website_page). Prefers source_id
      * lookup, falls back to substring search across corpus content. The Writer
      * sometimes invents short ids (1, 2, 3) even when the prompt shows real
@@ -738,8 +755,14 @@ class ComplianceAgent extends BaseAgent
      */
     private function corpusVerifies(Brand $brand, array $src): bool
     {
-        if (! empty($src['source_id'])) {
-            $exists = BrandCorpusItem::where('id', $src['source_id'])
+        // Only do the id-based lookup when source_id is a plain numeric corpus id.
+        // RepurposeAgent derivatives cite the master draft as source_id="master_N"
+        // (a synthetic, non-corpus reference); the Writer also sometimes emits
+        // non-numeric ids. brand_corpus.id is bigint, so passing a non-numeric
+        // value made Postgres throw SQLSTATE 22P02 and crashed the whole gate.
+        // Non-numeric ids fall through to the substring-excerpt match below.
+        if (self::isQueryableCorpusId($src['source_id'] ?? null)) {
+            $exists = BrandCorpusItem::where('id', (int) trim((string) $src['source_id']))
                 ->where('brand_id', $brand->id)
                 ->exists();
             if ($exists) return true;
