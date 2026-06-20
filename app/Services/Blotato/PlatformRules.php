@@ -341,20 +341,32 @@ final class PlatformRules
     }
 
     /**
-     * Count attached media items on the draft. asset_url + asset_urls are
-     * deduped (same as collectDraftMediaUrls in SubmitScheduledPost).
+     * Count the draft's PUBLISHABLE media — i.e. exactly what
+     * SubmitScheduledPost::collectDraftMediaUrls will actually send: the primary
+     * asset_url, and only if it is durable.
+     *
+     * This must stay aligned with the publish manifest (PR#50). Two ways the old
+     * "asset_url + every asset_urls entry, deduped" count over-reported, letting
+     * the media_required gate PASS a draft that then failed on-platform:
+     *
+     *   - asset_urls is a HISTORY/provenance ledger, not a carousel — a draft
+     *     whose ONLY media lived in that history (e.g. a regenerated-away still)
+     *     counted >= 1 here but publishes NOTHING (collectDraftMediaUrls ignores
+     *     history). The gate should hold it.
+     *   - an ephemeral /storage/branding/ primary (the 2026-06-20 failure class)
+     *     404s on the platform's media fetch — it is not real publishable media,
+     *     so it must count as 0, not 1.
+     *
+     * So: count 1 only when the primary asset_url is present AND durable; else 0.
+     * (No platform sets media_min > 1, so an at-most-1 count is sufficient.)
      */
     private static function countMedia(Draft $draft): int
     {
-        $urls = [];
-        if ($draft->asset_url) {
-            $urls[] = (string) $draft->asset_url;
+        $primary = trim((string) ($draft->asset_url ?? ''));
+        if ($primary === '' || str_contains($primary, '/storage/branding/')) {
+            return 0;
         }
-        if (is_array($draft->asset_urls)) {
-            foreach ($draft->asset_urls as $u) {
-                if (is_string($u) && $u !== '') $urls[] = $u;
-            }
-        }
-        return count(array_unique($urls));
+
+        return 1;
     }
 }
