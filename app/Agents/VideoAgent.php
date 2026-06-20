@@ -237,6 +237,25 @@ class VideoAgent extends BaseAgent
         // Base Veo Fast call: snap target down to its 8s ceiling (the client
         // further snaps to 4/6/8). Extends make up the remainder.
         $baseDuration = min(self::VEO_FAST_MAX_SECONDS, $targetDuration);
+
+        // Ensure the distilled quote + voiceover exist BEFORE buildPrompt reads
+        // them (DraftSceneBrief::voiceover / for() pull from branding_payload).
+        // After a caption edit the editor clears branding_payload, so without
+        // this the prompt would carry an empty voiceover and a body-only brief —
+        // distil() repopulates them from the EDITED body. It's idempotent
+        // (cache-backed), so an already-distilled draft pays nothing here.
+        if ((bool) config('services.branding.enabled', true)) {
+            try {
+                app(QuoteWriter::class)->distil($draft, $brand);
+                $draft->refresh();
+            } catch (\Throwable $e) {
+                Log::warning('VideoAgent: pre-prompt distil failed; building from body only', [
+                    'draft_id' => $draft->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         $prompt = (string) ($input['prompt_override'] ?? $this->buildPrompt($brand, $draft, $aspect));
 
         try {

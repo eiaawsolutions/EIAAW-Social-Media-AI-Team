@@ -339,6 +339,10 @@ class DesignerAgent extends BaseAgent
                 is_array($draft->asset_urls) ? $draft->asset_urls : [],
                 [$finalUrl],
             ))),
+            // Stamp the body this still was generated from so a later caption
+            // edit can detect the still is stale and regenerate it (e.g. before
+            // reusing it as a video keyframe). See Draft::mediaIsStaleForBody().
+            'branding_payload' => $this->brandingPayloadWithMediaHash($draft),
         ]);
 
         return AgentResult::ok([
@@ -408,6 +412,8 @@ class DesignerAgent extends BaseAgent
                 is_array($draft->asset_urls) ? $draft->asset_urls : [],
                 [$publishUrl, $asset->public_url],
             ))),
+            // See the FAL path above — record which caption this still matches.
+            'branding_payload' => $this->brandingPayloadWithMediaHash($draft),
         ]);
         $asset->recordUse();
 
@@ -424,6 +430,24 @@ class DesignerAgent extends BaseAgent
             'source' => $source,
             'cost_usd' => 0.0,
         ]);
+    }
+
+    /**
+     * Merge the current-body fingerprint into the draft's branding_payload so a
+     * later caption edit can tell this still is stale (Draft::mediaIsStaleForBody).
+     *
+     * Reads the LIVE branding_payload off the draft — by the time we persist an
+     * asset the distillers (QuoteWriter / PosterContentWriter) have already run
+     * for this draft and written quote / voiceover / poster keys, so merging
+     * (not replacing) preserves them. Hashes draft->body (unchanged during a
+     * Designer run) so the stamp matches the exact caption this still depicts.
+     */
+    private function brandingPayloadWithMediaHash(Draft $draft): array
+    {
+        $payload = is_array($draft->branding_payload) ? $draft->branding_payload : [];
+        $payload['media_body_hash'] = Draft::hashBody($draft->body);
+
+        return $payload;
     }
 
     /**

@@ -121,6 +121,64 @@ class Draft extends Model
     }
 
     /**
+     * Stable fingerprint of the caption body used to tell whether the generated
+     * media (still / video) still reflects the current text.
+     *
+     * Whitespace is collapsed and the text lower-cased so cosmetic edits (a
+     * double space, a trailing newline) don't count as a content change and
+     * force a needless paid regeneration — only a real wording change flips it.
+     */
+    public static function hashBody(?string $body): string
+    {
+        $normalised = mb_strtolower(trim(preg_replace('/\s+/u', ' ', (string) $body) ?? (string) $body));
+
+        return sha1($normalised);
+    }
+
+    /** Convenience: the body hash for THIS draft's current body. */
+    public function bodyHash(): string
+    {
+        return self::hashBody($this->body);
+    }
+
+    /**
+     * The body hash the current media was generated from. Stamped into
+     * branding_payload.media_body_hash by DesignerAgent when it persists an
+     * asset; cleared (with the rest of branding_payload) when the caption is
+     * edited. Null when no media has been generated, or when an older draft
+     * predates this bookkeeping.
+     */
+    public function mediaBodyHash(): ?string
+    {
+        $payload = is_array($this->branding_payload) ? $this->branding_payload : [];
+        $hash = $payload['media_body_hash'] ?? null;
+
+        return is_string($hash) && $hash !== '' ? $hash : null;
+    }
+
+    /**
+     * Whether the generated media is stale relative to the current caption —
+     * i.e. there IS media, but it was generated from a different body than the
+     * one stored now (the operator edited the caption afterward). When true,
+     * the media should be regenerated from the edited text before being reused
+     * (e.g. as a video keyframe) rather than animated as-is.
+     *
+     * Treats a MISSING media hash on a draft that has an asset as stale: such a
+     * draft was either generated before this bookkeeping existed or had its
+     * branding_payload cleared by an edit, and we'd rather pay one regeneration
+     * than risk shipping an off-message visual. Returns false when there is no
+     * media yet (nothing to be stale).
+     */
+    public function mediaIsStaleForBody(): bool
+    {
+        if (empty($this->asset_url)) {
+            return false;
+        }
+
+        return $this->mediaBodyHash() !== $this->bodyHash();
+    }
+
+    /**
      * A URL safe to render inside an <img> thumbnail.
      *
      * asset_url is the PUBLISHABLE media — for video drafts that's an .mp4,

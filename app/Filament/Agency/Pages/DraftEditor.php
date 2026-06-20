@@ -192,12 +192,34 @@ class DraftEditor extends Page
         }
 
         $hashtags = $this->parseHashtags($this->hashtagsCsv);
+        $newBody = mb_substr($body, 0, $this->maxChars);
 
-        $draft->update([
-            'body' => mb_substr($body, 0, $this->maxChars),
+        // Did the wording actually change? $draft is freshly loaded, so
+        // $draft->body is still the STORED (pre-edit) caption here. Compare by
+        // content fingerprint so a cosmetic re-save (whitespace only) doesn't
+        // needlessly invalidate good distillations or trigger a paid re-distill.
+        $bodyChanged = Draft::hashBody($draft->body) !== Draft::hashBody($newBody);
+
+        $update = [
+            'body' => $newBody,
             'hashtags' => $hashtags,
             'status' => 'compliance_pending',
-        ]);
+        ];
+
+        if ($bodyChanged) {
+            // The image/video are built from distilled signals cached on the
+            // draft (branding_payload.quote/voiceover/poster_*, platform_payload
+            // headline/cta/carousel_slides) — NOT from the live body. Clearing
+            // them forces DesignerAgent/VideoAgent to re-distil from the edited
+            // caption on the next "Generate image/video", so the new media is
+            // on-message instead of illustrating the pre-edit text. Dropping the
+            // media_body_hash also marks any existing still as stale, so video
+            // regenerates its keyframe from the new caption.
+            $update['branding_payload'] = null;
+            $update['platform_payload'] = self::stripDerivedCopyFields($draft->platform_payload);
+        }
+
+        $draft->update($update);
 
         // Re-run the compliance gate synchronously (same pattern as the Drafts
         // table "Re-run Compliance" action). FPM request → @set_time_limit is
@@ -279,6 +301,27 @@ class DraftEditor extends Page
         }
 
         return array_slice(array_values(array_unique($tags)), 0, 30);
+    }
+
+    /**
+     * Remove the Writer-derived copy fields from platform_payload so an edited
+     * caption can't carry a stale headline / CTA / carousel arc into the next
+     * image generation. Preserves any non-derived keys (future-proofing); when
+     * nothing else remains, returns null so the column reads empty.
+     *
+     * @param  mixed  $payload  the draft's current platform_payload (array|null)
+     */
+    private static function stripDerivedCopyFields(mixed $payload): ?array
+    {
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        foreach (['headline', 'cta', 'carousel_slides', 'hook_pattern'] as $derived) {
+            unset($payload[$derived]);
+        }
+
+        return $payload === [] ? null : $payload;
     }
 
     private static function clampForDisplay(string $text, int $cap): string
