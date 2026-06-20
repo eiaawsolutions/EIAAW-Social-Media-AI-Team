@@ -133,6 +133,18 @@ class WriterAgent extends BaseAgent
             // carousel_slides for per-slide art direction.
             $platformPayload = self::extractPlatformPayload($payload, (string) $entry->format);
 
+            // Stamp the body fingerprint the branding artefacts were produced
+            // from. The Writer emits body + quote/voiceover + carousel_slides
+            // coherently in one shot, so this hash certifies the whole payload
+            // matches THIS body. The distillers (QuoteWriter / PosterContentWriter)
+            // and the slide-based infographic path treat the cache as fresh only
+            // while this hash matches the live body — so a later edit (or any
+            // body change) auto-invalidates it. See Draft::distillationIsFreshForBody().
+            if (! is_array($brandingPayload)) {
+                $brandingPayload = [];
+            }
+            $brandingPayload['distilled_body_hash'] = Draft::hashBody($body);
+
             $promptInputs = [
                 'calendar_entry_id' => $entry->id,
                 'brand_style_version' => $brand->currentStyle->version ?? null,
