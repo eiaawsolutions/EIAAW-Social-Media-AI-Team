@@ -2,9 +2,11 @@
 
 namespace App\Filament\Agency\Resources\Drafts;
 
+use App\Agents\BaseAgent;
 use App\Agents\ComplianceAgent;
 use App\Agents\DesignerAgent;
 use App\Agents\VideoAgent;
+use App\Filament\Agency\Pages\DraftEditor;
 use App\Filament\Agency\Resources\Drafts\Pages\ManageDrafts;
 use App\Jobs\RedraftFailedDraft;
 use App\Models\Brand;
@@ -251,7 +253,7 @@ class DraftResource extends Resource
                     ->visible(fn (Draft $r) => in_array($r->status, [
                         'awaiting_approval', 'compliance_failed', 'compliance_pending', 'approved',
                     ], true))
-                    ->url(fn (Draft $r) => \App\Filament\Agency\Pages\DraftEditor::getUrl(['draft' => $r->id])),
+                    ->url(fn (Draft $r) => DraftEditor::getUrl(['draft' => $r->id])),
 
                 Action::make('approve')
                     ->label('Approve')
@@ -657,6 +659,50 @@ class DraftResource extends Resource
                                 $result->data['duration_seconds'] ?? '?',
                                 $keyframeNote,
                             ))
+                            ->success()
+                            ->send();
+                    }),
+
+                Action::make('deleteMedia')
+                    ->label(fn (Draft $r) => Draft::urlIsVideo($r->asset_url) ? 'Delete video' : 'Delete image')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    // Only when there IS media to remove, and the draft isn't in a
+                    // terminal state. Published media is live on the platform and
+                    // rejected drafts are done — mirrors the generate actions' guard.
+                    ->visible(fn (Draft $r) => filled($r->asset_url)
+                        && ! in_array($r->status, ['published', 'rejected']))
+                    ->requiresConfirmation()
+                    ->modalHeading(fn (Draft $r) => Draft::urlIsVideo($r->asset_url) ? 'Delete this video?' : 'Delete this image?')
+                    ->modalDescription('This removes the generated media from the draft and deletes the underlying file. The post text, hashtags and compliance are untouched. You can generate fresh media afterwards. This cannot be undone.')
+                    ->modalSubmitActionLabel('Delete media')
+                    ->action(function (Draft $r): void {
+                        // 1. Best-effort delete of the underlying file(s) we host
+                        //    on the durable disk. asset_url plus every history URL
+                        //    in asset_urls that points at the SAME stored file is
+                        //    removed so no dead link is left behind. Remote /
+                        //    provider-hosted URLs are skipped (we don't own them).
+                        $deleted = self::deleteDurableMediaFiles($r);
+
+                        // 2. Clear the primary asset and strip the now-deleted
+                        //    file URLs from history. URLs we DIDN'T delete (remote
+                        //    re-hosts, others' keyframes) are kept for provenance.
+                        $history = is_array($r->asset_urls) ? $r->asset_urls : [];
+                        $remaining = array_values(array_filter(
+                            $history,
+                            fn ($u) => is_string($u) && $u !== '' && ! in_array($u, $deleted, true),
+                        ));
+
+                        $r->update([
+                            'asset_url' => null,
+                            'asset_urls' => $remaining,
+                        ]);
+
+                        Notification::make()
+                            ->title('Media deleted')
+                            ->body($deleted === []
+                                ? 'The media was removed from this draft.'
+                                : sprintf('The media was removed and %d file(s) deleted from storage.', count($deleted)))
                             ->success()
                             ->send();
                     }),
@@ -1376,6 +1422,54 @@ class DraftResource extends Resource
                 array_filter($urlsToRemember),
             ))),
         ]);
+    }
+
+    /**
+     * Best-effort delete of every durable media file this draft owns — its
+     * primary asset_url plus any asset_urls history entry that maps to a file on
+     * a disk we control. Returns the list of URLs whose underlying file we
+     * actually deleted, so the caller can strip exactly those (and no others)
+     * from the draft's history without leaving dead links.
+     *
+     * Remote / provider-hosted URLs (Blotato, Metricool, customer links) resolve
+     * to a null key via Draft::durableMediaKey() and are skipped — we never
+     * issue a delete against storage we don't own. Failures are swallowed +
+     * logged (mirrors BrandAssetResource::deleteAssetFile) so a
+     * missing/already-gone file never blocks the operator.
+     *
+     * @return array<int, string> URLs whose file was deleted from storage
+     */
+    private static function deleteDurableMediaFiles(Draft $draft): array
+    {
+        $disk = BaseAgent::durableArtifactDisk();
+        $history = is_array($draft->asset_urls) ? $draft->asset_urls : [];
+
+        // De-dupe candidate URLs (primary first), drop empties.
+        $candidates = array_values(array_unique(array_filter(
+            array_merge([$draft->asset_url], $history),
+            fn ($u) => is_string($u) && $u !== '',
+        )));
+
+        $deleted = [];
+        foreach ($candidates as $url) {
+            $key = Draft::durableMediaKey($url);
+            if ($key === null) {
+                continue; // not ours to delete
+            }
+            try {
+                Storage::disk($disk)->delete($key);
+                $deleted[] = $url;
+            } catch (\Throwable $e) {
+                Log::warning('draft media delete: storage delete failed', [
+                    'draft_id' => $draft->id,
+                    'disk' => $disk,
+                    'key' => $key,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $deleted;
     }
 
     public static function getPages(): array
