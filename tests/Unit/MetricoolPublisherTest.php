@@ -425,6 +425,60 @@ class MetricoolPublisherTest extends TestCase
         $this->assertStringContainsString('ERROR', strtoupper((string) $result->error));
     }
 
+    /**
+     * REGRESSION (2026-06-20 "Metricool delivery ERROR: no detail"): the real
+     * per-provider error lives in `detailedStatus`, NOT detail/error/errorMessage.
+     * Reading the wrong field logged "no detail" and hid the actual platform
+     * reason (here, the ephemeral /storage/branding/ media-fetch 404). poll()
+     * must surface detailedStatus in the failure reason.
+     */
+    public function test_poll_failure_reads_detailed_status_field(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['data' => [[
+                'id' => '339637575',
+                'providers' => [[
+                    'network' => 'linkedin',
+                    'status' => 'ERROR',
+                    // Metricool's real field — and NO detail/error/errorMessage.
+                    'detailedStatus' => '(linkedin) Error downloading the image: https://smt.eiaawsolutions.com/storage/branding/386-55b32a97630b.jpg',
+                ]],
+            ]]], 200),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))->poll(
+            $this->submittedPost('linkedin', '339637575')
+        );
+
+        $this->assertSame('failed', $result->state);
+        $this->assertStringContainsString('Error downloading the image', (string) $result->error);
+        $this->assertStringNotContainsString('no detail', (string) $result->error);
+    }
+
+    /** detailedStatus takes precedence over the legacy fallback keys. */
+    public function test_poll_failure_prefers_detailed_status_over_detail(): void
+    {
+        Http::fake([
+            'app.metricool.com/api/v2/scheduler/posts*' => Http::response(['data' => [[
+                'id' => '339637590',
+                'providers' => [[
+                    'network' => 'facebook',
+                    'status' => 'ERROR',
+                    'detailedStatus' => 'Code: 400 - (#100) url should represent a valid URL',
+                    'detail' => 'generic',
+                ]],
+            ]]], 200),
+        ]);
+
+        $result = (new MetricoolPublisher($this->client()))->poll(
+            $this->submittedPost('facebook', '339637590')
+        );
+
+        $this->assertSame('failed', $result->state);
+        $this->assertStringContainsString('url should represent a valid URL', (string) $result->error);
+        $this->assertStringNotContainsString('generic', (string) $result->error);
+    }
+
     public function test_poll_stays_pending_when_not_yet_delivered(): void
     {
         Http::fake([
