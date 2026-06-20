@@ -179,7 +179,7 @@ class ResearcherAgent extends BaseAgent
 
         return $rows->map(fn (BrandCorpusItem $r) => [
             'id' => $r->id,
-            'content' => substr((string) $r->content, 0, 800),
+            'content' => self::safeExcerpt($r->content, 800),
             'source_url' => $r->source_url,
             'source_label' => $r->source_label,
             'source_type' => $r->source_type,

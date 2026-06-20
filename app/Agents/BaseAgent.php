@@ -21,6 +21,19 @@ abstract class BaseAgent
 {
     use RequiresReadiness;
 
+    /**
+     * Truncate text to at most $maxChars CHARACTERS without splitting a UTF-8
+     * multibyte sequence. Byte-based substr() can cut mid-character and produce
+     * invalid UTF-8, which the Anthropic SDK's json_encode rejects with
+     * "Malformed UTF-8 characters" — failing the whole LLM call. Use this for
+     * ANY content slice that will be assembled into a prompt (RAG corpus
+     * snippets, scraped pages, excerpts).
+     */
+    public static function safeExcerpt(?string $text, int $maxChars): string
+    {
+        return mb_substr((string) $text, 0, $maxChars);
+    }
+
     /** Human-readable name shown in audit log + telemetry. */
     abstract public function role(): string;
 

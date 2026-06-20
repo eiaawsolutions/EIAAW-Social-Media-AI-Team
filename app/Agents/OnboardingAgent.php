@@ -198,8 +198,10 @@ class OnboardingAgent extends BaseAgent
         $text = preg_replace('/\s+/', ' ', $text);
 
         // Cap at ~30k chars (~7.5k tokens) — enough context, predictable cost.
-        if (strlen($text) > 30_000) {
-            $text = substr($text, 0, 30_000);
+        // mb_substr (not substr): a byte cut can split a UTF-8 multibyte char,
+        // and the malformed bytes then fail the Anthropic SDK's json_encode.
+        if (mb_strlen($text) > 30_000) {
+            $text = self::safeExcerpt($text, 30_000);
         }
 
         if (strlen($text) < 200) {
