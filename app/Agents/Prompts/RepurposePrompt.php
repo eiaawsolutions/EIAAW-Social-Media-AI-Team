@@ -15,9 +15,11 @@ final class RepurposePrompt
     // message is byte-identical to v1.0, so prior derivatives stay a clean cohort.
     public const VERSION = 'repurpose.v1.1';
 
-    public static function system(string $platform, ?int $workspaceId = null): string
+    public static function system(string $platform, ?int $workspaceId = null, ?\App\Models\Brand $brand = null): string
     {
-        $limit = WriterPrompt::PLATFORM_LIMITS[$platform] ?? 1000;
+        // HQ brands reserve room for the appended CTA block (same as Writer);
+        // null brand → full platform cap.
+        $limit = WriterPrompt::effectiveBodyLimit($platform, $brand);
         $platformLabel = ucfirst($platform);
 
         $base = <<<PROMPT

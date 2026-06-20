@@ -151,7 +151,7 @@ class RepurposeAgent extends BaseAgent
 
         $result = $this->llm->call(
             promptVersion: $this->promptVersion(),
-            systemPrompt: RepurposePrompt::system($platform, $brand->workspace_id),
+            systemPrompt: RepurposePrompt::system($platform, $brand->workspace_id, $brand),
             userMessage: $userMessage,
             brand: $brand,
             workspace: $brand->workspace,
@@ -171,7 +171,9 @@ class RepurposeAgent extends BaseAgent
         }
 
         return DB::transaction(function () use ($brand, $master, $entry, $platform, $payload, $result) {
-            $bodyCap = WriterPrompt::PLATFORM_LIMITS[$platform] ?? 1000;
+            // Reserve room for the HQ CTA block (same as WriterAgent) so an HQ
+            // derivative body isn't truncated at publish to fit the links.
+            $bodyCap = WriterPrompt::effectiveBodyLimit($platform, $brand);
             $body = mb_substr((string) ($payload['body'] ?? ''), 0, $bodyCap);
             $hashtags = array_slice($payload['hashtags'] ?? [], 0, 30);
             $brandingPayload = $this->extractBrandingPayload($payload);

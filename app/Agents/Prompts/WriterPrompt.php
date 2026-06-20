@@ -69,9 +69,39 @@ final class WriterPrompt
         'pinterest' => 500,
     ];
 
-    public static function system(string $platform, ?int $workspaceId = null): string
+    /**
+     * Smallest body the model is ever asked to write to, even after reserving
+     * CTA room — so a tight-cap platform can't collapse the body to nothing.
+     */
+    public const MIN_BODY_LIMIT = 50;
+
+    /**
+     * The character limit the Writer/Repurpose should hold the body to for this
+     * (platform, brand). For an HQ brand this is the platform cap MINUS the room
+     * the appended CTA block will consume (PlatformRules::hqCtaReservedChars), so
+     * the body is written to fit alongside the links rather than being truncated
+     * at publish to make room. For client brands / no brand it is exactly the
+     * platform cap (byte-identical to the pre-CTA behaviour). Floored at
+     * MIN_BODY_LIMIT.
+     */
+    public static function effectiveBodyLimit(string $platform, ?\App\Models\Brand $brand = null): int
     {
-        $limit = self::PLATFORM_LIMITS[$platform] ?? 1000;
+        $cap = self::PLATFORM_LIMITS[$platform] ?? 1000;
+        if ($brand === null) {
+            return $cap;
+        }
+
+        $reserved = \App\Services\Blotato\PlatformRules::hqCtaReservedChars($brand, $platform);
+
+        return max(self::MIN_BODY_LIMIT, $cap - $reserved);
+    }
+
+    public static function system(string $platform, ?int $workspaceId = null, ?\App\Models\Brand $brand = null): string
+    {
+        // For an HQ brand the body limit is reduced to leave room for the CTA
+        // block PlatformRules appends to the caption, so the model writes to fit
+        // rather than getting truncated at publish. Null brand → full platform cap.
+        $limit = self::effectiveBodyLimit($platform, $brand);
         $platformLabel = ucfirst($platform);
 
         $base = <<<PROMPT
