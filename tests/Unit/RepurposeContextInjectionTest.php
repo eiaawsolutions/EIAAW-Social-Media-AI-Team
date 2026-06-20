@@ -133,7 +133,7 @@ class RepurposeContextInjectionTest extends TestCase
 
     public function test_prompt_version_bumped(): void
     {
-        $this->assertSame('repurpose.v1.1', RepurposePrompt::VERSION);
+        $this->assertSame('repurpose.v1.2', RepurposePrompt::VERSION);
     }
 
     public function test_prompt_instructs_carousel_slides_for_carousel_formats(): void

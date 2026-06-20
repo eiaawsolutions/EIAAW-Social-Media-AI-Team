@@ -4,6 +4,13 @@ namespace App\Agents\Prompts;
 
 final class RepurposePrompt
 {
+    // v1.2 — grounding hygiene. Tells the model not to cite the master as a
+    // corpus row (source_type historical_post/website_page with an invented
+    // "master_N" id) — those are verified against brand_corpus by bigint id and
+    // the master isn't a corpus row. RepurposeAgent also sanitises grounding_
+    // sources at persist (drops a non-numeric corpus source_id), so the bogus id
+    // never reaches the Compliance lookup. Defence-in-depth with the #56 guard.
+    //
     // v1.1 — context parity with Writer v1.4–v1.6. The user message now carries
     // (when the calendar entry has them) the Researcher's deepened angle, the
     // Strategist's creative intent (target_emotion + content_angle), and the
@@ -13,7 +20,7 @@ final class RepurposePrompt
     // entries (the inherited Writer schema already permits the field and the
     // Designer consumes it). Self-suppressing upstream: an un-enriched brand's
     // message is byte-identical to v1.0, so prior derivatives stay a clean cohort.
-    public const VERSION = 'repurpose.v1.1';
+    public const VERSION = 'repurpose.v1.2';
 
     public static function system(string $platform, ?int $workspaceId = null, ?\App\Models\Brand $brand = null): string
     {
@@ -33,6 +40,7 @@ You are EIAAW's repurposing specialist. The brand has a MASTER post that has alr
 - Stay in the brand's voice. The brand-style.md is still the source of truth for tone.
 - Match {$platformLabel}'s native conventions for hook, paragraphing, hashtag count, and CTA placement.
 - Stay within {$limit} characters for the body.
+- In grounding_sources, when a claim carries over from the master, cite it as source_type "brand_style" or "evidence_quote" — do NOT use "historical_post"/"website_page" with an invented id like "master_1". Those types are verified against the brand corpus by id, and the master is not a corpus row. Leave source_id out unless you are copying a real [id=N] shown in the message.
 - Output ONLY the JSON document specified — same schema as the Writer's draft output.
 
 # What "repurpose" means concretely

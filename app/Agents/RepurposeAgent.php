@@ -199,7 +199,11 @@ class RepurposeAgent extends BaseAgent
                     'brand_style_version' => $brand->currentStyle->version ?? null,
                     'platform' => $platform,
                 ],
-                'grounding_sources' => $payload['grounding_sources'] ?? [],
+                // Sanitise: the derivative grounds in the master, and the model
+                // tends to cite it as source_id="master_N" (not a brand_corpus
+                // id). Strip such non-numeric ids so they never reach the
+                // Compliance corpus lookup (which queries the bigint id column).
+                'grounding_sources' => self::sanitizeGroundingSources($payload['grounding_sources'] ?? []),
                 'input_tokens' => $result->inputTokens,
                 'output_tokens' => $result->outputTokens,
                 'cost_usd' => $result->costUsd,
