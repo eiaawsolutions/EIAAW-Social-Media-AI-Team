@@ -216,6 +216,15 @@ class SubmitScheduledPost implements ShouldQueue
         );
         $mentions = is_array($post->draft->mentions) ? $post->draft->mentions : [];
 
+        // HQ-only CTA links. SAME source as the compliance caption assembler
+        // (PlatformRules::hqCtaBlock) so what ships equals what Compliance
+        // counted. Empty for client brands / non-HQ / disabled config.
+        $ctaBlock = '';
+        $cta = \App\Services\Blotato\PlatformRules::hqCtaBlock($post->draft);
+        if ($cta !== '') {
+            $ctaBlock = "\n\n" . $cta;
+        }
+
         $caption = $body;
         if ($hashtags) {
             $caption .= "\n\n" . implode(' ', array_map(fn ($t) => '#' . ltrim((string) $t, '#'), $hashtags));
@@ -223,10 +232,13 @@ class SubmitScheduledPost implements ShouldQueue
         if ($mentions) {
             $caption .= "\n" . implode(' ', array_map(fn ($m) => '@' . ltrim((string) $m, '@'), $mentions));
         }
+        $caption .= $ctaBlock;
 
-        // Hard cap — truncate body if the full assembly is still over.
+        // Hard cap — truncate body if the full assembly is still over. The CTA
+        // block is reserved (never truncated) so the links always survive; only
+        // body (then hashtags) give way.
         if (mb_strlen($caption) > $cap['caption']) {
-            // Compute how much room body has, leaving hashtag block intact
+            // Compute how much room body has, leaving hashtag + CTA blocks intact
             // when possible. If even body alone is over cap, drop hashtags
             // entirely and trim body.
             $hashtagBlock = $hashtags
@@ -235,14 +247,14 @@ class SubmitScheduledPost implements ShouldQueue
             $mentionBlock = $mentions
                 ? "\n" . implode(' ', array_map(fn ($m) => '@' . ltrim((string) $m, '@'), $mentions))
                 : '';
-            $reserved = mb_strlen($hashtagBlock . $mentionBlock);
+            $reserved = mb_strlen($hashtagBlock . $mentionBlock . $ctaBlock);
             $bodyRoom = $cap['caption'] - $reserved - 1; // -1 for the …
             if ($bodyRoom < 50) {
-                // Hashtag block too greedy — drop it.
-                $bodyRoom = $cap['caption'] - mb_strlen($mentionBlock) - 1;
-                $caption = mb_substr($body, 0, max(50, $bodyRoom)) . '…' . $mentionBlock;
+                // Hashtag block too greedy — drop it (keep mentions + CTA).
+                $bodyRoom = $cap['caption'] - mb_strlen($mentionBlock . $ctaBlock) - 1;
+                $caption = mb_substr($body, 0, max(50, $bodyRoom)) . '…' . $mentionBlock . $ctaBlock;
             } else {
-                $caption = mb_substr($body, 0, $bodyRoom) . '…' . $hashtagBlock . $mentionBlock;
+                $caption = mb_substr($body, 0, $bodyRoom) . '…' . $hashtagBlock . $mentionBlock . $ctaBlock;
             }
         }
 

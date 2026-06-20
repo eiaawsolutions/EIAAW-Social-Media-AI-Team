@@ -2,8 +2,10 @@
 
 namespace App\Services\Blotato;
 
+use App\Models\Brand;
 use App\Models\Draft;
 use App\Models\PlatformConnection;
+use App\Services\Imagery\EiaawBrandLock;
 
 /**
  * Single source of truth for per-platform Blotato + native API publishability
@@ -337,7 +339,71 @@ final class PlatformRules
         if ($mentions) {
             $caption .= "\n" . implode(' ', array_map(fn ($m) => '@' . ltrim((string) $m, '@'), $mentions));
         }
+
+        // HQ-only call-to-action links, appended last so they survive the same
+        // length check the platform enforces (Compliance counts the assembled
+        // caption — see evaluate()). Empty string for client brands / non-HQ /
+        // disabled config, keeping their caption byte-identical to before.
+        $cta = self::hqCtaBlock($draft);
+        if ($cta !== '') {
+            $caption .= "\n\n" . $cta;
+        }
+
         return $caption;
+    }
+
+    /**
+     * The fixed call-to-action block appended to every EIAAW HQ post's caption.
+     * Returns '' unless the draft's brand is the HQ brand (eiaaw_internal plan)
+     * AND services.hq_cta.enabled is true — so client brands are never touched.
+     *
+     * Per-platform: on link-friendly platforms (caption URLs are clickable) the
+     * full labelled URLs are appended; on platforms that don't linkify caption
+     * URLs (instagram/tiktok/youtube/pinterest), a single "links in bio" line is
+     * used instead (raw URLs there aren't clickable and suppress reach).
+     *
+     * This is the SINGLE source of the CTA text — both the compliance caption
+     * assembler (assembleCaption) and the publish path (SubmitScheduledPost)
+     * call it, so what Compliance counts is exactly what ships.
+     */
+    public static function hqCtaBlock(Draft $draft): string
+    {
+        $cfg = config('services.hq_cta', []);
+        if (! ($cfg['enabled'] ?? false)) {
+            return '';
+        }
+
+        $brand = $draft->brand;
+        if (! $brand instanceof Brand || ! EiaawBrandLock::appliesTo($brand)) {
+            return '';
+        }
+
+        $links = is_array($cfg['links'] ?? null) ? $cfg['links'] : [];
+        if ($links === []) {
+            return '';
+        }
+
+        $platform = strtolower((string) $draft->platform);
+        $linkFriendly = is_array($cfg['link_friendly_platforms'] ?? null)
+            ? $cfg['link_friendly_platforms'] : [];
+
+        if (in_array($platform, $linkFriendly, true)) {
+            // Full labelled URLs, one per line.
+            $lines = [];
+            foreach ($links as $link) {
+                $label = trim((string) ($link['label'] ?? ''));
+                $url = trim((string) ($link['url'] ?? ''));
+                if ($url === '') {
+                    continue;
+                }
+                $lines[] = $label !== '' ? "{$label}: {$url}" : $url;
+            }
+
+            return implode("\n", $lines);
+        }
+
+        // Non-link-friendly platform → a single bio-pointer line, no raw URLs.
+        return trim((string) ($cfg['bio_line'] ?? ''));
     }
 
     /**
