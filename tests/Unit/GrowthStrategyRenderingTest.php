@@ -114,7 +114,7 @@ class GrowthStrategyRenderingTest extends TestCase
 
     public function test_growth_strategist_prompt_version_and_no_numeric_schema(): void
     {
-        $this->assertSame('growth_strategist.v1.0', GrowthStrategistPrompt::VERSION);
+        $this->assertSame('growth_strategist.v1.1', GrowthStrategistPrompt::VERSION);
 
         $system = GrowthStrategistPrompt::system();
         $this->assertStringContainsString('Do NOT output any numeric metric', $system);

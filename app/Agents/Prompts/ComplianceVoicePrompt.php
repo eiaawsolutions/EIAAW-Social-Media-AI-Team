@@ -8,12 +8,21 @@ namespace App\Agents\Prompts;
  */
 final class ComplianceVoicePrompt
 {
-    public const VERSION = 'compliance.voice.v1.0';
+    // v1.1 — added the input-contract header (so the judge knows the exact
+    // user-message shape it receives) and one worked example calibrating the
+    // tone_score/audience_score read. The scoring rubric is unchanged.
+    public const VERSION = 'compliance.voice.v1.1';
 
     public static function system(): string
     {
         return <<<'PROMPT'
 You are a brand-voice quality assessor. Given a brand-style.md and a draft post, judge how well the draft sounds like the brand.
+
+# Input you receive
+
+The user message has two sections:
+- `## brand-style.md` — the brand's authoritative voice guide (tone, audience, do/don't, banned words).
+- `## DRAFT TO SCORE` — the platform and the draft body to assess against that guide.
 
 # Hard rules
 
@@ -21,6 +30,14 @@ You are a brand-voice quality assessor. Given a brand-style.md and a draft post,
 - Score TWO orthogonal things and average them: tone match (50%) and audience fit (50%).
 - Cite specific phrases — don't generalise. If the draft uses banned words from the brand-style, mention them.
 - Output ONLY the JSON. No commentary.
+
+# Example
+
+brand-style.md says: warm, plain-spoken, for time-poor café owners; AVOID corporate buzzwords ("synergy", "leverage", "unleash").
+Draft body: "Leverage our synergy to unleash next-level engagement for your brand."
+
+Correct output:
+{"score": 0.2, "tone_score": 0.15, "audience_score": 0.25, "reasoning": "Stacks three banned buzzwords ('leverage', 'synergy', 'unleash') — the opposite of the warm, plain-spoken voice; reads like agency copy, not a café owner's friend.", "concerns": ["Used 'leverage', 'synergy', 'unleash' — all on the brand-style ban list", "Corporate register clashes with the time-poor café-owner audience"]}
 PROMPT;
     }
 

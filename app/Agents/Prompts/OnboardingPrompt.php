@@ -9,7 +9,23 @@ namespace App\Agents\Prompts;
  */
 final class OnboardingPrompt
 {
-    public const VERSION = 'onboarding.v1.0';
+    // v1.1 — contract fix. The prompt previously told the model to "Return 3-5
+    // voice attribute OBJECTS" (an array) while the schema enforces a SINGLE
+    // voice_attributes object with four arrays (tone/audience/do/dont). Reworded
+    // to describe the single-object shape the schema actually validates, and the
+    // evidence_quotes array now carries a minItems floor so a brand-style.md must
+    // come with at least one grounding quote. OnboardingAgent additionally
+    // rejects an obviously-truncated document (word-count floor) rather than
+    // silently persisting it.
+    public const VERSION = 'onboarding.v1.1';
+
+    /**
+     * Minimum acceptable word count for a synthesised brand-style.md. The prompt
+     * targets 600–1200 words; anything well under that is a truncated/broken
+     * generation, not a usable style guide. Enforced at runtime in
+     * OnboardingAgent::isAcceptableStyleLength().
+     */
+    public const MIN_STYLE_WORDS = 400;
 
     public static function system(): string
     {
@@ -37,7 +53,15 @@ The whole markdown should be 600-1200 words. Concrete, practical, citable.
 
 # Voice attributes JSON (separate field)
 
-Return 3-5 voice attribute objects with `tone`, `audience`, `do`, `dont` arrays. Use concrete examples lifted from the evidence.
+Return ONE `voice_attributes` object whose four arrays each hold 3-5 concrete entries lifted from the evidence:
+- `tone` — the brand's tone adjectives.
+- `audience` — who they speak to (real personas).
+- `do` — phrasing/moves that are on-brand.
+- `dont` — phrasing/moves to avoid.
+
+# Evidence quotes (separate field)
+
+Return 3-8 short verbatim quotes (in `evidence_quotes`) lifted from the source, each with its `source_url`. Every quote MUST be findable in the supplied evidence — never paraphrase or invent.
 PROMPT;
     }
 
@@ -66,6 +90,12 @@ PROMPT;
                 ],
                 'evidence_quotes' => [
                     'type' => 'array',
+                    // minItems 1 is accepted by the Anthropic structured-output
+                    // validator (only 0/1 are allowed; bounded maxItems is
+                    // rejected on some models). The 3-8 target is enforced in
+                    // the prompt; this floor guarantees at least one grounding
+                    // quote so a brand-style.md is never written ungrounded.
+                    'minItems' => 1,
                     'description' => '3-8 short verbatim quotes from the evidence that anchor the analysis. Each must be findable in the supplied source.',
                     'items' => [
                         'type' => 'object',

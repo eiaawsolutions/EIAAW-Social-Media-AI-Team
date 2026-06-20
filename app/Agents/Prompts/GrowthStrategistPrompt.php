@@ -17,7 +17,12 @@ namespace App\Agents\Prompts;
  */
 final class GrowthStrategistPrompt
 {
-    public const VERSION = 'growth_strategist.v1.0';
+    // v1.1 — contract tightening. rationale is now schema-required (the prompt
+    // always asks for it), a worked example was added, and the agent's
+    // post-filter now bounds/caps cta_styles (length + count) for parity with
+    // the strict hook_patterns filtering. The scoring/truthfulness rules are
+    // unchanged.
+    public const VERSION = 'growth_strategist.v1.1';
 
     /** The 8 publish-safe hook patterns the Writer understands. */
     public const HOOK_PATTERNS = [
@@ -48,6 +53,14 @@ You are a growth strategist for a social media agency. You are given a brand's O
 2. rationale — prose that ties each recommendation to a specific supplied signal (e.g. "carousels at 8am Tuesday and the 'authority_insight' hook both over-index for you, so …"). Reference the real signals, never invented ones.
 3. summary — 2-3 plain sentences an operator can read to know what to do this month.
 
+Keep cta_styles SHORT (a few words each, like a button label) — they are example phrasings, not sentences.
+
+# Example
+
+If hook_performance shows 'authority_insight' winning and the CTA-lift signal favours soft saves for engagement, a correct objective_guidance entry looks like:
+"engagement": {"hook_patterns": ["authority_insight", "relatable"], "cta_styles": ["Save this for later", "Which one's you?"]}
+…and the rationale ties it back: "authority_insight over-indexes for you and your highest-engagement posts ended on a save prompt, so engagement leans on both." Never cite a signal the input didn't supply.
+
 Output ONLY the JSON document specified. No commentary.
 PROMPT;
     }
@@ -72,7 +85,9 @@ PROMPT;
         return [
             'type' => 'object',
             'additionalProperties' => false,
-            'required' => ['objective_guidance', 'summary'],
+            // rationale is required: the prompt always asks for it (#2), so the
+            // schema enforces it rather than leaving prompt/schema in drift.
+            'required' => ['objective_guidance', 'rationale', 'summary'],
             'properties' => [
                 'objective_guidance' => [
                     'type' => 'object',
