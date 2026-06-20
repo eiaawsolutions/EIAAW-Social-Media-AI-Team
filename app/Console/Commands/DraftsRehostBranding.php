@@ -20,44 +20,69 @@ use Illuminate\Support\Facades\Storage;
  * to publish to R2; this command repairs drafts created BEFORE that fix whose
  * bytes are still present on the current container's local disk.
  *
- * It only touches drafts whose asset_url is a local /storage/branding/ URL AND
- * whose underlying file is still readable. It re-publishes that file to the
- * durable disk, rewrites asset_url + asset_urls (replacing the dead URL while
- * preserving history), and reports anything it couldn't recover (bytes already
- * wiped → operator must regenerate that draft). Idempotent: a draft already on
- * the durable disk is skipped.
+ * Two modes:
  *
- * URGENCY: the local bytes survive only until the next redeploy. Run this
- * BEFORE deploying the agent fix if you want to salvage existing scheduled
- * drafts; after a redeploy the local files are gone and affected drafts must be
- * regenerated instead.
+ *   (a) BYTE-COPY MIGRATE (default) — for drafts whose underlying file is still
+ *       readable on the local public disk (dev, or before the next redeploy):
+ *       re-publish that file to the durable disk and rewrite asset_url +
+ *       asset_urls (replacing the dead URL while preserving history).
+ *
+ *   (b) STRIP-DEAD (--strip-dead) — for the real-world post-redeploy case where
+ *       the bytes are GONE (the URL 404s): just remove every /storage/branding/
+ *       entry from the asset_urls HISTORY so it stops poisoning previews,
+ *       thumbnails, and PlatformRules::countMedia. If the PRIMARY asset_url is
+ *       itself a dead ephemeral URL it is reported as "needs regeneration"
+ *       (run drafts:regenerate-image <id>) — never nulled blindly.
+ *
+ * Why both: the 2026-06-20 failures had a clean durable asset_url but dead
+ * ephemeral URLs hiding inside asset_urls — the old query (asset_url LIKE only)
+ * missed them entirely. We now also match the JSON history (asset_urls::text)
+ * so those drafts are found. Idempotent: a clean draft is skipped.
+ *
+ * URGENCY (byte-copy mode only): local bytes survive only until the next
+ * redeploy. Run before deploying the agent fix to salvage drafts; after a
+ * redeploy use --strip-dead and regenerate the unrecoverable primaries.
  *
  * Usage:
- *   php artisan drafts:rehost-branding --dry-run     # report only, no writes
- *   php artisan drafts:rehost-branding               # migrate recoverable drafts
- *   php artisan drafts:rehost-branding --brand=1     # restrict to one brand
+ *   php artisan drafts:rehost-branding --dry-run                 # report only
+ *   php artisan drafts:rehost-branding                          # byte-copy migrate
+ *   php artisan drafts:rehost-branding --strip-dead --dry-run    # report strip plan
+ *   php artisan drafts:rehost-branding --strip-dead              # strip dead history
+ *   php artisan drafts:rehost-branding --brand=1                 # restrict to one brand
  */
 class DraftsRehostBranding extends Command
 {
     protected $signature = 'drafts:rehost-branding
         {--dry-run : Report what would change without writing}
+        {--strip-dead : Remove dead /storage/branding/ URLs from asset_urls history (use after redeploy when bytes are gone)}
         {--brand= : Restrict to a single brand id}';
 
-    protected $description = 'Re-host stranded local /storage/branding/ draft media onto the durable disk (R2).';
+    protected $description = 'Re-host or strip stranded local /storage/branding/ draft media (durable disk / history cleanup).';
 
     public function handle(): int
     {
         $dryRun = (bool) $this->option('dry-run');
+        $stripDead = (bool) $this->option('strip-dead');
         $targetDisk = BaseAgent::durableArtifactDisk();
 
-        if ($targetDisk !== 'r2' && app()->isProduction()) {
+        // Strip mode only deletes dead history entries — it never writes to the
+        // durable disk, so it doesn't need R2 configured. Byte-copy mode does.
+        if (! $stripDead && $targetDisk !== 'r2' && app()->isProduction()) {
             $this->error('Durable disk is not R2 in production (R2 bucket not configured). Aborting — fix R2 config first.');
 
             return self::FAILURE;
         }
 
+        // Match drafts polluted in EITHER the primary asset_url OR anywhere in
+        // the asset_urls JSON history — the 2026-06-20 failures had a clean
+        // durable primary but dead ephemeral URLs hiding only in the history,
+        // which the old asset_url-only query missed entirely. asset_urls is
+        // Postgres json; cast to text to substring-match it.
         $query = Draft::query()
-            ->where('asset_url', 'like', '%/storage/branding/%')
+            ->where(function ($q) {
+                $q->where('asset_url', 'like', '%/storage/branding/%')
+                    ->orWhereRaw("asset_urls::text LIKE '%/storage/branding/%'");
+            })
             ->orderBy('id');
         if ($brandId = $this->option('brand')) {
             $query->where('brand_id', (int) $brandId);
@@ -68,6 +93,10 @@ class DraftsRehostBranding extends Command
             $this->info('No drafts reference a local /storage/branding/ URL. Nothing to do.');
 
             return self::SUCCESS;
+        }
+
+        if ($stripDead) {
+            return $this->stripDeadHistory($drafts, $dryRun);
         }
 
         $this->info(sprintf(
@@ -134,6 +163,74 @@ class DraftsRehostBranding extends Command
 
         if ($unrecoverable !== []) {
             $this->warn('Unrecoverable draft ids (regenerate via Force AI image): '.implode(', ', $unrecoverable));
+        }
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * Strip dead /storage/branding/ URLs out of each draft's asset_urls history
+     * (the bytes are gone — this is cleanup, not migration). Reports drafts whose
+     * PRIMARY asset_url is itself a dead ephemeral URL as needing regeneration;
+     * those are never nulled here.
+     *
+     * @param  \Illuminate\Support\Collection<int,Draft>  $drafts
+     */
+    private function stripDeadHistory(\Illuminate\Support\Collection $drafts, bool $dryRun): int
+    {
+        $this->info(sprintf(
+            '%s dead /storage/branding/ URLs from asset_urls history of %d draft(s).',
+            $dryRun ? '[dry-run] would strip' : 'Stripping',
+            $drafts->count(),
+        ));
+
+        $stripped = 0;
+        $cleanPrimary = 0;
+        $needsRegeneration = [];
+
+        foreach ($drafts as $draft) {
+            $primaryDead = str_contains((string) $draft->asset_url, '/storage/branding/');
+            if ($primaryDead) {
+                $needsRegeneration[] = $draft->id;
+            }
+
+            $history = is_array($draft->asset_urls) ? $draft->asset_urls : [];
+            $cleaned = array_values(array_filter(
+                $history,
+                fn ($u) => is_string($u) && $u !== '' && ! str_contains($u, '/storage/branding/'),
+            ));
+
+            $removed = count($history) - count($cleaned);
+            if ($removed === 0) {
+                continue;
+            }
+
+            if ($dryRun) {
+                $this->line(sprintf('  draft #%d: would drop %d dead history URL(s)%s',
+                    $draft->id, $removed, $primaryDead ? ' [PRIMARY also dead — regenerate]' : ''));
+                $stripped++;
+
+                continue;
+            }
+
+            $draft->update(['asset_urls' => $cleaned]);
+            if (! $primaryDead) {
+                $cleanPrimary++;
+            }
+            $this->line(sprintf('  draft #%d: dropped %d dead history URL(s)%s',
+                $draft->id, $removed, $primaryDead ? ' [PRIMARY also dead — regenerate]' : ''));
+            $stripped++;
+        }
+
+        $this->newLine();
+        $this->info(sprintf('%s history on %d draft(s); %d had a clean durable primary.',
+            $dryRun ? 'Would strip' : 'Stripped', $stripped, $cleanPrimary));
+
+        if ($needsRegeneration !== []) {
+            $this->warn('Drafts whose PRIMARY asset_url is dead — regenerate each:');
+            foreach ($needsRegeneration as $id) {
+                $this->warn(sprintf('  php artisan drafts:regenerate-image %d', $id));
+            }
         }
 
         return self::SUCCESS;

@@ -402,19 +402,47 @@ class SubmitScheduledPost implements ShouldQueue
     }
 
     /**
+     * The CURRENT publishable media for this draft: exactly the primary
+     * asset_url, the single source of truth the rest of the publish path already
+     * trusts (the video-format integrity gate above checks asset_url alone).
+     *
+     * We deliberately IGNORE asset_urls. Despite its "multi-asset (carousel)"
+     * migration comment, no flow in this codebase produces a true multi-image
+     * carousel — carousel/infographic formats render to ONE composed image. In
+     * practice asset_urls is a history / provenance ledger: DesignerAgent appends
+     * the final URL, VideoAgent appends the prior still + the new video, the
+     * regenerate commands push the old asset_url before clearing it, and the
+     * library path appends the source public_url. Sending those entries shipped
+     * stale .mp4s, duplicate images, and dead ephemeral URLs as a bogus carousel
+     * — and on 2026-06-20 it failed three HQ posts outright when a dead
+     * /storage/branding/ URL in the history 404'd on-platform.
+     *
+     * Defense-in-depth: a /storage/branding/ URL is the ephemeral local public
+     * disk (wiped on Railway redeploy, no storage:link → 404). If the primary is
+     * itself ephemeral we return [] so the publish fails loudly via the
+     * publishability gate (media_required) rather than 404-ing on-platform — the
+     * draft then needs regeneration, not a publish.
+     *
      * @return array<int,string>
      */
     private function collectDraftMediaUrls(\App\Models\Draft $draft): array
     {
-        $urls = [];
-        if ($draft->asset_url) {
-            $urls[] = $draft->asset_url;
+        $primary = trim((string) ($draft->asset_url ?? ''));
+        if ($primary === '' || $this->isEphemeralMediaUrl($primary)) {
+            return [];
         }
-        if (is_array($draft->asset_urls)) {
-            foreach ($draft->asset_urls as $u) {
-                if (is_string($u) && $u !== '') $urls[] = $u;
-            }
-        }
-        return array_values(array_unique($urls));
+
+        return [$primary];
+    }
+
+    /**
+     * True for media URLs on the ephemeral local public disk
+     * (/storage/branding/…), which 404 after a Railway redeploy and must never
+     * be sent to a platform. Durable R2 URLs (smt-assets.eiaawsolutions.com)
+     * pass. Matches the marker used by drafts:rehost-branding.
+     */
+    private function isEphemeralMediaUrl(string $url): bool
+    {
+        return str_contains($url, '/storage/branding/');
     }
 }

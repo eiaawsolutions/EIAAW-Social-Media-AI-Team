@@ -62,6 +62,19 @@ class MetricoolPublisher implements Publisher
         // Blotato's /v2/media). A failure here is a hard fail — no half-posts.
         $media = [];
         foreach ($mediaUrls as $url) {
+            // Last line of defence ([[branded_artifact_ephemeral_disk]]): a
+            // /storage/branding/ URL is the ephemeral local public disk (wiped on
+            // every Railway redeploy, no storage:link) and 404s — Metricool's
+            // normalize/the platform's media fetch then fails with an opaque
+            // "Error downloading the image". Refuse it here regardless of which
+            // caller assembled the list, so a stale ephemeral URL can never reach
+            // a platform. Durable R2 URLs (smt-assets…) pass.
+            if (str_contains((string) $url, '/storage/branding/')) {
+                return PublishResult::failed(
+                    'Refusing ephemeral media URL (/storage/branding/ 404s after redeploy): ' . $url
+                );
+            }
+
             $norm = $this->client->normalizeMedia($url);
             if (! ($norm['found'] ?? false)) {
                 return PublishResult::failed('Media normalize failed for ' . $url
@@ -153,7 +166,21 @@ class MetricoolPublisher implements Publisher
                     $status = strtoupper((string) ($provider['status'] ?? ''));
 
                     if (in_array($status, ['ERROR', 'FAILED', 'REJECTED'], true)) {
-                        $detail = (string) ($provider['detail'] ?? $provider['error'] ?? $provider['errorMessage'] ?? 'no detail');
+                        // `detailedStatus` is Metricool's REAL per-provider error
+                        // field (e.g. "Error downloading the image: <url>",
+                        // "(#100) url should represent a valid URL"). We previously
+                        // read only detail/error/errorMessage — none of which
+                        // Metricool populates here — so every delivery failure was
+                        // logged as the useless "no detail", hiding the actual
+                        // platform reason. Read detailedStatus first; keep the
+                        // others as fallbacks for providers that use them.
+                        $detail = (string) (
+                            $provider['detailedStatus']
+                            ?? $provider['detail']
+                            ?? $provider['error']
+                            ?? $provider['errorMessage']
+                            ?? 'no detail'
+                        );
                         return PublishResult::failed('Metricool delivery ' . $status . ': ' . substr($detail, 0, 200), $provider);
                     }
 
