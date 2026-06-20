@@ -320,4 +320,35 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | HQ CTA links
+    |--------------------------------------------------------------------------
+    | Fixed call-to-action links appended to the caption of every EIAAW HQ post
+    | (brands on the eiaaw_internal plan — see EiaawBrandLock). Configurable so
+    | the URLs/labels can change without a code edit. Client brands are never
+    | affected. Toggle off with HQ_CTA_ENABLED=false.
+    |
+    | Per-platform policy: on link-friendly platforms (URLs are clickable) we
+    | append the labelled URLs; on platforms that don't linkify caption URLs
+    | (and penalise raw links) we append a short "links in bio" line instead.
+    */
+    'hq_cta' => [
+        'enabled' => env('HQ_CTA_ENABLED', true),
+
+        // The three destinations, each a label + url. Order is preserved.
+        'links' => [
+            ['label' => 'Chat with our AI', 'url' => env('HQ_CTA_CHAT_URL', 'https://eiaawsolutions.com/#chat')],
+            ['label' => 'Talk to us', 'url' => env('HQ_CTA_CONTACT_URL', 'https://eiaawsolutions.com/#contact')],
+            ['label' => 'Talk to our AI agent', 'url' => env('HQ_CTA_AGENT_URL', 'https://eiaawsolutions.com/#agent')],
+        ],
+
+        // Platforms where a caption URL is clickable → append the full URLs.
+        'link_friendly_platforms' => ['x', 'twitter', 'linkedin', 'facebook', 'threads'],
+
+        // The line used on non-link-friendly platforms (instagram/tiktok/youtube/
+        // pinterest), where raw URLs aren't clickable and can suppress reach.
+        'bio_line' => env('HQ_CTA_BIO_LINE', 'Links in bio — chat, contact us, or talk to our AI agent.'),
+    ],
+
 ];
