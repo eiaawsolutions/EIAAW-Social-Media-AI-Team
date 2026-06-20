@@ -594,11 +594,21 @@ class DraftResource extends Resource
                     ->visible(fn (Draft $r) => FalAiClient::platformAcceptsVideo($r->platform)
                         && ! in_array($r->status, ['published', 'rejected']))
                     ->requiresConfirmation()
-                    ->modalDescription(fn (Draft $r) => empty($r->asset_url)
-                        ? 'Generates a short vertical video for this draft with AI.'
-                        : 'Uses the current still as the keyframe and generates a 5s vertical video around it. The old still moves into the asset history.')
+                    ->modalDescription(fn (Draft $r) => self::generateVideoModalDescription($r))
                     ->action(function (Draft $r): void {
-                        @set_time_limit(420);
+                        @set_time_limit(600);
+
+                        // If the still no longer matches the (edited) caption,
+                        // regenerate it FIRST so the video's keyframe reflects the
+                        // current text — otherwise VideoAgent animates an
+                        // off-message still. A draft with no still at all skips
+                        // straight to text-to-video inside VideoAgent.
+                        $keyframeNote = '';
+                        if ($r->mediaIsStaleForBody()) {
+                            $keyframeNote = self::refreshStillForKeyframe($r);
+                            $r->refresh();
+                        }
+
                         try {
                             $result = app(VideoAgent::class)->run($r->brand, [
                                 'draft_id' => $r->id,
@@ -624,8 +634,9 @@ class DraftResource extends Resource
                         Notification::make()
                             ->title('Video ready')
                             ->body(sprintf(
-                                'A %ss vertical video was generated for this draft.',
+                                'A %ss vertical video was generated for this draft.%s',
                                 $result->data['duration_seconds'] ?? '?',
+                                $keyframeNote,
                             ))
                             ->success()
                             ->send();
@@ -817,6 +828,61 @@ class DraftResource extends Resource
         }
 
         return ' · video ready';
+    }
+
+    /**
+     * Confirmation copy for "Generate video", aware of whether the still is
+     * stale relative to the caption. When the operator edited the caption after
+     * the still was made, the action regenerates the still from the edited text
+     * first (one extra FAL image) so the video keyframe is on-message — so tell
+     * them that, rather than the misleading "uses the current still" line.
+     */
+    private static function generateVideoModalDescription(Draft $draft): string
+    {
+        if (empty($draft->asset_url)) {
+            return 'Generates a short vertical video for this draft from the current caption with AI.';
+        }
+
+        if ($draft->mediaIsStaleForBody()) {
+            return 'The caption changed since this still was made. We\'ll first regenerate the image from the edited caption (one AI image), then build a short vertical video around that fresh still. The old still moves into the asset history.';
+        }
+
+        return 'Uses the current still as the keyframe and generates a short vertical video around it. The old still moves into the asset history.';
+    }
+
+    /**
+     * Regenerate the still from the EDITED caption so the video keyframe is
+     * on-message. Clears asset_url (so DesignerAgent doesn't no-op on the stale
+     * image), then runs DesignerAgent — which re-distils from the new body and
+     * re-stamps media_body_hash. Soft-fail: on any error we don't block the
+     * operator — VideoAgent's stillUrlForKeyframe() falls back to the most
+     * recent image in asset_urls history (the prior still is preserved there),
+     * or proceeds as text-to-video if none. The note surfaces what happened.
+     *
+     * Returns a short status-note suffix for the success notification.
+     */
+    private static function refreshStillForKeyframe(Draft $draft): string
+    {
+        $draft->update(['asset_url' => null]);
+
+        try {
+            $imageResult = app(DesignerAgent::class)->run($draft->brand, [
+                'draft_id' => $draft->id,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('DraftResource: still regen before video failed (animating prior still)', [
+                'draft_id' => $draft->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ' · note: kept the prior still (image regen crashed)';
+        }
+
+        if (! $imageResult->ok) {
+            return ' · note: kept the prior still (image regen failed)';
+        }
+
+        return ' · keyframe refreshed from the edited caption';
     }
 
     /**
