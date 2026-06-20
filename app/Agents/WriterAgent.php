@@ -94,7 +94,7 @@ class WriterAgent extends BaseAgent
 
         $result = $this->llm->call(
             promptVersion: $this->promptVersion(),
-            systemPrompt: WriterPrompt::system($platform, $brand->workspace_id),
+            systemPrompt: WriterPrompt::system($platform, $brand->workspace_id, $brand),
             userMessage: $userMessage,
             brand: $brand,
             workspace: $brand->workspace,
@@ -113,7 +113,10 @@ class WriterAgent extends BaseAgent
         // table doesn't churn (no new row appears for every retry). Greenfield
         // mode creates a new Draft row as before.
         $draft = DB::transaction(function () use ($brand, $entry, $platform, $payload, $similar, $result, $redraftContext) {
-            $bodyCap = \App\Agents\Prompts\WriterPrompt::PLATFORM_LIMITS[$platform] ?? 1000;
+            // Effective cap reserves room for the HQ CTA block (PlatformRules
+            // appends it to the caption) so an HQ body isn't truncated at publish
+            // to fit the links. Client brands → exactly the platform cap.
+            $bodyCap = \App\Agents\Prompts\WriterPrompt::effectiveBodyLimit($platform, $brand);
             $body = mb_substr((string) ($payload['body'] ?? ''), 0, $bodyCap);
             $hashtags = array_slice($payload['hashtags'] ?? [], 0, 30);
 

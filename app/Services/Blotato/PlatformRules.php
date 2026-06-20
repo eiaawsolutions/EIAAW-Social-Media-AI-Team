@@ -368,13 +368,24 @@ final class PlatformRules
      */
     public static function hqCtaBlock(Draft $draft): string
     {
-        $cfg = config('services.hq_cta', []);
-        if (! ($cfg['enabled'] ?? false)) {
+        $brand = $draft->brand;
+        if (! $brand instanceof Brand) {
             return '';
         }
 
-        $brand = $draft->brand;
-        if (! $brand instanceof Brand || ! EiaawBrandLock::appliesTo($brand)) {
+        return self::ctaTextFor($brand, (string) $draft->platform);
+    }
+
+    /**
+     * Core CTA-text generator for a (brand, platform) pair — no Draft required,
+     * so both the caption assemblers (hqCtaBlock) and the Writer's body-cap
+     * reservation (hqCtaReservedChars) share the EXACT same text. Returns '' for
+     * non-HQ brands / disabled config / no links.
+     */
+    private static function ctaTextFor(Brand $brand, string $platform): string
+    {
+        $cfg = config('services.hq_cta', []);
+        if (! ($cfg['enabled'] ?? false) || ! EiaawBrandLock::appliesTo($brand)) {
             return '';
         }
 
@@ -383,7 +394,7 @@ final class PlatformRules
             return '';
         }
 
-        $platform = strtolower((string) $draft->platform);
+        $platform = strtolower($platform);
         $linkFriendly = is_array($cfg['link_friendly_platforms'] ?? null)
             ? $cfg['link_friendly_platforms'] : [];
 
@@ -404,6 +415,20 @@ final class PlatformRules
 
         // Non-link-friendly platform → a single bio-pointer line, no raw URLs.
         return trim((string) ($cfg['bio_line'] ?? ''));
+    }
+
+    /**
+     * Characters the appended CTA block will cost in the caption for a (brand,
+     * platform) pair — the CTA text length PLUS its "\n\n" separator. 0 when no
+     * CTA applies (client brand / non-HQ / disabled). The Writer/Repurpose body
+     * cap subtracts this so a full-length body isn't truncated at publish to fit
+     * the links. Mirrors how assembleCaption / SubmitScheduledPost append it.
+     */
+    public static function hqCtaReservedChars(Brand $brand, string $platform): int
+    {
+        $cta = self::ctaTextFor($brand, $platform);
+
+        return $cta === '' ? 0 : mb_strlen($cta) + 2; // +2 for the "\n\n" separator
     }
 
     /**
