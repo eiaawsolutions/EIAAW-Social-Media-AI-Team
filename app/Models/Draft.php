@@ -121,6 +121,49 @@ class Draft extends Model
     }
 
     /**
+     * Resolve a media URL to the disk-relative storage key we can delete it by,
+     * but ONLY when the URL is one WE host on a durable disk we control (R2 in
+     * prod, the local `public` disk in dev). Returns null otherwise.
+     *
+     * This is the safety gate for the "Delete media" action: a draft's
+     * asset_url may instead be a remote, provider-hosted URL (Blotato /
+     * Metricool re-host, a customer-supplied link). We must never issue a
+     * storage delete against a bucket we don't own — and we have no key mapping
+     * for those — so a non-durable URL returns null and the caller skips the
+     * file delete (it still clears the DB field).
+     *
+     * Matching is done against the disk's CONFIGURED public-URL base so it works
+     * for both shapes without hardcoding a host:
+     *   - R2:     <R2_PUBLIC_URL>/branding/388-abc.jpg   → "branding/388-abc.jpg"
+     *   - public: <APP_URL>/storage/branding/388-abc.jpg → "branding/388-abc.jpg"
+     * Query strings / fragments are stripped from the returned key.
+     */
+    public static function durableMediaKey(?string $url): ?string
+    {
+        $url = trim((string) $url);
+        if ($url === '') {
+            return null;
+        }
+
+        $disk = config('filesystems.disks.r2.bucket') ? 'r2' : 'public';
+        $base = $disk === 'r2'
+            ? (string) config('filesystems.disks.r2.url')
+            : rtrim((string) config('filesystems.disks.public.url'), '/');
+
+        $base = rtrim($base, '/');
+        if ($base === '' || ! str_starts_with($url, $base.'/')) {
+            return null;
+        }
+
+        $key = substr($url, strlen($base) + 1);
+        // Strip any query string / fragment so the key is the bare object path.
+        $key = (string) (parse_url($key, PHP_URL_PATH) ?: $key);
+        $key = ltrim($key, '/');
+
+        return $key !== '' ? $key : null;
+    }
+
+    /**
      * Stable fingerprint of the caption body used to tell whether the generated
      * media (still / video) still reflects the current text.
      *
