@@ -161,7 +161,7 @@ final class PlatformRules
             $violations[] = [
                 'kind' => 'too_many_hashtags',
                 'reason' => sprintf(
-                    '%s accepts at most %d hashtags via Blotato; you have %d. Drop the lowest-impact ones.',
+                    '%s accepts at most %d hashtags; you have %d. Drop the lowest-impact ones.',
                     ucfirst($draft->platform),
                     $rule['hashtag_cap'],
                     count($hashtags),
