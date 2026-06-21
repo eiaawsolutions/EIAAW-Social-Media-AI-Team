@@ -79,7 +79,9 @@ class LegalShiftLeftWiringTest extends TestCase
 
         $this->assertStringContainsString("isset(\$payload['verdict'])", $src);
         $this->assertStringContainsString("array_key_exists('violations', \$payload)", $src);
-        $this->assertStringContainsString("\$payload['verdict'] !== 'pass'", $src);
+        // verdict is authoritative: only the literal 'pass' avoids a fail signal
+        // (null-safe form after decideLegalResult was extracted as a pure method).
+        $this->assertStringContainsString("(\$payload['verdict'] ?? null) !== 'pass'", $src);
     }
 
     public function test_gate_treats_warning_as_non_blocking(): void

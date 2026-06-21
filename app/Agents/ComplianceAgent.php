@@ -9,12 +9,13 @@ use App\Models\BrandCorpusItem;
 use App\Models\ComplianceCheck;
 use App\Models\Draft;
 use App\Models\Embargo;
+use App\Models\PlatformConnection;
 use App\Services\Blotato\PlatformRules;
 use App\Services\Compliance\LearnedRulesProvider;
 use App\Services\Compliance\LearnedRulesRecorder;
 use App\Services\Compliance\LegalRulesProvider;
-use App\Services\Llm\LlmGateway;
 use App\Services\Embeddings\EmbeddingService;
+use App\Services\Llm\LlmGateway;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -36,13 +37,18 @@ use InvalidArgumentException;
  *   6. brand_voice — LLM call to score voice match. Threshold 0.70.
  *   7. factual_grounding — every grounding_source the Writer claimed must
  *      reference a real row in brand_styles or brand_corpus. Score is the % of
- *      sources that resolve. Threshold 0.80.
+ *      sources that resolve. Threshold 0.80. Operator-authored copy (the
+ *      customised-post rail, no Writer → no sources by design) is EXEMPT and
+ *      recorded as a non-blocking 'warning' — a human owns those claims.
  *   8. legal_compliance — BACKSTOP. LLM-as-judge against the curated legal rules
  *      for the brand's industry + jurisdiction (App\Services\Compliance\
  *      LegalRulesProvider). The SAME rules are injected into the Strategist +
  *      Writer prompts so posts are born compliant; this check catches the rare
- *      slip and enforces rules added AFTER a calendar was planned. A clear
- *      [MUST]-rule violation fails (threshold 0.80). When the brand has no
+ *      slip and enforces rules added AFTER a calendar was planned. The judge's
+ *      VERDICT + blocking violations are authoritative; a clear [MUST]-rule
+ *      violation (or a non-'pass' verdict) fails. The score is a CONFIDENCE, not
+ *      an 80% gate — only an implausibly-low pass (< LEGAL_CONFIDENCE_FLOOR)
+ *      holds, as a self-contradictory-judge sanity net. When the brand has no
  *      curated rules (industry unset / 'other' with no rules) it records a
  *      non-blocking 'warning' rather than failing, so existing drafts aren't
  *      retroactively held — the warning nudges the operator to set an industry.
@@ -58,9 +64,22 @@ class ComplianceAgent extends BaseAgent
     protected array $requiredStages = ['brand_style'];
 
     private const VOICE_THRESHOLD = 0.70;
+
     private const DEDUP_SIMILARITY_THRESHOLD = 0.85;
+
     private const FACTUAL_THRESHOLD = 0.80;
-    private const LEGAL_THRESHOLD = 0.80;
+
+    // The legal judge's authoritative signal is its VERDICT + blocking
+    // violations, not its numeric score. The score is a CONFIDENCE, not a
+    // quality bar: the prompt tells the model to drop the score below 0.2 ONLY
+    // when there's a clear [MUST] violation — it never tells the model a
+    // compliant draft must score >= 0.80. So a draft the judge passed with a
+    // mild advisory caveat legitimately returns verdict=pass at e.g. 0.78.
+    // LEGAL_CONFIDENCE_FLOOR is a sanity net, NOT a gate: a verdict=pass with an
+    // implausibly low score (< 0.50) signals a self-contradictory/confused judge
+    // and is held for human review; anything at or above it trusts the verdict.
+    // (Surfaced as the displayed `threshold` so the panel still shows a number.)
+    private const LEGAL_CONFIDENCE_FLOOR = 0.50;
 
     public function __construct(
         LlmGateway $llm,
@@ -69,8 +88,15 @@ class ComplianceAgent extends BaseAgent
         parent::__construct($llm);
     }
 
-    public function role(): string { return 'compliance'; }
-    public function promptVersion(): string { return ComplianceVoicePrompt::VERSION; }
+    public function role(): string
+    {
+        return 'compliance';
+    }
+
+    public function promptVersion(): string
+    {
+        return ComplianceVoicePrompt::VERSION;
+    }
 
     /**
      * Required input: draft_id (int).
@@ -171,7 +197,7 @@ class ComplianceAgent extends BaseAgent
         // connections for this platform, evaluate() runs draft-level checks
         // only — the missing-connection state will surface at scheduling
         // time, not as a compliance failure.
-        $connection = \App\Models\PlatformConnection::where('brand_id', $brand->id)
+        $connection = PlatformConnection::where('brand_id', $brand->id)
             ->where('platform', $draft->platform)
             ->where('status', 'active')
             ->orderByDesc('updated_at')
@@ -356,6 +382,7 @@ class ComplianceAgent extends BaseAgent
             // If embedding fails, we can't dedup — fail open (warning) so the user
             // can still see the draft. Surface this explicitly so it's not silent.
             Log::warning('Compliance: dedup embedding failed', ['draft_id' => $draft->id, 'error' => $e->getMessage()]);
+
             return ComplianceCheck::create([
                 'draft_id' => $draft->id,
                 'brand_id' => $brand->id,
@@ -485,12 +512,53 @@ class ComplianceAgent extends BaseAgent
         ]);
     }
 
+    /**
+     * Pure predicate: is the factual-grounding check exempt for this draft?
+     * True only for operator-authored copy (the customised-post rail, where a
+     * human wrote and owns the claims) that carries NO cited sources — there is
+     * nothing for the source-resolution check to verify, so failing it is a
+     * process artifact, not a real violation. Agent-written drafts are never
+     * exempt: the Writer is contractually required to cite. DB-free, so the rule
+     * is unit-testable (same idiom as isQueryableCorpusId).
+     *
+     * @param  array<int, mixed>  $sources  the draft's grounding_sources
+     */
+    public static function groundingIsExemptForOperator(?string $agentRole, array $sources): bool
+    {
+        return $agentRole === 'operator' && $sources === [];
+    }
+
     // ─── Check 5: factual grounding ───────────────────────────────────────
 
     private function checkFactualGrounding(Draft $draft, Brand $brand): ComplianceCheck
     {
         $sources = $draft->grounding_sources ?? [];
         if (empty($sources)) {
+            // Operator-authored copy (the customised-post rail) never goes
+            // through the Writer, so it carries NO grounding_sources by design —
+            // a human wrote and owns the claims. This check only verifies that
+            // CITED sources resolve to real rows; it does not fact-check claims.
+            // With nothing cited there is nothing to verify, so failing an
+            // operator post here is a process artifact, not a real violation
+            // (the "Writer cited no sources" message is literally false for it).
+            // Record a non-blocking 'warning' — the gate treats warning as
+            // passing (same idiom as the no-rules legal check), while the other
+            // checks (legal, banned-phrase, brand-voice, platform, dedup,
+            // embargo) still run and still gate. Human authorship is the
+            // accountability for operator copy.
+            if (self::groundingIsExemptForOperator($draft->agent_role ?? null, $sources)) {
+                return ComplianceCheck::create([
+                    'draft_id' => $draft->id,
+                    'brand_id' => $brand->id,
+                    'check_type' => 'factual_grounding',
+                    'threshold' => self::FACTUAL_THRESHOLD,
+                    'result' => 'warning',
+                    'reason' => 'Operator-authored post — grounding not applicable; a human wrote and owns this copy.',
+                    'details' => ['agent_role' => 'operator', 'source_count' => 0],
+                    'checked_at' => now(),
+                ]);
+            }
+
             // Writer didn't cite any sources — that's a fail unless the draft
             // makes no factual claims, which we can't easily detect. Be strict.
             return ComplianceCheck::create([
@@ -658,9 +726,55 @@ class ComplianceAgent extends BaseAgent
             ]);
         }
 
+        $decision = self::decideLegalResult($payload);
+
+        return ComplianceCheck::create([
+            'draft_id' => $draft->id,
+            'brand_id' => $brand->id,
+            'check_type' => 'legal_compliance',
+            'score' => round($decision['score'], 4),
+            'threshold' => self::LEGAL_CONFIDENCE_FLOOR,
+            'result' => $decision['result'],
+            'reason' => mb_substr($decision['reason'], 0, 1000),
+            'details' => [
+                'industry' => $industry,
+                'jurisdiction' => $jurisdiction,
+                'verdict' => $payload['verdict'] ?? null,
+                'violations' => $decision['violations'],
+                'reasoning' => $payload['reasoning'] ?? null,
+            ],
+            'model_id' => $result->modelId,
+            'latency_ms' => $result->latencyMs,
+            'checked_at' => now(),
+        ]);
+    }
+
+    /**
+     * Pure decision for the legal_compliance gate — no DB, no model state — so
+     * the verdict/violation/score truth table is unit-testable in isolation
+     * (the gap that previously let a verdict=pass draft fail on score alone).
+     *
+     * Semantics: the judge's VERDICT + blocking violations are authoritative.
+     * The score is a confidence, NOT an 80% quality bar. A draft FAILS when:
+     *   - the verdict is anything other than the literal 'pass' (a real fail, or
+     *     a malformed/non-enum verdict — fail-closed), OR
+     *   - there is at least one blocking (non-advisory) violation, OR
+     *   - the verdict says 'pass' but the score is implausibly low
+     *     (< LEGAL_CONFIDENCE_FLOOR) — a self-contradictory/confused judge we
+     *     hold for human review rather than trust.
+     * Otherwise it PASSES. An advisory-only violation does NOT fail the draft.
+     *
+     * @param  array<string, mixed>  $payload  the judge's parsed JSON
+     * @return array{result: string, score: float, reason: string, violations: array<int, mixed>}
+     */
+    public static function decideLegalResult(array $payload): array
+    {
         // Clamp the score (no min/max enforced at schema level — see prompt).
-        $score = max(0.0, min(1.0, (float) $payload['score']));
-        $violations = is_array($payload['violations']) ? $payload['violations'] : [];
+        $score = max(0.0, min(1.0, (float) ($payload['score'] ?? 0.0)));
+        $violations = isset($payload['violations']) && is_array($payload['violations'])
+            ? $payload['violations']
+            : [];
+
         // Any violation that isn't explicitly 'advisory' counts as blocking — a
         // missing/miscased/non-array severity must NOT downgrade a real breach
         // to advisory. (Belt-and-braces over the schema enum.)
@@ -669,38 +783,33 @@ class ComplianceAgent extends BaseAgent
             fn ($v) => is_array($v) && strtolower((string) ($v['severity'] ?? 'block')) !== 'advisory',
         ));
 
-        // verdict is authoritative when present: only the literal 'pass' avoids a
-        // fail signal — anything else (incl. a malformed/non-enum value) holds.
-        $verdictFail = $payload['verdict'] !== 'pass';
-        $passed = ! $verdictFail && $blockingViolations === [] && $score >= self::LEGAL_THRESHOLD;
+        // verdict is authoritative: only the literal 'pass' avoids a fail signal.
+        $verdictFail = ($payload['verdict'] ?? null) !== 'pass';
 
-        $reason = $passed
-            ? 'No legal violations detected.'
-            : ($blockingViolations !== []
-                ? 'Legal violation(s): '.collect($blockingViolations)
-                    ->map(fn ($v) => trim((string) ($v['rule_code'] ?? 'general').' — '.($v['reason'] ?? '')))
-                    ->implode(' | ')
-                : (trim((string) ($payload['reasoning'] ?? '')) ?: 'Failed legal compliance.'));
+        // The score is a confidence FLOOR (sanity net for a self-contradictory
+        // judge), not an 80% quality gate. A verdict=pass at 0.78 with no
+        // blocking violation must PASS — that's the false-positive this fixes.
+        $lowConfidence = ! $verdictFail && $score < self::LEGAL_CONFIDENCE_FLOOR;
 
-        return ComplianceCheck::create([
-            'draft_id' => $draft->id,
-            'brand_id' => $brand->id,
-            'check_type' => 'legal_compliance',
-            'score' => round($score, 4),
-            'threshold' => self::LEGAL_THRESHOLD,
+        $passed = ! $verdictFail && $blockingViolations === [] && ! $lowConfidence;
+
+        $reason = match (true) {
+            $passed => 'No legal violations detected.',
+            $blockingViolations !== [] => 'Legal violation(s): '.collect($blockingViolations)
+                ->map(fn ($v) => trim((string) ($v['rule_code'] ?? 'general').' — '.($v['reason'] ?? '')))
+                ->implode(' | '),
+            $lowConfidence => 'Legal reviewer returned "pass" but with low confidence (score '
+                .number_format($score, 2).' < '.number_format(self::LEGAL_CONFIDENCE_FLOOR, 2)
+                .') — held for human review.',
+            default => trim((string) ($payload['reasoning'] ?? '')) ?: 'Failed legal compliance.',
+        };
+
+        return [
             'result' => $passed ? 'pass' : 'fail',
-            'reason' => mb_substr($reason, 0, 1000),
-            'details' => [
-                'industry' => $industry,
-                'jurisdiction' => $jurisdiction,
-                'verdict' => $payload['verdict'] ?? null,
-                'violations' => $violations,
-                'reasoning' => $payload['reasoning'] ?? null,
-            ],
-            'model_id' => $result->modelId,
-            'latency_ms' => $result->latencyMs,
-            'checked_at' => now(),
-        ]);
+            'score' => $score,
+            'reason' => $reason,
+            'violations' => $violations,
+        ];
     }
 
     /**
@@ -712,14 +821,22 @@ class ComplianceAgent extends BaseAgent
      */
     private function brandStyleVerifies($brandStyle, string $excerpt): bool
     {
-        if (! $brandStyle || $excerpt === '') return false;
+        if (! $brandStyle || $excerpt === '') {
+            return false;
+        }
         $haystack = (string) $brandStyle->content_md;
-        if ($haystack === '') return false;
+        if ($haystack === '') {
+            return false;
+        }
 
         foreach ([60, 40, 25] as $len) {
             $needle = mb_substr($excerpt, 0, $len);
-            if (mb_strlen($needle) < 15) continue;
-            if (stripos($haystack, $needle) !== false) return true;
+            if (mb_strlen($needle) < 15) {
+                continue;
+            }
+            if (stripos($haystack, $needle) !== false) {
+                return true;
+            }
         }
 
         // Normalised compare — fold whitespace, drop punctuation. Catches
@@ -727,6 +844,7 @@ class ComplianceAgent extends BaseAgent
         // spacing/quotes than the source. Cheap, last-resort.
         $norm = fn (string $s) => preg_replace('/\s+/', ' ', strtolower(preg_replace('/[^\w\s]/u', ' ', $s)));
         $needle = mb_substr($norm($excerpt), 0, 50);
+
         return mb_strlen($needle) >= 20 && stripos($norm($haystack), $needle) !== false;
     }
 
@@ -765,21 +883,30 @@ class ComplianceAgent extends BaseAgent
             $exists = BrandCorpusItem::where('id', (int) trim((string) $src['source_id']))
                 ->where('brand_id', $brand->id)
                 ->exists();
-            if ($exists) return true;
+            if ($exists) {
+                return true;
+            }
         }
 
         $excerpt = (string) ($src['source_excerpt'] ?? '');
-        if ($excerpt === '') return false;
+        if ($excerpt === '') {
+            return false;
+        }
 
         foreach ([80, 40, 20] as $len) {
             $needle = mb_substr($excerpt, 0, $len);
-            if (mb_strlen($needle) < 15) continue;
+            if (mb_strlen($needle) < 15) {
+                continue;
+            }
             $escaped = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $needle);
             $matched = BrandCorpusItem::where('brand_id', $brand->id)
-                ->where('content', 'ILIKE', '%' . $escaped . '%')
+                ->where('content', 'ILIKE', '%'.$escaped.'%')
                 ->exists();
-            if ($matched) return true;
+            if ($matched) {
+                return true;
+            }
         }
+
         return false;
     }
 }
