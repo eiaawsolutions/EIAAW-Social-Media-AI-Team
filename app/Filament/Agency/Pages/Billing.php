@@ -31,7 +31,7 @@ class Billing extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-credit-card';
     protected static ?string $navigationLabel = 'Billing';
     protected static ?string $title = 'Billing';
-    protected static ?int $navigationSort = 90;
+    protected static ?int $navigationSort = 12;
     protected string $view = 'filament.agency.pages.billing';
 
     public function getSubheading(): ?string

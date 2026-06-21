@@ -29,7 +29,7 @@ class GrowthGoalResource extends Resource
     protected static ?string $navigationLabel = 'Growth goals';
     protected static ?string $modelLabel = 'Growth goal';
     protected static ?string $pluralModelLabel = 'Growth goals';
-    protected static ?int $navigationSort = 6;
+    protected static ?int $navigationSort = 5;
 
     private const METRIC_LABELS = [
         'followers' => 'Followers',
