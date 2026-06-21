@@ -22,7 +22,8 @@ class CompliancePromptExampleTest extends TestCase
 
     public function test_legal_version_bumped(): void
     {
-        $this->assertSame('compliance.legal.v1.1', ComplianceLegalPrompt::VERSION);
+        // v1.2 — first-party-feature carve-out (see LegalFirstPartyFeatureCarveOutTest).
+        $this->assertSame('compliance.legal.v1.2', ComplianceLegalPrompt::VERSION);
     }
 
     public function test_voice_prompt_documents_input_contract(): void
