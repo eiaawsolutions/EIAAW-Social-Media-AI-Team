@@ -442,6 +442,94 @@ class CustomisedPostSchedulerTest extends TestCase
         );
     }
 
+    /**
+     * Recurrence: schedule() must accept an optional Recurrence and expand it to
+     * a list of publish instants BEFORE the transaction (so a single post is just
+     * [$publishAt] and the original behaviour is preserved). The default null
+     * keeps every existing caller (single post) working unchanged.
+     */
+    public function test_schedule_accepts_optional_recurrence_and_expands_occurrences(): void
+    {
+        $src = $this->schedulerSource();
+        $this->assertMatchesRegularExpression(
+            '/function schedule\(.*\?Recurrence \$recurrence = null/s',
+            $src,
+            'schedule() must accept an optional ?Recurrence (default null) so single-post callers are unchanged.',
+        );
+        $this->assertStringContainsString('expandOccurrences(', $src,
+            'schedule() must expand the recurrence to a list of occurrences.');
+        $this->assertStringContainsString('RecurrenceExpander::class', $src,
+            'expandOccurrences() must delegate to RecurrenceExpander.');
+    }
+
+    /**
+     * Each occurrence must create its own CalendarEntry + per-platform Draft set
+     * through the existing rail (no parallel publishing path), and the asset FK
+     * must anchor to the FIRST occurrence so the already-scheduled guard still
+     * keys off a single entry id for the whole series.
+     */
+    public function test_recurrence_materialises_one_entry_per_occurrence_anchored_to_first(): void
+    {
+        $src = $this->schedulerSource();
+        // The loop creates an entry per instant.
+        $this->assertMatchesRegularExpression(
+            '/foreach \(\$occurrences as \$i => \$instant\)/',
+            $src,
+            'schedule() must loop the expanded occurrences, creating an entry per instant.',
+        );
+        // The asset FK points at the first entry, not the last.
+        $this->assertMatchesRegularExpression(
+            "/'customised_calendar_entry_id'\s*=>\s*\\\$firstEntry->id/",
+            $src,
+            'The asset must anchor to the FIRST occurrence entry (already-scheduled guard + series head).',
+        );
+    }
+
+    /**
+     * Compliance must run ONCE (first occurrence) and the verdict cloned to the
+     * identical followers — never N independent LLM passes for byte-identical copy.
+     */
+    public function test_compliance_runs_once_and_is_cloned_to_followers(): void
+    {
+        $src = $this->schedulerSource();
+        $this->assertStringContainsString('cloneComplianceVerdict(', $src,
+            'schedule() must clone the first occurrence verdict to the followers.');
+        // runComplianceSafely is called on the first-occurrence drafts only.
+        $txPos = strpos($src, 'cloneComplianceVerdict(');
+        $compliancePos = strpos($src, 'runComplianceSafely($brand, $result[');
+        $this->assertNotFalse($compliancePos, 'runComplianceSafely must run on the first-occurrence drafts.');
+        $this->assertNotFalse($txPos);
+        $this->assertGreaterThan(
+            $compliancePos,
+            $txPos,
+            'cloneComplianceVerdict() must run AFTER runComplianceSafely() so it copies the resolved status.',
+        );
+    }
+
+    /**
+     * Safety: a first occurrence that did NOT pass must never auto-queue its
+     * followers — they inherit awaiting_approval (surfaced for review), not the
+     * passed statuses. Guards against a held/failed series silently publishing.
+     */
+    public function test_followers_inherit_awaiting_approval_when_first_did_not_pass(): void
+    {
+        $src = $this->schedulerSource();
+        $this->assertSame(
+            1,
+            preg_match('/function cloneComplianceVerdict\(.*?\n    \}/s', $src, $fn),
+            'Could not locate cloneComplianceVerdict().',
+        );
+        $block = $fn[0];
+        // Only the genuinely-passed statuses are treated as pass.
+        $this->assertMatchesRegularExpression(
+            "/\\\$passed\s*=\s*\[\s*'approved',\s*'scheduled'\s*\]/",
+            $block,
+            'Only approved/scheduled count as a pass when cloning the verdict.',
+        );
+        $this->assertStringContainsString("'awaiting_approval'", $block,
+            'A non-passing first occurrence must clone awaiting_approval to followers, never auto-queue.');
+    }
+
     /** Helper: isolate the createEntry() method body from the scheduler source. */
     private function createEntryBlock(): string
     {
