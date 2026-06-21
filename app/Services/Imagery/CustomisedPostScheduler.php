@@ -58,7 +58,17 @@ class CustomisedPostScheduler
 
     /**
      * @param  array<int,string>  $platforms  target platform enums
-     * @return array{calendar_entry: CalendarEntry, drafts: array<int,Draft>, asset: BrandAsset}
+     * @param  Recurrence|null  $recurrence  null or frequency 'none' = a single
+     *         post (original behaviour). A repeating rule materialises one
+     *         CalendarEntry + per-platform Draft set PER occurrence, all through
+     *         the same downstream rail — see expandOccurrences() + the class docblock.
+     * @return array{
+     *   calendar_entry: CalendarEntry,
+     *   drafts: array<int,Draft>,
+     *   asset: BrandAsset,
+     *   occurrences: int,
+     *   occurrence_entries: array<int,CalendarEntry>,
+     * }
      */
     public function schedule(
         BrandAsset $asset,
@@ -68,6 +78,7 @@ class CustomisedPostScheduler
         Carbon $publishAt,
         string $narrativeSource = 'manual',
         ?array $hashtags = null,
+        ?Recurrence $recurrence = null,
     ): array {
         $platforms = self::normalisePlatforms($platforms);
         if (empty($platforms)) {
@@ -82,6 +93,10 @@ class CustomisedPostScheduler
             throw new \InvalidArgumentException('Asset does not belong to this brand.');
         }
 
+        // Expand the recurrence to the full ordered list of publish instants. A
+        // single post is just [$publishAt]. The first instant always leads.
+        $occurrences = $this->expandOccurrences($publishAt, $recurrence);
+
         // Re-host the asset on THIS workspace's Blotato account once, up-front,
         // so every per-platform draft shares the same Blotato-scoped media URL.
         // Soft-fail to the raw public_url — SubmitScheduledPost re-uploads media
@@ -89,7 +104,7 @@ class CustomisedPostScheduler
         $assetUrl = $this->rehost->forBrand($brand, $asset->public_url) ?? $asset->public_url;
 
         $result = DB::transaction(function () use (
-            $asset, $brand, $narrative, $platforms, $publishAt, $narrativeSource, $hashtags, $assetUrl
+            $asset, $brand, $narrative, $platforms, $occurrences, $narrativeSource, $hashtags, $assetUrl
         ): array {
             // Concurrency guard: re-read the asset FOR UPDATE inside the
             // transaction and bail if it's already been scheduled. Two
@@ -106,35 +121,136 @@ class CustomisedPostScheduler
             }
 
             $calendar = $this->customisedCalendar($brand);
-            $entry = $this->createEntry($calendar, $brand, $asset, $platforms, $publishAt);
 
-            $drafts = [];
-            foreach ($platforms as $platform) {
-                $drafts[] = $this->createDraft($brand, $entry, $asset, $assetUrl, $platform, $narrative, $hashtags);
+            // One CalendarEntry + per-platform Draft set per occurrence. The
+            // FIRST occurrence's drafts are the ones compliance runs on; the
+            // rest inherit its verdict (cloneComplianceVerdict, post-commit).
+            $occurrenceEntries = [];
+            $firstDrafts = [];      // platform => Draft, occurrence #0 only
+            $followerDrafts = [];   // [occurrenceIndex][platform] => Draft, #1..N
+
+            foreach ($occurrences as $i => $instant) {
+                $entry = $this->createEntry($calendar, $brand, $asset, $platforms, $instant);
+                $occurrenceEntries[] = $entry;
+
+                foreach ($platforms as $platform) {
+                    $draft = $this->createDraft($brand, $entry, $asset, $assetUrl, $platform, $narrative, $hashtags);
+                    if ($i === 0) {
+                        $firstDrafts[$platform] = $draft;
+                    } else {
+                        $followerDrafts[$i][$platform] = $draft;
+                    }
+                }
             }
 
+            $firstEntry = $occurrenceEntries[0];
+
             // Stamp the asset with its customised-post provenance + reserve it
-            // out of the general picker pool.
+            // out of the general picker pool. The FK points at the FIRST entry —
+            // it is the already-scheduled guard's anchor and the asset's "is it
+            // scheduled?" answer for the whole series.
             $asset->forceFill([
                 'usage_intent' => BrandAsset::INTENT_CUSTOMISED,
                 'scheduled_platforms' => $platforms,
-                'scheduled_post_for' => $publishAt,
+                'scheduled_post_for' => $occurrences[0],
                 'narrative_source' => $narrativeSource,
-                'customised_calendar_entry_id' => $entry->id,
+                'customised_calendar_entry_id' => $firstEntry->id,
             ])->save();
 
             app(SetupReadiness::class)->invalidate($brand);
 
-            return ['calendar_entry' => $entry, 'drafts' => $drafts, 'asset' => $asset];
+            return [
+                'calendar_entry' => $firstEntry,
+                'drafts' => array_values($firstDrafts),
+                'asset' => $asset,
+                'occurrences' => count($occurrences),
+                'occurrence_entries' => $occurrenceEntries,
+                // Internal: handed to cloneComplianceVerdict after commit.
+                '_first_drafts' => $firstDrafts,
+                '_follower_drafts' => $followerDrafts,
+            ];
         });
 
         // Compliance runs AFTER the write transaction commits — it does LLM
         // (brand-voice) + pgvector (dedup) work that must not hold a write lock,
         // and a mid-LLM failure must not roll back the valid calendar/draft rows.
         // It mutates each draft's status in place (see runComplianceSafely).
+        // Only the FIRST occurrence is checked; the identical follower copies
+        // inherit its verdict (1 LLM pass for the whole series).
         $this->runComplianceSafely($brand, $result['drafts']);
+        $this->cloneComplianceVerdict($result['_first_drafts'], $result['_follower_drafts']);
+
+        // Drop the internal keys before returning to the caller.
+        unset($result['_first_drafts'], $result['_follower_drafts']);
 
         return $result;
+    }
+
+    /**
+     * The full ordered list of publish instants for this submission. A single
+     * post (null / 'none' recurrence) is just [$publishAt]. A repeating rule is
+     * expanded by RecurrenceExpander (capped, finite, first-instant-leads).
+     *
+     * @return list<Carbon>
+     */
+    private function expandOccurrences(Carbon $publishAt, ?Recurrence $recurrence): array
+    {
+        if (! $recurrence || ! $recurrence->repeats()) {
+            return [$publishAt->copy()];
+        }
+
+        return app(RecurrenceExpander::class)->expand(
+            first: $publishAt,
+            frequency: $recurrence->frequency,
+            interval: $recurrence->interval,
+            weekdays: $recurrence->weekdays,
+            until: $recurrence->until,
+            count: $recurrence->count,
+        );
+    }
+
+    /**
+     * Copy the first occurrence's post-compliance status onto every follower
+     * occurrence's matching-platform draft. The copy is byte-identical, so its
+     * compliance verdict is identical too — re-running the 7 checks N times would
+     * burn N LLM passes for the same answer.
+     *
+     * Safety: if the first occurrence did NOT pass (it is anything other than
+     * 'approved' / 'scheduled'), the followers inherit 'awaiting_approval' rather
+     * than the literal held/failed status — we never auto-queue copy that didn't
+     * pass, but we also surface the whole series on the Drafts page for one review
+     * instead of leaving followers stranded at compliance_pending (invisible to
+     * every downstream cron). Approving the first on the Drafts page is the
+     * operator's single action; each follower is then independently approvable.
+     *
+     * @param  array<string,Draft>  $firstDrafts     platform => first-occurrence draft (already refreshed)
+     * @param  array<int,array<string,Draft>>  $followerDrafts  [occurrenceIndex][platform] => draft
+     */
+    private function cloneComplianceVerdict(array $firstDrafts, array $followerDrafts): void
+    {
+        if ($followerDrafts === []) {
+            return; // single post — nothing to clone
+        }
+
+        $passed = ['approved', 'scheduled'];
+
+        foreach ($followerDrafts as $byPlatform) {
+            foreach ($byPlatform as $platform => $draft) {
+                $source = $firstDrafts[$platform] ?? null;
+                $inherited = $source && in_array($source->status, $passed, true)
+                    ? $source->status
+                    : 'awaiting_approval';
+
+                try {
+                    $draft->update(['status' => $inherited]);
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning(
+                        'CustomisedPostScheduler: could not clone compliance verdict to follower draft',
+                        ['draft_id' => $draft->id ?? null, 'error' => substr($e->getMessage(), 0, 200)],
+                    );
+                }
+            }
+        }
     }
 
     /**

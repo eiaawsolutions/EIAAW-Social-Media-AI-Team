@@ -9,8 +9,11 @@ use App\Models\Workspace;
 use App\Services\Imagery\BrandAssetTagger;
 use App\Services\Imagery\CustomisedPostScheduler;
 use App\Services\Imagery\CustomisedNarrativeWriter;
+use App\Services\Imagery\Recurrence;
+use App\Services\Imagery\RecurrenceExpander;
 use Filament\Actions\Action;
 use Filament\Forms\Components\CheckboxList;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Hidden;
@@ -18,6 +21,7 @@ use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TagsInput;
 use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ManageRecords;
 use Filament\Schemas\Components\Utilities\Set;
@@ -162,15 +166,123 @@ class ManageBrandAssets extends ManageRecords
                 ->visible(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED),
 
             DateTimePicker::make('publish_at')
-                ->label('Publish date & time')
+                ->label(fn (callable $get) => $get('recurrence_frequency') && $get('recurrence_frequency') !== RecurrenceExpander::FREQ_NONE
+                    ? 'First publish date & time'
+                    : 'Publish date & time')
                 ->seconds(false)
                 ->native(false)
                 ->minDate(now()->subMinutes(5))
                 ->default(now()->addHour()->startOfHour())
+                ->live()
                 ->helperText(fn () => 'In your brand timezone (' . ($this->defaultBrandTimezone() ?: 'UTC') . '). Past times publish within a few minutes.')
                 ->visible(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED)
                 ->required(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED),
+
+            // ---- Recurrence (revealed only for customised intent) ----
+            // A repeating rule materialises one post per occurrence through the
+            // SAME compliance + scheduling rail (see CustomisedPostScheduler).
+            // Compliance runs once on the first occurrence; identical followers
+            // inherit its verdict. The whole series is capped at
+            // RecurrenceExpander::MAX_OCCURRENCES so a runaway rule can't flood
+            // the calendar, and the publish-time plan cap defers anything that
+            // overflows a capped month to the next period.
+            Select::make('recurrence_frequency')
+                ->label('Repeat')
+                ->options([
+                    RecurrenceExpander::FREQ_NONE => 'Does not repeat',
+                    RecurrenceExpander::FREQ_DAILY => 'Daily',
+                    RecurrenceExpander::FREQ_WEEKLY => 'Weekly',
+                    RecurrenceExpander::FREQ_MONTHLY => 'Monthly',
+                    RecurrenceExpander::FREQ_YEARLY => 'Yearly',
+                ])
+                ->default(RecurrenceExpander::FREQ_NONE)
+                ->selectablePlaceholder(false)
+                ->live()
+                ->helperText('Schedule this post once, or repeat it on a cadence. Repeats run through the same compliance check as a single post — checked once, then the series queues.')
+                ->visible(fn (callable $get) => $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED),
+
+            TextInput::make('recurrence_interval')
+                ->label(fn (callable $get) => 'Repeat every (' . $this->intervalUnitLabel($get('recurrence_frequency')) . ')')
+                ->numeric()
+                ->integer()
+                ->minValue(1)
+                ->maxValue(52)
+                ->default(1)
+                ->helperText('e.g. 2 = every other ' . 'period. Leave at 1 for every one.')
+                ->visible(fn (callable $get) => $this->recurrenceActive($get)),
+
+            // Weekly only: which day(s) of the week the series fires on. ISO day
+            // numbers (1=Mon..7=Sun) so they map straight onto the expander.
+            CheckboxList::make('recurrence_weekdays')
+                ->label('On these days')
+                ->options([
+                    1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu',
+                    5 => 'Fri', 6 => 'Sat', 7 => 'Sun',
+                ])
+                ->columns(4)
+                ->bulkToggleable()
+                ->helperText('Leave empty to repeat on the same weekday as the first post.')
+                ->visible(fn (callable $get) => $this->recurrenceActive($get)
+                    && $get('recurrence_frequency') === RecurrenceExpander::FREQ_WEEKLY),
+
+            Radio::make('recurrence_ends')
+                ->label('Ends')
+                ->options([
+                    'count' => 'After a number of posts',
+                    'until' => 'On a date',
+                ])
+                ->descriptions([
+                    'count' => 'Stop after publishing this many posts (including the first).',
+                    'until' => 'Keep repeating until this date, then stop.',
+                ])
+                ->default('count')
+                ->live()
+                ->visible(fn (callable $get) => $this->recurrenceActive($get)),
+
+            TextInput::make('recurrence_count')
+                ->label('Number of posts')
+                ->numeric()
+                ->integer()
+                ->minValue(1)
+                ->maxValue(RecurrenceExpander::MAX_OCCURRENCES)
+                ->default(4)
+                ->helperText('Including the first post. Capped at ' . RecurrenceExpander::MAX_OCCURRENCES . ' per upload.')
+                ->visible(fn (callable $get) => $this->recurrenceActive($get) && $get('recurrence_ends') === 'count')
+                ->required(fn (callable $get) => $this->recurrenceActive($get) && $get('recurrence_ends') === 'count'),
+
+            DatePicker::make('recurrence_until')
+                ->label('Repeat until')
+                ->native(false)
+                ->minDate(fn (callable $get) => $get('publish_at') ?: now())
+                ->default(now()->addMonth())
+                ->helperText('The series stops after this date (whole day included). Max ' . RecurrenceExpander::MAX_OCCURRENCES . ' posts per upload.')
+                ->visible(fn (callable $get) => $this->recurrenceActive($get) && $get('recurrence_ends') === 'until')
+                ->required(fn (callable $get) => $this->recurrenceActive($get) && $get('recurrence_ends') === 'until'),
         ];
+    }
+
+    /**
+     * Is a repeating rule currently active in the form? (customised intent AND a
+     * non-"none" frequency). Single predicate so every recurrence sub-field
+     * reveals/hides together.
+     */
+    private function recurrenceActive(callable $get): bool
+    {
+        return $get('usage_intent') === BrandAsset::INTENT_CUSTOMISED
+            && $get('recurrence_frequency')
+            && $get('recurrence_frequency') !== RecurrenceExpander::FREQ_NONE;
+    }
+
+    /** Human label for the interval unit, driven by the chosen frequency. */
+    private function intervalUnitLabel(?string $frequency): string
+    {
+        return match ($frequency) {
+            RecurrenceExpander::FREQ_DAILY => 'days',
+            RecurrenceExpander::FREQ_WEEKLY => 'weeks',
+            RecurrenceExpander::FREQ_MONTHLY => 'months',
+            RecurrenceExpander::FREQ_YEARLY => 'years',
+            default => 'units',
+        };
     }
 
     /**
@@ -367,6 +479,9 @@ class ManageBrandAssets extends ManageRecords
             $publishAt = now($brandTz)->addHour();
         }
 
+        // Build the recurrence rule from the form (defaults to a single post).
+        $recurrence = Recurrence::fromFormData($data, $brandTz);
+
         // Persist + tag the asset BEFORE scheduling so its description anchors
         // the calendar entry's topic/visual_direction.
         $asset = $this->persistAsset($disk, $brandId, $relativePath, BrandAsset::INTENT_CUSTOMISED);
@@ -381,6 +496,7 @@ class ManageBrandAssets extends ManageRecords
                 publishAt: $publishAt,
                 narrativeSource: ! empty($data['narrative_source']) ? (string) $data['narrative_source'] : 'manual',
                 hashtags: $hashtags,
+                recurrence: $recurrence,
             );
         } catch (\App\Exceptions\AlreadyScheduledException $e) {
             // Benign double-submit (e.g. a double-click): the asset is already
@@ -407,28 +523,56 @@ class ManageBrandAssets extends ManageRecords
         // "Scheduled!" success would be a false positive that sends the operator
         // to the Schedule page where the post isn't (and won't be until they
         // approve it on the Drafts page).
+        //
+        // For a recurring series the bucketed statuses below are the FIRST
+        // occurrence's drafts — the only ones compliance ran on. The followers
+        // inherit that verdict (see CustomisedPostScheduler::cloneComplianceVerdict),
+        // so the verdict the operator sees here governs the whole series.
         $drafts = $result['drafts'];
-        $count = count($drafts);
+        $count = count($drafts);                                 // posts per occurrence (one per platform)
+        $occurrences = (int) ($result['occurrences'] ?? 1);      // number of dates in the series
+        $isSeries = $occurrences > 1;
+        $totalPosts = $count * $occurrences;
         $when = $publishAt->copy()->setTimezone($brandTz)->format('D, M j Y · g:i A');
+
+        // For a series, name the last publish date too, so "8 weekly posts" has
+        // a concrete end the operator can sanity-check.
+        $lastWhen = null;
+        if ($isSeries && ! empty($result['occurrence_entries'])) {
+            $lastEntry = end($result['occurrence_entries']);
+            if ($lastEntry && $lastEntry->scheduled_date) {
+                $lastWhen = Carbon::parse($lastEntry->scheduled_date)->format('M j, Y');
+            }
+        }
+        $seriesNote = $isSeries
+            ? " Repeating series: {$occurrences} dates ({$totalPosts} posts total"
+                . ($lastWhen ? ", through {$lastWhen}" : '') . ')'
+                . ($count > 0 ? '. Compliance was checked once on the first post; the rest inherit that result.' : '.')
+            : '';
+
         $statuses = collect($drafts)->countBy(fn ($d) => $d->status);
         $queued = (int) $statuses->get('approved', 0) + (int) $statuses->get('scheduled', 0);
         $awaiting = (int) $statuses->get('awaiting_approval', 0);
         $failed = (int) $statuses->get('compliance_failed', 0);
         $platformList = implode(', ', $platforms);
 
+        // Title noun adapts to single post vs series.
+        $unit = $isSeries ? "recurring post series ({$totalPosts} posts)" : "{$count} customised post(s)";
+
         if ($failed === 0 && $awaiting === 0) {
             // All passed compliance + green-lane approved → genuinely queued.
+            $startNote = $isSeries ? "First publishes {$platformList} on {$when}." : "Publishing {$platformList} on {$when}.";
             Notification::make()
-                ->title("Scheduled {$count} customised post(s)")
-                ->body("Passed compliance. Publishing {$platformList} on {$when}. Track it on the Schedule page.")
+                ->title("Scheduled {$unit}")
+                ->body("Passed compliance. {$startNote}{$seriesNote} Track it on the Schedule page.")
                 ->success()
                 ->send();
         } elseif ($failed > 0) {
             Notification::make()
                 ->title("Held: {$failed} of {$count} post(s) flagged by compliance")
-                ->body("Created {$count} post(s) for {$platformList}. {$failed} need a fix and "
+                ->body("Created {$count} post(s) per date for {$platformList}. {$failed} need a fix and "
                     . ($queued + $awaiting > 0 ? ($queued + $awaiting) . ' are awaiting approval/queued. ' : '')
-                    . "Review them on the Drafts page — your wording is never auto-rewritten.")
+                    . "Review them on the Drafts page — your wording is never auto-rewritten.{$seriesNote}")
                 ->warning()
                 ->persistent()
                 ->send();
@@ -436,10 +580,12 @@ class ManageBrandAssets extends ManageRecords
             // Some/all awaiting approval (amber/red lane, or compliance couldn't
             // run e.g. no brand_style yet — see the reason on each draft).
             Notification::make()
-                ->title("Created {$count} customised post(s) — {$awaiting} awaiting your approval")
-                ->body("For {$platformList}, publishing {$when} once approved. "
+                ->title("Created {$unit} — {$awaiting} awaiting your approval")
+                ->body("For {$platformList}, "
+                    . ($isSeries ? "first publishing {$when} " : "publishing {$when} ")
+                    . "once approved. "
                     . ($queued > 0 ? "{$queued} already queued. " : '')
-                    . "Approve them on the Drafts page (the compliance result explains each one).")
+                    . "Approve them on the Drafts page (the compliance result explains each one).{$seriesNote}")
                 ->info()
                 ->persistent()
                 ->send();
