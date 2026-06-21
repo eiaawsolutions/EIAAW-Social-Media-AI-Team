@@ -183,99 +183,81 @@ class CalendarEntryResource extends Resource
             ->filtersFormColumns(4)
             ->filtersLayout(FiltersLayout::AboveContent)
             ->recordActions([
+                // "Draft this" fans out one DraftCalendarEntry job per LISTED
+                // platform (not just the first). Each job runs the full
+                // Writer -> Designer -> (Video) -> Compliance chain on the
+                // `drafting` queue, is idempotent (skips an existing non-rejected
+                // draft for that (entry, platform)), and respects the per-workspace
+                // daily cap — identical to "Re-evaluate" and the header
+                // "Draft all". This is the action the operator reaches for after
+                // Edit: it must produce a draft for EVERY selected platform, which
+                // the old first-platform-only synchronous run did not. Running
+                // async also avoids the 180s request wall on heavy entries
+                // (Researcher + Writer + Designer + Video + Compliance x N).
                 \Filament\Actions\Action::make('runWriter')
                     ->label('Draft this')
                     ->icon('heroicon-o-pencil-square')
                     ->color('primary')
                     ->requiresConfirmation()
-                    ->modalHeading('Run Writer on this entry?')
-                    ->modalDescription(fn (CalendarEntry $r) => 'Will draft a post for the first listed platform: ' . (is_array($r->platforms) ? ($r->platforms[0] ?? '?') : '?'))
+                    ->modalHeading('Draft this entry on every listed platform?')
+                    ->modalDescription(fn (CalendarEntry $r) => 'Fans out one job per platform: '
+                        . (is_array($r->platforms) && $r->platforms ? implode(', ', $r->platforms) : '— none listed —')
+                        . '. Each runs Writer + Designer + Compliance. Drafts land on /agency/drafts; daily caps enforced.')
                     ->action(function (CalendarEntry $r): void {
-                        @set_time_limit(180);
-                        $platforms = is_array($r->platforms) ? $r->platforms : [];
-                        $platform = $platforms[0] ?? null;
-                        if (! $platform) {
-                            \Filament\Notifications\Notification::make()->title('Entry has no platform')->danger()->send();
-                            return;
-                        }
-                        try {
-                            $writer = app(\App\Agents\WriterAgent::class)->run($r->brand, [
-                                'calendar_entry_id' => $r->id,
-                                'platform' => $platform,
-                            ]);
-                        } catch (\Throwable $e) {
+                        $platforms = is_array($r->platforms) ? array_values(array_filter(
+                            $r->platforms,
+                            fn ($p) => is_string($p) && $p !== '',
+                        )) : [];
+                        if (! $platforms) {
                             \Filament\Notifications\Notification::make()
-                                ->title('Writer crashed')
-                                ->body(substr($e->getMessage(), 0, 240))
-                                ->danger()
-                                ->persistent()
-                                ->send();
-                            return;
-                        }
-                        if (! $writer->ok) {
-                            \Filament\Notifications\Notification::make()
-                                ->title('Writer could not draft')
-                                ->body($writer->errorMessage ?: 'unknown')
+                                ->title('Entry has no platforms')
                                 ->danger()
                                 ->send();
                             return;
-                        }
-                        // Generate the image. Soft-fail: if Designer errors,
-                        // the draft survives as text-only and the user can
-                        // re-run from /agency/drafts.
-                        try {
-                            app(\App\Agents\DesignerAgent::class)->run($r->brand, [
-                                'draft_id' => $writer->data['draft_id'],
-                            ]);
-                        } catch (\Throwable $e) {
-                            \Illuminate\Support\Facades\Log::warning('Calendar: Designer crashed', [
-                                'draft_id' => $writer->data['draft_id'],
-                                'error' => $e->getMessage(),
-                            ]);
                         }
 
-                        // Video gate: format is reel/video/story AND platform
-                        // accepts video. The still becomes the i2v keyframe.
-                        $needsVideo = in_array((string) ($r->format ?? ''), ['reel', 'video', 'story'], true)
-                            && \App\Services\Imagery\FalAiClient::platformAcceptsVideo($platform);
-                        if ($needsVideo) {
-                            try {
-                                app(\App\Agents\VideoAgent::class)->run($r->brand, [
-                                    'draft_id' => $writer->data['draft_id'],
-                                ]);
-                            } catch (\Throwable $e) {
-                                \Illuminate\Support\Facades\Log::warning('Calendar: VideoAgent crashed', [
-                                    'draft_id' => $writer->data['draft_id'],
-                                    'error' => $e->getMessage(),
-                                ]);
+                        // Clear rejected drafts so DraftCalendarEntry's idempotency
+                        // gate ("skip if a non-rejected draft exists") re-runs for
+                        // them; live drafts (awaiting_approval / approved / scheduled
+                        // / published) are preserved so in-flight work isn't trashed.
+                        $r->drafts()->where('status', 'rejected')->delete();
+
+                        $dispatched = 0;
+                        $skipped = 0;
+                        foreach ($platforms as $platform) {
+                            $hasDraft = $r->drafts()
+                                ->where('platform', $platform)
+                                ->whereNotIn('status', ['rejected'])
+                                ->exists();
+                            if ($hasDraft) {
+                                $skipped++;
+                                continue;
                             }
+                            \App\Jobs\DraftCalendarEntry::dispatch($r->id, $platform)
+                                ->onQueue('drafting');
+                            $dispatched++;
                         }
 
-                        // Hand off to Compliance so the draft lands in a usable
-                        // state on the Drafts page (awaiting_approval /
-                        // approved / compliance_failed).
-                        try {
-                            $compl = app(\App\Agents\ComplianceAgent::class)->run($r->brand, [
-                                'draft_id' => $writer->data['draft_id'],
-                            ]);
-                        } catch (\Throwable $e) {
+                        if ($dispatched === 0) {
                             \Filament\Notifications\Notification::make()
-                                ->title('Drafted, but Compliance crashed')
-                                ->body(substr($e->getMessage(), 0, 240))
-                                ->warning()
+                                ->title('Already drafted')
+                                ->body(sprintf(
+                                    'All %d platform(s) already have a draft. Use "Re-evaluate" to force a re-draft.',
+                                    $skipped,
+                                ))
+                                ->info()
                                 ->send();
                             return;
                         }
-                        $passed = ! empty($compl->data['all_passed']);
+
                         \Filament\Notifications\Notification::make()
-                            ->title($passed ? 'Draft ready' : 'Draft written but Compliance held it')
+                            ->title('Drafting')
                             ->body(sprintf(
-                                'Draft #%d for %s — status: %s',
-                                $writer->data['draft_id'],
-                                $platform,
-                                $compl->data['new_status'] ?? '?',
+                                'Dispatched %d job(s)%s; watch /agency/drafts as they land.',
+                                $dispatched,
+                                $skipped > 0 ? sprintf(', skipped %d already-drafted', $skipped) : '',
                             ))
-                            ->color($passed ? 'success' : 'warning')
+                            ->success()
                             ->send();
                     }),
 
@@ -327,27 +309,38 @@ class CalendarEntryResource extends Resource
                             ->send();
                     }),
 
-                // Re-evaluate: clear any rejected/failed-compliance drafts for
-                // this entry and re-fan-out one DraftCalendarEntry job per
-                // platform. Clean way to recover from a bad batch.
+                // Re-evaluate: FORCE a fresh re-draft on every platform. Unlike
+                // "Draft this" (which only fills platforms that have no draft
+                // yet), this clears every NON-LIVE draft first — rejected AND
+                // held (compliance_pending / compliance_failed / awaiting_approval)
+                // — so DraftCalendarEntry's "skip if a non-rejected draft exists"
+                // gate no longer short-circuits and the chain genuinely re-runs.
+                // Live drafts (approved / scheduled / published) are preserved so
+                // work in flight is never trashed. This is the "recover from a bad
+                // batch" action; "Draft this" is the everyday fill-the-gaps action.
                 \Filament\Actions\Action::make('reEvaluate')
                     ->label('Re-evaluate')
                     ->icon('heroicon-o-sparkles')
                     ->color('primary')
                     ->requiresConfirmation()
-                    ->modalHeading('Re-draft this entry on every listed platform?')
-                    ->modalDescription('Existing rejected drafts get cleared first; jobs fan out one per (entry, platform). Daily caps enforced.')
+                    ->modalHeading('Force a fresh re-draft on every listed platform?')
+                    ->modalDescription('Clears existing rejected AND held (unapproved) drafts first, then re-runs Writer + Designer + Compliance per platform. Approved/scheduled/published drafts are kept. Daily caps enforced.')
                     ->action(function (CalendarEntry $r): void {
-                        $platforms = is_array($r->platforms) ? $r->platforms : [];
+                        $platforms = is_array($r->platforms) ? array_values(array_filter(
+                            $r->platforms,
+                            fn ($p) => is_string($p) && $p !== '',
+                        )) : [];
                         if (! $platforms) {
                             \Filament\Notifications\Notification::make()->title('Entry has no platforms')->danger()->send();
                             return;
                         }
-                        // Clear rejected drafts so DraftCalendarEntry's idempotency
-                        // check ('skip if a non-rejected draft exists') will
-                        // re-run; live drafts (awaiting_approval/approved/scheduled/published)
-                        // are preserved so we don't trash work in flight.
-                        $r->drafts()->where('status', 'rejected')->delete();
+                        // Clear every NON-LIVE draft (rejected + held) so the
+                        // idempotency gate re-runs for all of them. Live drafts
+                        // (approved/scheduled/published) are preserved so we don't
+                        // trash work in flight.
+                        $r->drafts()
+                            ->whereIn('status', ['rejected', 'compliance_pending', 'compliance_failed', 'awaiting_approval'])
+                            ->delete();
 
                         $dispatched = 0;
                         foreach ($platforms as $platform) {
