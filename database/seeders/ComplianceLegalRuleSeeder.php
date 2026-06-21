@@ -61,7 +61,16 @@ class ComplianceLegalRuleSeeder extends Seeder
             [
                 'industry' => '*', 'jurisdiction' => '*', 'rule_code' => 'GL-AD-002',
                 'title' => 'Substantiate comparative & superlative claims',
-                'directive' => 'Do not use unverifiable superlatives ("the best", "No.1", "cheapest", "guaranteed") or comparative claims unless they are objectively true and substantiable.',
+                // Scope: this targets UNVERIFIABLE puffery and claims ABOUT RIVALS
+                // ("the best", "No.1", "cheapest", "fastest", guaranteed outcomes),
+                // not a brand plainly describing its OWN product. A first-party
+                // statement of what your own product does, includes, or is built
+                // from (e.g. "runs six agents", "ships with a source and a score")
+                // is a verifiable factual claim the advertiser substantiates by
+                // building the product — it is NOT a superlative and must not be
+                // held under this rule. (Fixed a false-positive where Art. 5 was
+                // over-applied to ordinary first-party feature copy.)
+                'directive' => 'Do not use UNVERIFIABLE superlatives ("the best", "No.1", "cheapest", "fastest") or comparative claims about competitors, or promise guaranteed outcomes, unless they are objectively true and substantiable. This does NOT restrict a brand from plainly describing its OWN product\'s checkable features, components, or how it works — first-party factual feature claims are permitted.',
                 'severity' => 'block',
                 'source' => 'ICC Code, Art. 5 (substantiation)',
             ],

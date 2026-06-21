@@ -9,9 +9,11 @@ class ComplianceLegalPromptTest extends TestCase
 {
     public function test_version_is_pinned(): void
     {
-        // Bumped to v1.1 when the input-contract header + a worked example were
-        // added (the scoring rubric + jailbreak defence are unchanged).
-        $this->assertSame('compliance.legal.v1.1', ComplianceLegalPrompt::VERSION);
+        // v1.1 added the input-contract header + a worked example.
+        // v1.2 added the first-party-feature carve-out (a brand describing its
+        // OWN product's checkable features is not an Art. 5 substantiation
+        // violation) + a worked PASS example. See LegalFirstPartyFeatureCarveOutTest.
+        $this->assertSame('compliance.legal.v1.2', ComplianceLegalPrompt::VERSION);
     }
 
     public function test_system_prompt_frames_must_vs_should_and_precision(): void
