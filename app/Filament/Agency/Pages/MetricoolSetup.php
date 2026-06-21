@@ -38,7 +38,7 @@ class MetricoolSetup extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-link';
     protected static ?string $navigationLabel = 'Platform setup';
     protected static ?string $title = 'Connect your social accounts';
-    protected static ?int $navigationSort = -2;
+    protected static ?int $navigationSort = -3;
     protected string $view = 'filament.agency.pages.metricool-setup';
 
     public ?Workspace $workspace = null;

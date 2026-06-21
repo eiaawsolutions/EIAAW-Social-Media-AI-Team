@@ -34,7 +34,7 @@ class AutonomyLane extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-shield-check';
     protected static ?string $navigationLabel = 'Autonomy';
     protected static ?string $title = 'Autonomy lane';
-    protected static ?int $navigationSort = 5;
+    protected static ?int $navigationSort = 4;
     protected static ?string $slug = 'autonomy';
     protected string $view = 'filament.agency.pages.autonomy-lane';
 

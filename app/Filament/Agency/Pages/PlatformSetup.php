@@ -36,7 +36,7 @@ class PlatformSetup extends Page
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-link';
     protected static ?string $navigationLabel = 'Platform setup';
     protected static ?string $title = 'Platform setup';
-    protected static ?int $navigationSort = -2; // above setup-wizard
+    protected static ?int $navigationSort = -3; // above dashboard + setup-wizard
     protected string $view = 'filament.agency.pages.platform-setup';
 
     public ?Workspace $workspace = null;

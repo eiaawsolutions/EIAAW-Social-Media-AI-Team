@@ -38,7 +38,7 @@ class PlatformConnectionResource extends Resource
     protected static ?string $navigationLabel = 'Platforms';
     protected static ?string $modelLabel = 'Platform connection';
     protected static ?string $pluralModelLabel = 'Platforms';
-    protected static ?int $navigationSort = 4;
+    protected static ?int $navigationSort = 3;
 
     /**
      * No editable form for v1 — Metricool is the source of truth for which
