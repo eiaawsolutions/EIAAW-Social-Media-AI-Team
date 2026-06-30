@@ -15,6 +15,7 @@ use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\DraftSceneBrief;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAccountLockedException;
+use App\Services\Imagery\MediaGenerationAlerter;
 use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\ImageCreativeDirection;
 use Illuminate\Support\Facades\Log;
@@ -194,6 +195,12 @@ class DesignerAgent extends BaseAgent
                 'draft_id' => $draft->id,
             ]);
 
+            // Alert the admin IMMEDIATELY — fire even if the library fallback saves
+            // THIS draft, because the account is still locked and the next draft
+            // without a library match will fail. Throttled per reason-class so a
+            // backlog run sends one email, not dozens. Never blocks the fallback.
+            app(MediaGenerationAlerter::class)->accountLocked('image', $brand, $draft, substr($e->getMessage(), 0, 200));
+
             $fallback = $this->tryLibraryAsset($brand, $draft, 'library-fallback');
             if ($fallback !== null) {
                 return $fallback;
@@ -208,6 +215,10 @@ class DesignerAgent extends BaseAgent
                 'draft_id' => $draft->id,
                 'error' => $e->getMessage(),
             ]);
+
+            // Alert the admin (throttled). A per-request failure is investigate-not-
+            // top-up, so the alerter routes it to the generic-failure action text.
+            app(MediaGenerationAlerter::class)->generationFailed('image', $brand, $draft, substr($e->getMessage(), 0, 200));
 
             // Transient/per-request FAL failure: still try the library so a
             // single flaky generation doesn't leave the post image-less.
