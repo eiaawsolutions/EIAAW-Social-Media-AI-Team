@@ -109,6 +109,29 @@ class MediaGenerationAlerterTest extends TestCase
         Mail::assertQueued(MediaGenerationFailed::class, 2);
     }
 
+    public function test_low_balance_sends_a_proactive_topup_warning(): void
+    {
+        app(MediaGenerationAlerter::class)->lowBalance(3.20, 5.0);
+
+        Mail::assertQueued(MediaGenerationFailed::class, function (MediaGenerationFailed $m) {
+            return $m->reason === MediaGenerationAlerter::REASON_LOW_BALANCE
+                && str_contains($m->reasonText, '$3.20')                 // current balance named
+                && str_contains($m->reasonText, '$5.00')                 // threshold named
+                && str_contains($m->actionText, 'fal.ai/dashboard/billing')
+                && str_contains($m->actionText, 'auto-top-up');          // the permanent fix
+        });
+    }
+
+    public function test_low_balance_has_its_own_throttle_bucket(): void
+    {
+        $alerter = app(MediaGenerationAlerter::class);
+        $alerter->lowBalance(3.0, 5.0);
+        $alerter->lowBalance(2.5, 5.0);            // same window → throttled
+        $alerter->accountLocked('image', $this->brand(), $this->draft()); // different bucket → sends
+
+        Mail::assertQueued(MediaGenerationFailed::class, 2); // one low-balance + one lockout
+    }
+
     public function test_alerting_never_throws_even_if_mail_fails(): void
     {
         // The alerter must be a safe side-channel: a mail/cache failure cannot

@@ -31,9 +31,16 @@ return [
         // run can hit the SAME failure on dozens of drafts in seconds; without a
         // throttle that is dozens of identical emails. The next allowed alert
         // reports how many failures were suppressed in between so the admin still
-        // sees the true blast radius. Account-lockout and generic-failure are
-        // separate classes, each with its own bucket.
+        // sees the true blast radius. Account-lockout, generic-failure, and
+        // low-balance are separate classes, each with its own bucket.
         'throttle_minutes' => (int) env('MEDIA_ALERT_THROTTLE_MINUTES', 30),
+
+        // PROACTIVE low-balance warning: the fal:check-balance cron emails the
+        // admin when the FAL credit balance drops below this many USD — BEFORE a
+        // lockout strands drafts. Reading the balance needs an admin-scoped FAL
+        // key (services.fal.admin_api_key); without it the monitor silently
+        // no-ops. Set to 0 to disable the proactive warning entirely.
+        'low_balance_threshold' => (float) env('MEDIA_LOW_BALANCE_THRESHOLD', 5.0),
     ],
 
 ];

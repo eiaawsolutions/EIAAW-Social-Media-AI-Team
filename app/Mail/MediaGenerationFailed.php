@@ -41,17 +41,22 @@ class MediaGenerationFailed extends Mailable
         $fromAddress = (string) config('media.alerts.from_address', 'noreply@eiaawsolutions.com');
         $fromName = (string) config('media.alerts.from_name', 'EIAAW Social Media Team');
 
-        $label = $this->reason === MediaGenerationAlerter::REASON_ACCOUNT_LOCKED
-            ? 'FAL ACCOUNT LOCKED'
-            : 'MEDIA GEN FAILED';
-
-        $subject = sprintf(
-            '[%s] %s %s failed — %s',
-            $label,
-            ucfirst($this->mediaKind),
-            'generation',
-            $this->brandName,
-        );
+        $subject = match ($this->reason) {
+            MediaGenerationAlerter::REASON_LOW_BALANCE => sprintf(
+                '[FAL LOW BALANCE] Top up before media generation stops — %s',
+                $this->detail,
+            ),
+            MediaGenerationAlerter::REASON_ACCOUNT_LOCKED => sprintf(
+                '[FAL ACCOUNT LOCKED] %s generation failed — %s',
+                ucfirst($this->mediaKind),
+                $this->brandName,
+            ),
+            default => sprintf(
+                '[MEDIA GEN FAILED] %s generation failed — %s',
+                ucfirst($this->mediaKind),
+                $this->brandName,
+            ),
+        };
 
         return new Envelope(
             from: new Address($fromAddress, $fromName),
@@ -65,6 +70,7 @@ class MediaGenerationFailed extends Mailable
             view: 'emails.media-generation-failed',
             with: [
                 'isLockout' => $this->reason === MediaGenerationAlerter::REASON_ACCOUNT_LOCKED,
+                'isLowBalance' => $this->reason === MediaGenerationAlerter::REASON_LOW_BALANCE,
                 'mediaKind' => $this->mediaKind,
                 'reasonText' => $this->reasonText,
                 'actionText' => $this->actionText,

@@ -37,6 +37,53 @@ class MediaGenerationAlerter
 
     public const REASON_GENERATION_FAILED = 'generation_failed';
 
+    public const REASON_LOW_BALANCE = 'low_balance';
+
+    /**
+     * PROACTIVE warning: FAL balance has dropped below the threshold but is NOT
+     * yet exhausted. Warn now so the admin can top up BEFORE a lockout strands
+     * drafts. Throttled like the others (one per window) and brand/draft-free —
+     * it's an account-level signal, so the email uses neutral placeholders.
+     */
+    public function lowBalance(float $balance, float $threshold): void
+    {
+        $gate = $this->throttle(self::REASON_LOW_BALANCE);
+        if (! $gate['allow']) {
+            return;
+        }
+
+        $recipient = (string) config('media.alerts.recipient', 'eiaawsolutions@gmail.com');
+        $mailer = (string) config('media.alerts.mailer', 'resend');
+
+        try {
+            Mail::mailer($mailer)
+                ->to($recipient)
+                ->queue(new MediaGenerationFailed(
+                    reason: self::REASON_LOW_BALANCE,
+                    mediaKind: 'media',
+                    reasonText: sprintf(
+                        'FAL.AI credit balance is $%.2f — below the $%.2f warning threshold. '
+                        .'It is NOT exhausted yet, but media generation will start failing once it hits $0.',
+                        $balance,
+                        $threshold,
+                    ),
+                    actionText: 'Top up the FAL.AI balance at https://fal.ai/dashboard/billing before it runs out. '
+                        .'Enable FAL auto-top-up to make low-balance lockouts impossible.',
+                    brandName: 'Account-wide',
+                    draftId: 0,
+                    platform: '—',
+                    detail: sprintf('balance=$%.2f threshold=$%.2f', $balance, $threshold),
+                    suppressedCount: $gate['suppressed'],
+                ));
+        } catch (Throwable $e) {
+            Log::error('MediaGenerationAlerter: low-balance alert dispatch failed', [
+                'balance' => $balance,
+                'mailer' => $mailer,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     /** FAL balance exhausted — admin must top up. */
     public function accountLocked(string $mediaKind, Brand $brand, Draft $draft, string $detail = ''): void
     {
