@@ -14,6 +14,7 @@ use App\Services\Imagery\BrandAssetPicker;
 use App\Services\Imagery\DraftSceneBrief;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAccountLockedException;
+use App\Services\Imagery\MediaGenerationAlerter;
 use App\Services\Imagery\FalAiClient;
 use App\Services\Imagery\FalContentPolicyException;
 use App\Services\Imagery\ImageCreativeDirection;
@@ -290,6 +291,11 @@ class VideoAgent extends BaseAgent
             Log::warning('VideoAgent: FAL account locked; attempting library video fallback', [
                 'draft_id' => $draft->id,
             ]);
+
+            // Alert the admin immediately (throttled, shared bucket with image
+            // lockouts since the remedy — top up FAL — is identical). Fires even
+            // if a library video saves this draft, because the account stays locked.
+            app(MediaGenerationAlerter::class)->accountLocked('video', $brand, $draft, substr($e->getMessage(), 0, 200));
 
             $fallback = $this->tryLibraryVideoFallback($brand, $draft);
             if ($fallback !== null) {
