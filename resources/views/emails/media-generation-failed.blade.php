@@ -8,11 +8,20 @@
     <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="background:#ffffff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.05); padding:32px;">
         <tr>
             <td>
-                <p style="margin:0 0 4px; font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:{{ $isLockout ? '#b91c1c' : '#b45309' }};">
-                    {{ $isLockout ? 'Action required — FAL account locked' : 'Action required — media generation failed' }}
+                @php
+                    $accent = $isLockout ? '#b91c1c' : ($isLowBalance ? '#b45309' : '#b45309');
+                    $kicker = $isLockout
+                        ? 'Action required — FAL account locked'
+                        : ($isLowBalance ? 'Heads up — FAL balance running low' : 'Action required — media generation failed');
+                    $heading = $isLowBalance
+                        ? 'FAL.AI balance is running low'
+                        : ucfirst($mediaKind).' generation failed for '.$brandName;
+                @endphp
+                <p style="margin:0 0 4px; font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:{{ $accent }};">
+                    {{ $kicker }}
                 </p>
                 <h1 style="margin:0 0 16px; font-size:20px; line-height:1.3; font-weight:600;">
-                    {{ ucfirst($mediaKind) }} generation failed for {{ $brandName }}
+                    {{ $heading }}
                 </h1>
 
                 {{-- REASON --}}
@@ -31,7 +40,8 @@
                     </p>
                 </div>
 
-                {{-- CONTEXT --}}
+                {{-- CONTEXT (draft-specific; skipped for the account-wide low-balance warning) --}}
+                @unless($isLowBalance)
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 20px; font-size:13px; color:#475569;">
                     <tr>
                         <td style="padding:4px 0; width:120px; color:#94a3b8;">Brand</td>
@@ -52,6 +62,7 @@
                     </tr>
                     @endif
                 </table>
+                @endunless
 
                 @if($suppressedCount > 0)
                 <p style="margin:0 0 16px; padding:10px 14px; background:#f1f5f9; border-radius:6px; color:#475569; font-size:13px;">

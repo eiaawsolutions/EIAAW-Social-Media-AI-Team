@@ -46,6 +46,65 @@ class FalAiClient
         }
     }
 
+    /**
+     * Fetch the FAL.AI account credit balance in USD, or null if it can't be
+     * read. This powers the PROACTIVE low-balance warning (warn before lockout)
+     * — the reactive lockout alert lives in the generateImage/Video catch sites.
+     *
+     * IMPORTANT: this hits the BILLING host (api.fal.ai), NOT the inference host
+     * (fal.run), and the billing endpoint requires an ADMIN-scoped key. The
+     * normal inference key (services.fal.api_key) is 403-denied here
+     * ("This API key is not permitted to perform this action"), so we read an
+     * admin key from services.fal.admin_api_key, falling back to the inference
+     * key only so the call is attempted at all.
+     *
+     * Returns null (never throws) on: no key, 403/401 (key lacks billing scope),
+     * network error, or an unexpected body shape. Callers MUST treat null as
+     * "balance unknown — skip the warning", not "balance is 0". This keeps the
+     * monitor a safe, optional side-channel: until an admin key is provisioned
+     * in Infisical, it simply no-ops.
+     *
+     * Endpoint: GET https://api.fal.ai/v1/account/billing?expand=credits
+     * Response: { "username": "...", "credits": { "current_balance": 24.5, "currency": "USD" } }
+     */
+    public static function fetchAccountBalance(?string $adminKey = null): ?float
+    {
+        $key = $adminKey
+            ?? (string) config('services.fal.admin_api_key')
+            ?: (string) config('services.fal.api_key');
+
+        if ($key === '') {
+            return null;
+        }
+
+        try {
+            $resp = Http::withHeaders(['Authorization' => 'Key '.$key])
+                ->timeout((int) config('services.fal.balance_timeout', 15))
+                ->get('https://api.fal.ai/v1/account/billing', ['expand' => 'credits']);
+        } catch (\Throwable $e) {
+            Log::warning('FalAiClient: balance fetch failed (network)', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+
+        if (! $resp->successful()) {
+            // 403 = inference key lacks billing scope (expected until an admin
+            // key is wired). Log once at info level — this is config, not an error.
+            Log::info('FalAiClient: balance endpoint denied/unavailable', [
+                'status' => $resp->status(),
+                'hint' => $resp->status() === 403
+                    ? 'FAL key lacks billing scope — provision an admin key at services.fal.admin_api_key'
+                    : null,
+            ]);
+
+            return null;
+        }
+
+        $balance = $resp->json('credits.current_balance');
+
+        return is_numeric($balance) ? (float) $balance : null;
+    }
+
     public static function fromConfig(): self
     {
         return new self(

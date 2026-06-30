@@ -53,6 +53,10 @@ return [
         // AI providers
         'services.anthropic.api_key',
         'services.fal.api_key',
+        // Optional admin-scoped FAL key for the proactive low-balance monitor.
+        // Resolves only if a secret://.../FAL_ADMIN_API_KEY handle is provisioned;
+        // the monitor no-ops when absent. The inference key above is billing-403.
+        'services.fal.admin_api_key',
         // (Removed 2026-06-01) No per-day USD FAL breaker — generation is bound
         // only by the monthly volume caps in config/billing.php, so there are no
         // daily_cap_usd handles to resolve. See [[no-daily-fal-cap]].

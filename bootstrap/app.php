@@ -141,6 +141,18 @@ return Application::configure(basePath: dirname(__DIR__))
             ->dailyAt('09:00')
             ->withoutOverlapping(30);
 
+        // FAL low-balance warning: hourly, email the admin when the FAL.AI
+        // credit balance drops below the threshold (default $5) BEFORE a lockout
+        // strands drafts — the proactive complement to the reactive lockout alert
+        // fired from the Designer/Video catch sites. Hourly (not daily) because a
+        // heavy generation burst can drain the balance fast; the alerter throttles
+        // to one email per window so this cadence doesn't spam. No-ops silently
+        // until an admin FAL key is provisioned (the inference key is billing-403).
+        // INLINE (not background): one HTTP GET + maybe a queued mailer, sub-second.
+        $schedule->command('fal:check-balance')
+            ->hourly()
+            ->withoutOverlapping(10);
+
         // Signup reconcile backstop: daily at 08:30 UTC, sweep the last 48h of
         // Stripe Checkout Sessions for PAID signups with no matching account —
         // the slow net under the real-time webhook safety net ([[signup_hardening]]).

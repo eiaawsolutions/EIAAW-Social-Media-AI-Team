@@ -24,6 +24,13 @@ return [
     'fal' => [
         // FAL.AI gateway for image generation (Nano Banana default, Veo 3 Fast for video)
         'api_key' => env('FAL_API_KEY'),
+        // Admin-scoped key for the BILLING host (api.fal.ai), used ONLY by the
+        // proactive low-balance monitor (FalAiClient::fetchAccountBalance). The
+        // inference key above is 403-denied on /v1/account/billing, so a separate
+        // admin key is needed. OPTIONAL: until it's provisioned in Infisical the
+        // monitor no-ops. Least-privilege — do NOT reuse it for generation.
+        'admin_api_key' => env('FAL_ADMIN_API_KEY'),
+        'balance_timeout' => (int) env('FAL_BALANCE_TIMEOUT', 15),
         // Nano Banana (Gemini 2.5 Flash Image), ~$0.039/image: best prompt
         // adherence in its class — it depicts what the scripted scene brief
         // actually describes, with far fewer hallucinated objects/limbs than
