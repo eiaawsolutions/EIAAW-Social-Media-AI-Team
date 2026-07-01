@@ -61,6 +61,13 @@ return [
         // only by the monthly volume caps in config/billing.php, so there are no
         // daily_cap_usd handles to resolve. See [[no-daily-fal-cap]].
         'services.voyage.api_key',
+        // Firecrawl — the ONE external key that powers the Strategist's real
+        // intelligence: LinkedIn competitor-ad scraping (LinkedinAdLibraryFirecrawlClient)
+        // AND market/trend search (FirecrawlSearchClient). Without it both fetch
+        // paths return [] and the Strategist plans on brand-voice alone (the
+        // recycling root cause). Resolves only if a secret://.../FIRECRAWL_API_KEY
+        // handle is provisioned; the intel agents no-op gracefully when absent.
+        'services.firecrawl.api_key',
 
         // Publishing
         // services.blotato.api_key is the HQ-only fallback (resolved at boot

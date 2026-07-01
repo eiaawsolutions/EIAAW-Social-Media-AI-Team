@@ -17,7 +17,10 @@ class StrategistScheduledTimeDriftTest extends TestCase
 {
     public function test_version_bumped(): void
     {
-        $this->assertSame('strategist.v1.8', StrategistPrompt::VERSION);
+        // Tracks the current prompt version (v1.8 introduced the scheduled_time
+        // drift fix asserted below; v1.9 added the director/platform-mechanics
+        // upgrade). The scheduled_time invariants in this file still hold.
+        $this->assertSame('strategist.v1.9', StrategistPrompt::VERSION);
     }
 
     public function test_schema_has_no_scheduled_time_field(): void
