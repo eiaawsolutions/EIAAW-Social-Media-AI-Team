@@ -111,4 +111,74 @@ class CompetitorAdNormalizerTest extends TestCase
         $this->assertNotNull($payload['body']);
         $this->assertStringContainsString('Headline only', $payload['body']);
     }
+
+    // ── LinkedIn 404 / error-page guard (defence-in-depth) ────────────────
+
+    public function test_looks_like_error_page_detects_the_404_shell(): void
+    {
+        // The exact junk that got stored in the incident: multilingual
+        // "page not found" bodies + feed links with the 404_page trk marker.
+        $this->assertTrue(CompetitorAdNormalizer::looksLikeErrorPage('Page not found'));
+        $this->assertTrue(CompetitorAdNormalizer::looksLikeErrorPage('لم يتم العثور على الصفحة'));
+        $this->assertTrue(CompetitorAdNormalizer::looksLikeErrorPage('Seite nicht gefunden'));
+        $this->assertTrue(CompetitorAdNormalizer::looksLikeErrorPage('Página no encontrada'));
+        // Empty body is junk.
+        $this->assertTrue(CompetitorAdNormalizer::looksLikeErrorPage(''));
+        // The language-agnostic signal: a feed link with the 404 tracking marker.
+        $this->assertTrue(CompetitorAdNormalizer::looksLikeErrorPage(
+            'Some body', 'https://www.linkedin.com/feed/?trk=404_page'
+        ));
+    }
+
+    public function test_looks_like_error_page_passes_real_competitor_copy(): void
+    {
+        $this->assertFalse(CompetitorAdNormalizer::looksLikeErrorPage(
+            'SleekFlow — Boost lead generation with AI chatbots that qualify and book 24/7.',
+            'https://www.linkedin.com/company/sleekflow',
+            'https://www.linkedin.com/company/sleekflow',
+        ));
+    }
+
+    public function test_from_linkedin_rejects_an_error_page_row(): void
+    {
+        $this->expectException(\RuntimeException::class);
+
+        CompetitorAdNormalizer::fromLinkedin(
+            row: [
+                'body' => 'Page not found',
+                'landing_url' => 'https://www.linkedin.com/feed/?trk=404_page',
+                'ad_url' => '',
+                'ad_id' => 'x',
+            ],
+            brandId: 7,
+            workspaceId: 3,
+            competitorHandle: 'dah-reply-ai',
+            competitorLabel: 'Dah Reply',
+            retentionDays: 30,
+        );
+    }
+
+    public function test_from_linkedin_accepts_real_search_derived_row(): void
+    {
+        // The shape the rewritten client now emits (title+snippet as body,
+        // the LinkedIn URL as ad_url/landing_url).
+        $payload = CompetitorAdNormalizer::fromLinkedin(
+            row: [
+                'body' => "SleekFlow - AI Suite for Revenue-Driving Conversations\nTeams of AI agents that qualify, sell, book, and support 24/7.",
+                'ad_url' => 'https://www.linkedin.com/posts/sleekflow_activity-123',
+                'landing_url' => 'https://www.linkedin.com/posts/sleekflow_activity-123',
+                'ad_id' => 'abc123',
+            ],
+            brandId: 7,
+            workspaceId: 3,
+            competitorHandle: 'sleekflow',
+            competitorLabel: 'SleekFlow',
+            retentionDays: 30,
+        );
+
+        $this->assertSame('linkedin', $payload['platform']);
+        $this->assertStringContainsString('Revenue-Driving Conversations', $payload['body']);
+        $this->assertSame('https://www.linkedin.com/posts/sleekflow_activity-123', $payload['source_url']);
+        $this->assertSame(40, strlen($payload['dedup_hash']));
+    }
 }
