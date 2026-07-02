@@ -158,6 +158,48 @@ class CompetitorAdNormalizerTest extends TestCase
         );
     }
 
+    public function test_from_linkedin_clamps_long_url_to_varchar_limit(): void
+    {
+        // A long LinkedIn post permalink (activity id + tracking params) must not
+        // overflow the varchar(255) source_url/landing_url columns and drop the row.
+        $longUrl = 'https://www.linkedin.com/posts/sleekflow_'.str_repeat('a', 400);
+
+        $payload = CompetitorAdNormalizer::fromLinkedin(
+            row: [
+                'body' => 'SleekFlow — real competitor messaging here.',
+                'ad_url' => $longUrl,
+                'landing_url' => $longUrl,
+                'ad_id' => str_repeat('x', 400),
+                'cta_text' => str_repeat('c', 400),
+            ],
+            brandId: 7, workspaceId: 3, competitorHandle: 'sleekflow', competitorLabel: 'SleekFlow', retentionDays: 30,
+        );
+
+        $this->assertLessThanOrEqual(255, mb_strlen((string) $payload['source_url']));
+        $this->assertLessThanOrEqual(255, mb_strlen((string) $payload['landing_url']));
+        $this->assertLessThanOrEqual(255, mb_strlen((string) $payload['source_ad_id']));
+        $this->assertLessThanOrEqual(255, mb_strlen((string) $payload['cta']));
+    }
+
+    public function test_from_linkedin_sanitises_malformed_utf8_body(): void
+    {
+        // A body with an invalid byte sequence must not crash and must come out
+        // as valid UTF-8 (the injection grader threw "Malformed UTF-8" on this).
+        $badBody = "Real competitor copy \xB1\x31 with a bad byte";
+
+        $payload = CompetitorAdNormalizer::fromLinkedin(
+            row: [
+                'body' => $badBody,
+                'ad_url' => 'https://www.linkedin.com/posts/acme_activity-1',
+                'ad_id' => 'a1',
+            ],
+            brandId: 7, workspaceId: 3, competitorHandle: 'acme', competitorLabel: 'Acme', retentionDays: 30,
+        );
+
+        $this->assertTrue(mb_check_encoding((string) $payload['body'], 'UTF-8'));
+        $this->assertStringContainsString('Real competitor copy', (string) $payload['body']);
+    }
+
     public function test_from_linkedin_accepts_real_search_derived_row(): void
     {
         // The shape the rewritten client now emits (title+snippet as body,
