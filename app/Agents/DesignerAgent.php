@@ -12,6 +12,7 @@ use App\Services\Branding\InfographicComposer;
 use App\Services\Branding\PosterContentWriter;
 use App\Services\Branding\QuoteWriter;
 use App\Services\Imagery\BrandAssetPicker;
+use App\Services\Imagery\BrandVisualCard;
 use App\Services\Imagery\DraftSceneBrief;
 use App\Services\Imagery\EiaawBrandLock;
 use App\Services\Imagery\FalAccountLockedException;
@@ -582,8 +583,15 @@ class DesignerAgent extends BaseAgent
         // quote-card formats on a text-capable model, render a designed poster
         // (headline + 3-5 key points as legible text) instead of a text-free
         // photo. Gated so photo formats and flux-family models are untouched.
+        //
+        // "Lean into hook posters": also route single-image posts that carry a
+        // strong headline (shouldRouteToHookPoster) — a legible hook line is the
+        // #1 scroll-stopper, and the composer spells it exactly. When the draft
+        // can't distil >= 3 points buildPosterPrompt returns null and we fall
+        // through to the tension-forward photo path.
         if ($textCapable
-            && ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)) {
+            && (ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)
+                || ImageCreativeDirection::shouldRouteToHookPoster($entry?->format, $entry?->pillar, $entry?->visual_direction, $draft->platform_payload))) {
             $posterPrompt = $this->buildPosterPrompt($brand, $draft);
             if ($posterPrompt !== null) {
                 $this->pendingCompose = $posterPrompt['compose'];
@@ -614,6 +622,14 @@ class DesignerAgent extends BaseAgent
             $sceneBrief .= " Carousel cover (hook slide): {$hookSlide}.";
         }
 
+        // Engagement: a scroll-stop needs the image to DRAMATISE the hook's
+        // tension — the problem, the before-state, the stakes it names — not
+        // just decorate the topic. Push a focal subject and a clear point of
+        // interest so the frame earns the pause. Prompt-only; no schema change.
+        $sceneBrief .= ' Make it scroll-stopping: give the frame ONE clear focal subject'
+            .' and depict the tension or stakes the hook names (the problem, the moment,'
+            .' the transformation) — not a generic decorative backdrop.';
+
         // Text-eager models (Nano Banana / Gemini) need a firmer no-text
         // instruction on the PHOTO path — they render legible text readily, and
         // our pipeline stamps the quote programmatically instead. Empty for
@@ -633,35 +649,63 @@ class DesignerAgent extends BaseAgent
             default => 'clean platform-appropriate composition',
         };
 
-        // EIAAW-internal workspace: anchor to the locked house style instead
-        // of the generic palette/aesthetic hint. Source of truth:
-        // ~/.claude/skills/full-stack-engineer/references/eiaaw-design-system.md.
-        if (EiaawBrandLock::appliesTo($brand)) {
-            return sprintf(
-                'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for EIAAW Solutions on %s. %s. %s %s %s %s ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If your model wants to add text, replace it with a photographic subject instead.',
-                ucfirst($draft->platform),
-                $platformComposition,
-                EiaawBrandLock::imageDirective(),
-                EiaawBrandLock::typographyHint(),
-                $sceneBrief,
-                ImageCreativeDirection::realismBlock(),
-            );
-        }
+        // Shared no-text tail — text-eager models render legible copy readily
+        // and our pipeline stamps the quote programmatically instead, so any
+        // baked-in text corrupts the asset. Identical wording on every path.
+        $noText = 'ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If the model wants to add text, replace with a photographic subject instead. Anti-slop: avoid generic purple/magenta gradient backgrounds, radial glows, stock-photo poses, clip-art icons, and AI-swirl effects.';
 
-        // Client workspace path — uses the brand's own palette + voice.
-        $style = $brand->currentStyle;
-        $paletteHint = '';
-        if ($style && is_array($style->palette) && ! empty($style->palette)) {
-            $hexes = collect($style->palette)
-                ->map(fn ($h) => is_string($h) ? $h : ($h['hex'] ?? null))
-                ->filter()
-                ->take(4)
-                ->implode(', ');
-            if ($hexes !== '') {
-                $paletteHint = " Brand palette: {$hexes}.";
+        // Pick the brand's art-direction card. Both paths render the SAME
+        // template — they differ only in which card supplies the directive:
+        //   - EIAAW-internal → the locked house style (EiaawBrandLock). Source
+        //     of truth: ~/.claude/skills/.../eiaaw-design-system.md.
+        //   - Client with an enriched visual identity → BrandVisualCard rendered
+        //     from THAT brand's own palette/mood/imagery.
+        //   - Client with no usable identity yet → $directive stays null and we
+        //     fall back to the exact pre-feature generic prompt (zero regression).
+        $directive = null;
+        $typography = '';
+        $subjectLabel = $brand->name;
+
+        if (EiaawBrandLock::appliesTo($brand)) {
+            $directive = EiaawBrandLock::imageDirective();
+            $typography = EiaawBrandLock::typographyHint();
+            $subjectLabel = 'EIAAW Solutions';
+        } else {
+            $card = BrandVisualCard::forBrand($brand);
+            if ($card->isAvailable()) {
+                $directive = $card->imageDirective();
+                $typography = $card->typographyHint();
             }
         }
 
+        // Operator-supplied business facts (industry, product, audience) —
+        // authoritative context so the model knows what the brand sells and who
+        // it serves. Empty for un-enriched brands (byte-identical old behaviour).
+        // mb_substr (never byte substr) for any LLM-bound slice — multibyte-safe.
+        $facts = trim($brand->brandFactsBlock());
+        $factsClause = $facts !== ''
+            ? ' Brand context: '.mb_substr($facts, 0, BrandVisualCard::MAX_FACTS_CHARS).'.'
+            : '';
+
+        if ($directive !== null) {
+            // Unified branded template (EIAAW house OR enriched client brand).
+            return sprintf(
+                'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for %s on %s. %s. %s %s%s %s %s %s',
+                $subjectLabel,
+                ucfirst($draft->platform),
+                $platformComposition,
+                $directive,
+                $typography !== '' ? $typography.' ' : '',
+                $factsClause,
+                $sceneBrief,
+                ImageCreativeDirection::realismBlock(),
+                $noText,
+            );
+        }
+
+        // Legacy client fallback — un-enriched brand. Kept semantically identical
+        // to the pre-feature prompt (generic per-platform aesthetic, no card),
+        // plus the operator business-facts clause when the operator has set them.
         $platformAesthetic = match ($draft->platform) {
             'instagram', 'facebook' => 'editorial-grade square composition, generous negative space, premium look',
             'linkedin' => 'professional B2B aesthetic, clean and minimal, no stock-photo cliches',
@@ -673,13 +717,14 @@ class DesignerAgent extends BaseAgent
         };
 
         return sprintf(
-            'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for the brand "%s" on %s. %s.%s %s %s ABSOLUTELY NO TEXT in the image: no letters, no words, no captions, no headlines, no numbers, no list bullets, no logos, no watermarks, no signs, no labels, no UI mockups, no screen text. The image must read as a real photograph or stylised illustration. If the model wants to add text, replace with a photographic subject instead. Anti-slop: avoid generic purple/magenta gradient backgrounds, radial glows, stock-photo poses, clip-art icons, and AI-swirl effects.',
+            'Editorial photographic image (NOT a graphic design, NOT an infographic, NOT a typography poster) for the brand "%s" on %s. %s.%s %s %s %s',
             $brand->name,
             ucfirst($draft->platform),
             $platformAesthetic,
-            $paletteHint,
+            $factsClause,
             $sceneBrief,
             ImageCreativeDirection::realismBlock(),
+            $noText,
         );
     }
 
@@ -810,6 +855,14 @@ class DesignerAgent extends BaseAgent
             return '11766A'; // deep teal — references/eiaaw-design-system.md
         }
 
+        // Prefer the brand's visual-identity accent (structured palette, else
+        // the legacy brand_styles.palette column) — BrandVisualCard resolves the
+        // best-available source and validates the hex.
+        $accent = BrandVisualCard::forBrand($brand)->accentHex();
+        if ($accent !== null) {
+            return $accent;
+        }
+
         $style = $brand->currentStyle;
         if ($style && is_array($style->palette)) {
             foreach ($style->palette as $entry) {
@@ -871,6 +924,15 @@ class DesignerAgent extends BaseAgent
                 .' Warm-cream background, deep-teal accents, near-black ink — no neon, no purple, no dark navy.';
         }
 
+        // Enriched client brand → palette + mood so the designed graphic stays
+        // on-brand (parallel to imageDirective on the photo path).
+        $card = BrandVisualCard::forBrand($brand);
+        $cardClause = $card->posterStyleClause();
+        if ($cardClause !== '') {
+            return $cardClause;
+        }
+
+        // Legacy fallback — hex-only string from the raw palette column.
         $style = $brand->currentStyle;
         if ($style && is_array($style->palette) && ! empty($style->palette)) {
             $hexes = collect($style->palette)
