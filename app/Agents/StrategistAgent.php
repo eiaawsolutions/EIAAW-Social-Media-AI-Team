@@ -95,13 +95,29 @@ class StrategistAgent extends BaseAgent
             brand: $brand,
             workspace: $brand->workspace,
             modelId: config('services.anthropic.default_model'),
-            maxTokens: 8000,
+            // A full 30-entry calendar now carries richer per-entry fields
+            // (positioning_goal + platform_angles array + content_angle +
+            // target_emotion + visual_direction), so 8000 output tokens
+            // truncated the JSON mid-stream and failed structured parsing
+            // ("Calendar synthesis came back empty"). 16000 comfortably fits the
+            // enriched v1.9 output and stays well within Sonnet's output ceiling.
+            maxTokens: 16000,
             jsonSchema: StrategistPrompt::schema(),
             agentRole: $this->role(),
         );
 
         $payload = $result->parsedJson;
         if (! $payload || empty($payload['entries'])) {
+            // Distinguish a genuine empty response from output-token truncation
+            // (the JSON is cut mid-stream so structured parsing fails) — a silent
+            // "came back empty" hid exactly this after the v1.9 schema grew.
+            if ($result->stopReason === 'max_tokens') {
+                return AgentResult::fail(sprintf(
+                    'Calendar synthesis truncated at the output-token limit (%d tokens used). The schema/plan is too large for the budget — raise maxTokens.',
+                    $result->outputTokens,
+                ));
+            }
+
             return AgentResult::fail('Calendar synthesis came back empty. Try again.');
         }
 
