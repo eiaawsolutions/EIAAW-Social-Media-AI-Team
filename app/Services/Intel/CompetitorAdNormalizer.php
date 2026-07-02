@@ -112,6 +112,14 @@ final class CompetitorAdNormalizer
         $cta = trim((string) ($row['cta_text'] ?? ''));
         $landingUrl = trim((string) ($row['landing_url'] ?? ''));
 
+        // Defence-in-depth against the historical incident where LinkedIn's
+        // multilingual 404 shell got stored as "ads" (~12 language variants per
+        // competitor). Reject empty or error-page rows so junk can never enter
+        // competitor_ads again — upsertRows catches the throw and skips the row.
+        if (self::looksLikeErrorPage($body, $landingUrl, $adUrl)) {
+            throw new \RuntimeException('LinkedIn row looks like an error/404 page — skipping.');
+        }
+
         $first = self::parseTime($row['first_seen_date'] ?? null);
 
         $observedAt = now();
@@ -156,5 +164,52 @@ final class CompetitorAdNormalizer
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * Is this row LinkedIn's "page not found" shell (or empty) rather than real
+     * competitor content? LinkedIn renders its 404 in many languages and links
+     * back to the feed with `?trk=404_page`; the body carries the localized
+     * "page not found" phrase. Detect the strongest, language-agnostic signal
+     * (the 404_page trk marker) plus the common localized phrases we actually
+     * observed, and treat an empty body as junk too.
+     *
+     * @internal exposed via a test seam; the real gate is fromLinkedin().
+     */
+    public static function looksLikeErrorPage(string $body, string $landingUrl = '', string $adUrl = ''): bool
+    {
+        if ($body === '') {
+            return true;
+        }
+
+        // Language-agnostic: LinkedIn's 404 shell links everything to the feed
+        // with this exact tracking marker.
+        foreach ([$landingUrl, $adUrl] as $u) {
+            if ($u !== '' && stripos($u, 'trk=404_page') !== false) {
+                return true;
+            }
+        }
+
+        // Localized "page not found" phrases actually seen in the stored junk
+        // (en/ar/cs/da/de/es/… ). Matching a handful catches the shell; real ad
+        // copy won't contain these exact strings.
+        $needles = [
+            'page not found',
+            'página no encontrada',
+            'page non trouvée',
+            'seite nicht gefunden',
+            'stránka nenalezena',
+            'siden blev ikke fundet',
+            'لم يتم العثور على الصفحة',
+            'go to your feed',
+        ];
+        $hay = mb_strtolower($body);
+        foreach ($needles as $n) {
+            if (mb_strpos($hay, mb_strtolower($n)) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
