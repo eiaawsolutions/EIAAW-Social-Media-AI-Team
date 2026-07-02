@@ -144,4 +144,40 @@ class WriterPlatformDirectiveTest extends TestCase
         $this->assertStringContainsString('Positioning goal', $lines);
         $this->assertStringContainsString('counter_position', $lines);
     }
+
+    /**
+     * The Strategist now EMITS platform_angles as an array of {platform, angle}
+     * objects (Anthropic rejects an open object map). sanitisePlatformAngles must
+     * normalise that array into the platform=>angle map stored in
+     * research_brief.creative and read by the Writer.
+     */
+    public function test_sanitise_platform_angles_accepts_emitted_array_shape(): void
+    {
+        $agent = app(\App\Agents\StrategistAgent::class);
+        $m = new \ReflectionMethod($agent, 'sanitisePlatformAngles');
+        $m->setAccessible(true);
+
+        // Emitted array-of-objects, with one platform NOT in the entry (dropped)
+        // and one blank angle (dropped).
+        $raw = [
+            ['platform' => 'linkedin', 'angle' => 'senior ops leader POV'],
+            ['platform' => 'tiktok', 'angle' => 'first-3-seconds hook'],
+            ['platform' => 'youtube', 'angle' => 'not a target — drop me'],
+            ['platform' => 'instagram', 'angle' => '   '],
+        ];
+        $out = $m->invoke($agent, $raw, ['linkedin', 'tiktok', 'instagram']);
+
+        $this->assertSame([
+            'linkedin' => 'senior ops leader POV',
+            'tiktok' => 'first-3-seconds hook',
+        ], $out);
+
+        // Defensive: a legacy platform=>string map still works.
+        $legacy = $m->invoke($agent, ['linkedin' => 'legacy angle'], ['linkedin']);
+        $this->assertSame(['linkedin' => 'legacy angle'], $legacy);
+
+        // Empty / non-array → empty.
+        $this->assertSame([], $m->invoke($agent, [], ['linkedin']));
+        $this->assertSame([], $m->invoke($agent, null, ['linkedin']));
+    }
 }

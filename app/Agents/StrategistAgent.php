@@ -195,11 +195,17 @@ class StrategistAgent extends BaseAgent
     }
 
     /**
-     * Keep only platform->angle pairs whose platform is actually one this entry
-     * targets, and whose angle is a non-empty string. LLMs sometimes key
-     * platform_angles on platforms not in the entry's `platforms` array (or emit
-     * blanks); we drop those so the Writer never gets an angle for a platform it
-     * won't publish to.
+     * Normalise the model's `platform_angles` into a platform=>angle map, keeping
+     * only entries whose platform is one this entry actually targets and whose
+     * angle is a non-empty string. The map is what research_brief.creative stores
+     * and what the Writer's renderPlatformDirective reads.
+     *
+     * Accepts the emitted schema shape (an ARRAY of {platform, angle} objects —
+     * Anthropic rejects a free-form object map) and, defensively, a plain
+     * platform=>string map (older calendars / hand-built input). LLMs sometimes
+     * name a platform not in the entry's `platforms` array or emit blanks; those
+     * are dropped so the Writer never gets an angle for a platform it won't
+     * publish to.
      *
      * @param  mixed  $raw
      * @param  array<int,string>  $entryPlatforms
@@ -213,18 +219,36 @@ class StrategistAgent extends BaseAgent
 
         $allowed = array_flip($entryPlatforms);
         $out = [];
-        foreach ($raw as $platform => $angle) {
-            if (! is_string($platform) || ! isset($allowed[$platform])) {
-                continue;
+
+        // Emitted shape: list of {platform, angle} objects.
+        if (array_is_list($raw)) {
+            foreach ($raw as $item) {
+                if (! is_array($item)) {
+                    continue;
+                }
+                $platform = $item['platform'] ?? null;
+                $angle = $item['angle'] ?? null;
+                if (! is_string($platform) || ! isset($allowed[$platform]) || ! is_string($angle)) {
+                    continue;
+                }
+                $angle = trim($angle);
+                if ($angle !== '') {
+                    $out[$platform] = $angle;
+                }
             }
-            if (! is_string($angle)) {
+
+            return $out;
+        }
+
+        // Defensive: legacy platform=>string map.
+        foreach ($raw as $platform => $angle) {
+            if (! is_string($platform) || ! isset($allowed[$platform]) || ! is_string($angle)) {
                 continue;
             }
             $angle = trim($angle);
-            if ($angle === '') {
-                continue;
+            if ($angle !== '') {
+                $out[$platform] = $angle;
             }
-            $out[$platform] = $angle;
         }
 
         return $out;

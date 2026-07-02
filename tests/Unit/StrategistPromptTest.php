@@ -139,12 +139,40 @@ class StrategistPromptTest extends TestCase
         $this->assertContains('whitespace', $props['positioning_goal']['enum']);
         $this->assertContains('counter_position', $props['positioning_goal']['enum']);
 
-        // platform_angles is an object map of platform -> angle string.
-        $this->assertSame('object', $props['platform_angles']['type']);
+        // platform_angles is an ARRAY of {platform, angle} objects — NOT an open
+        // object map. Anthropic's structured-output validator rejects
+        // `additionalProperties: object`, so a free-form map is not emittable.
+        $this->assertSame('array', $props['platform_angles']['type']);
+        $item = $props['platform_angles']['items'];
+        $this->assertSame('object', $item['type']);
+        $this->assertFalse($item['additionalProperties']);
+        $this->assertEqualsCanonicalizing(['platform', 'angle'], $item['required']);
 
         // Both stay OPTIONAL so an un-enriched call and the agent's persistence
         // tolerate their absence (behavioural compatibility with pre-v1.9).
         $this->assertNotContains('positioning_goal', $items['required']);
         $this->assertNotContains('platform_angles', $items['required']);
+    }
+
+    public function test_schema_never_uses_object_valued_additional_properties(): void
+    {
+        // Regression guard for the prod 400: Anthropic rejects
+        // `additionalProperties: <object>` — it must be `false` (or absent)
+        // everywhere in the emitted schema. Walk the whole tree.
+        $walk = function ($node) use (&$walk): void {
+            if (! is_array($node)) {
+                return;
+            }
+            if (array_key_exists('additionalProperties', $node)) {
+                $this->assertFalse(
+                    is_array($node['additionalProperties']),
+                    'additionalProperties must be false, never an object schema (Anthropic rejects it).'
+                );
+            }
+            foreach ($node as $child) {
+                $walk($child);
+            }
+        };
+        $walk(StrategistPrompt::schema());
     }
 }

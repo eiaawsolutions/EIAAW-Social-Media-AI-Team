@@ -253,9 +253,26 @@ PROMPT;
                                 'description' => 'The strategic job this entry does for the brand position. Spread across the month; do not make every entry the same job.',
                             ],
                             'platform_angles' => [
-                                'type' => 'object',
-                                'additionalProperties' => ['type' => 'string'],
-                                'description' => 'For multi-platform entries: a map of platform -> the DISTINCT native angle/hook for that platform (per the platform-mechanics model). Omit for single-platform entries. Keys must be a subset of this entry\'s platforms.',
+                                // Array-of-objects, NOT an open map: Anthropic's
+                                // structured-output validator rejects
+                                // `additionalProperties: object` (only `false` is
+                                // allowed), so a free-form platform->string map is
+                                // not emittable. Each item names its platform + the
+                                // distinct native angle for it.
+                                'type' => 'array',
+                                'items' => [
+                                    'type' => 'object',
+                                    'additionalProperties' => false,
+                                    'required' => ['platform', 'angle'],
+                                    'properties' => [
+                                        'platform' => [
+                                            'type' => 'string',
+                                            'enum' => ['instagram', 'facebook', 'linkedin', 'tiktok', 'threads', 'x', 'youtube', 'pinterest'],
+                                        ],
+                                        'angle' => ['type' => 'string', 'description' => 'The DISTINCT native angle/hook for this platform.'],
+                                    ],
+                                ],
+                                'description' => 'For multi-platform entries: one item per platform giving the DISTINCT native angle/hook for that platform (per the platform-mechanics model). Omit for single-platform entries. Each platform must be one of this entry\'s platforms.',
                             ],
                             'target_emotion' => [
                                 'type' => 'string',
