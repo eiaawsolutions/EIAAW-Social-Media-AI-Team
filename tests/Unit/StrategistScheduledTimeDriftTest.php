@@ -19,8 +19,9 @@ class StrategistScheduledTimeDriftTest extends TestCase
     {
         // Tracks the current prompt version (v1.8 introduced the scheduled_time
         // drift fix asserted below; v1.9 added the director/platform-mechanics
-        // upgrade). The scheduled_time invariants in this file still hold.
-        $this->assertSame('strategist.v1.9', StrategistPrompt::VERSION);
+        // upgrade; v1.10 widened the anti-recycling exclusion to queued content).
+        // The scheduled_time invariants in this file still hold.
+        $this->assertSame('strategist.v1.10', StrategistPrompt::VERSION);
     }
 
     public function test_schema_has_no_scheduled_time_field(): void

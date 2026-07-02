@@ -4,6 +4,17 @@ namespace App\Agents\Prompts;
 
 final class StrategistPrompt
 {
+    // v1.10 — anti-recycling now sees the brand's OWN QUEUE, not just what shipped.
+    // The DO-NOT-REPEAT exclusion block was fed only from PUBLISHED posts, so a
+    // re-plan was blind to the topics this brand had already APPROVED/SCHEDULED
+    // but not yet aired — the whole cause of the July HQ batch re-covering the
+    // same 4-5 themes (all its posts were 'scheduled', unpublished, hence
+    // invisible). StrategistAgent::renderRecentlyPublished now also pulls
+    // planned/drafted/scheduled calendar_entries in the window, and the block is
+    // renamed "Recently published" → "Already covered" (it now spans shipped AND
+    // queued). Prompt references updated to match the new header so the model
+    // still keys off it. No schema change; bump cohorts the calendars.
+    //
     // v1.9 — director + brand-marketer + platform-mechanics upgrade. The persona
     // is sharpened from a generic "strategist + creative director" to an explicit
     // social-media DIRECTOR + brand strategist who reasons about positioning,
@@ -76,7 +87,7 @@ final class StrategistPrompt
     // contains a "Competitor signals (last 30 days)" block, the strategist
     // is asked to position differently from common themes (not copy them)
     // and surface 1-2 explicit "counter-positioning" entries.
-    public const VERSION = 'strategist.v1.9';
+    public const VERSION = 'strategist.v1.10';
 
     public static function system(): string
     {
@@ -95,7 +106,7 @@ Hold three lenses at once:
 - Distribute across content pillars and formats per the supplied mix percentages.
 - Spread platform targets evenly so no single platform is starved.
 - Topics must be specific enough that the Writer agent can produce a real caption from them. "Talk about culture" is not a topic. "Behind-the-scenes: how our 3-person SDR team books 40 demos a week" is.
-- Avoid duplicate topics within the month, AND avoid any topic or angle listed in the "Recently published" block — that content already shipped, so re-planning it is the recycling we are eliminating.
+- Avoid duplicate topics within the month, AND avoid any topic or angle listed in the "Already covered" block — that content already shipped OR is already queued, so re-planning it is the recycling we are eliminating.
 - DIFFERENT IDEAS, not just different words. Reusing the SAME core message/claim in fresh wording is still recycling. Across the month, no two entries should make the audience feel "I've already heard this from them" — vary the underlying insight, proof point, and takeaway, not just the sentence.
 - Vary the emotional register across the month — don't make all 30 entries chase the same feeling.
 - Output ONLY the JSON document specified. No commentary.
@@ -190,9 +201,9 @@ If the user message contains a "Market & Trend brief (verified signals)" block, 
 - Anchor seasonal/topical entries to the listed moments when they land in this period.
 - NEVER assert a market statistic, growth figure, or "this is going viral" claim that the brief did not explicitly supply. If the brief gives no number, plan no number.
 
-# Recently published
+# Already covered
 
-If the user message contains a "Recently published — DO NOT REPEAT" block, it lists the topics, angles, and core ideas this brand has ALREADY published in the recent past. Treat it as a HARD EXCLUSION list for planning — at the IDEA level, not just the wording level:
+If the user message contains an "Already covered — DO NOT REPEAT" block, it lists the topics, angles, and core ideas this brand has ALREADY published OR already has queued/planned (not yet on air) in the recent past. Treat it as a HARD EXCLUSION list for planning — at the IDEA level, not just the wording level:
 - Do NOT plan any entry that repeats a topic, angle, OR the same underlying claim/idea as an item in this list. A distinct topic string is NOT enough — if it would land on the audience as "they already said this", it's recycling. Reusing a content PILLAR is expected (the mix targets require it); reusing an IDEA is the recycling we are eliminating.
 - When a theme in the list is still strategically important, advance it — a NEW proof point, a new sub-topic, a different objective, or a genuinely fresh angle the list does not already cover — never restate the same take in new words.
 - This list is about variety over time; the competitor, market, and growth blocks above still govern WHICH fresh directions to prioritise.

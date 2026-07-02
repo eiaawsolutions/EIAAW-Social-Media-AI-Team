@@ -28,6 +28,19 @@ class StrategistAgent extends BaseAgent
 {
     protected array $requiredStages = ['brand_style', 'platform_connected'];
 
+    /**
+     * calendar_entry statuses that count as "already covered" for the
+     * anti-recycling exclusion list — content this brand has planned/queued but
+     * NOT yet aired. Published content is picked up separately (via
+     * scheduled_posts.published_at). 'published' entries are intentionally
+     * omitted here to avoid double-counting; 'skipped' is omitted because a
+     * skipped topic is fair game to re-plan. This set is the fix for the
+     * cross-month/cross-batch recycling that shipped the July HQ theme-clump:
+     * before v1.10 the exclusion saw only shipped posts, so a brand's own queued
+     * plan was invisible and the same themes recurred.
+     */
+    public const ALREADY_COVERED_ENTRY_STATUSES = ['planned', 'drafted', 'scheduled'];
+
     private const DEFAULT_PILLAR_MIX = [
         'educational' => 0.30,
         'community' => 0.25,
@@ -801,10 +814,10 @@ MSG;
     {
         $since = Carbon::now()->subDays($days);
 
-        // One row per published post with its planned topic/angle/pillar + the
-        // real publish date. Join through drafts → calendar_entries so we read
-        // the human-meaningful topic, not the raw caption body.
-        $rows = DB::table('scheduled_posts as sp')
+        // (1) Published posts — one row per published post with its planned
+        // topic/angle/pillar + the real publish date. Join through drafts →
+        // calendar_entries so we read the human-meaningful topic, not the caption.
+        $publishedRows = DB::table('scheduled_posts as sp')
             ->join('drafts as d', 'd.id', '=', 'sp.draft_id')
             ->join('calendar_entries as ce', 'ce.id', '=', 'd.calendar_entry_id')
             ->where('sp.brand_id', $brand->id)
@@ -815,8 +828,33 @@ MSG;
             ->limit(200) // bound the scan; dedup below trims to $limit distinct topics
             ->get(['ce.topic', 'ce.angle', 'ce.pillar', 'sp.published_at']);
 
+        // (2) ALREADY-PLANNED but NOT-YET-PUBLISHED content for this brand —
+        // calendar entries queued/drafted/approved but not on air yet. This is
+        // the fix for cross-month/cross-batch recycling: without it the
+        // exclusion list only knew what had SHIPPED, so a re-plan happily
+        // re-covered themes this brand had ALREADY queued (the whole July batch
+        // was 'scheduled', unpublished — so it was invisible and the same 4-5
+        // themes recurred). A calendar_entry carries the planned topic/angle
+        // regardless of whether its draft has published, so we read it directly.
+        // We deliberately DON'T filter to a specific calendar: the calendar
+        // being generated now doesn't exist yet (it's persisted AFTER planning),
+        // so it can't leak into its own exclusion list. scheduled_date bounds
+        // the scan to the recent/near horizon so ancient plans don't crowd out
+        // the cap.
+        $plannedRows = DB::table('calendar_entries as ce')
+            ->where('ce.brand_id', $brand->id)
+            ->whereIn('ce.status', self::ALREADY_COVERED_ENTRY_STATUSES)
+            ->where('ce.scheduled_date', '>=', $since->toDateString())
+            ->whereNotNull('ce.topic')
+            ->orderByDesc('ce.scheduled_date')
+            ->limit(200)
+            ->get(['ce.topic', 'ce.angle', 'ce.pillar', 'ce.scheduled_date']);
+
+        // Published first (they carry real dates), then the in-flight plan. The
+        // pure renderer dedups by topic keeping the FIRST occurrence, so a theme
+        // that both shipped and is re-queued shows once with its publish date.
         $entries = [];
-        foreach ($rows as $r) {
+        foreach ($publishedRows as $r) {
             $topic = trim((string) ($r->topic ?? ''));
             if ($topic === '') {
                 continue;
@@ -826,6 +864,21 @@ MSG;
                 'angle' => trim((string) ($r->angle ?? '')),
                 'pillar' => trim((string) ($r->pillar ?? '')),
                 'published_at' => $r->published_at ? Carbon::parse($r->published_at) : null,
+            ];
+        }
+        foreach ($plannedRows as $r) {
+            $topic = trim((string) ($r->topic ?? ''));
+            if ($topic === '') {
+                continue;
+            }
+            $entries[] = [
+                'topic' => $topic,
+                'angle' => trim((string) ($r->angle ?? '')),
+                'pillar' => trim((string) ($r->pillar ?? '')),
+                // No publish date — it's queued/planned. The renderer marks
+                // these with a plain "- " prefix and the block copy already
+                // says "already shipped OR queued".
+                'published_at' => null,
             ];
         }
 
@@ -875,8 +928,8 @@ MSG;
             return '';
         }
 
-        return "# Recently published — DO NOT REPEAT these topics, angles, or ideas (last {$days} days)\n"
+        return "# Already covered — DO NOT REPEAT these topics, angles, or ideas (last {$days} days)\n"
             .implode("\n", $lines)
-            ."\n\nThis content already shipped for this brand. Plan entries whose UNDERLYING IDEA is clearly distinct from every item above — not just a different topic string. If a planned entry would land on the audience as \"they already made this point\", it is recycling: change the idea, the proof point, or the takeaway, not merely the wording. Re-using a PILLAR is fine (the mix targets require it); re-using a topic, angle, or core message is not — advance the theme with a genuinely fresh take.";
+            ."\n\nThis content has already SHIPPED or is already QUEUED for this brand. Plan entries whose UNDERLYING IDEA is clearly distinct from every item above — not just a different topic string. If a planned entry would land on the audience as \"they already made this point\", it is recycling: change the idea, the proof point, or the takeaway, not merely the wording. Re-using a PILLAR is fine (the mix targets require it); re-using a topic, angle, or core message is not — advance the theme with a genuinely fresh take.";
     }
 }

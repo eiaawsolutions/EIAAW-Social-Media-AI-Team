@@ -131,7 +131,7 @@ class GrowthStrategyRenderingTest extends TestCase
 
     public function test_strategist_prompt_bumped_with_growth_section(): void
     {
-        $this->assertSame('strategist.v1.9', StrategistPrompt::VERSION);
+        $this->assertSame('strategist.v1.10', StrategistPrompt::VERSION);
         $this->assertStringContainsString('# Growth strategy', StrategistPrompt::system());
     }
 
@@ -231,7 +231,8 @@ class GrowthStrategyRenderingTest extends TestCase
             ['topic' => 'latte ART for beginners', 'pillar' => 'educational', 'published_at' => Carbon::parse('2026-05-20')],
         ]);
 
-        $this->assertStringContainsString('# Recently published — DO NOT REPEAT', $block);
+        // v1.10: header spans shipped AND queued content — "Already covered".
+        $this->assertStringContainsString('# Already covered — DO NOT REPEAT', $block);
         $this->assertStringContainsString('Jun 5 · educational · "Latte art for beginners"', $block);
         $this->assertStringContainsString('(angle: step-by-step)', $block);
         $this->assertStringContainsString('Meet our weekend barista', $block);
@@ -252,5 +253,34 @@ class GrowthStrategyRenderingTest extends TestCase
         // 40 listed, 41+ trimmed.
         $this->assertStringContainsString('"Topic number 40"', $block);
         $this->assertStringNotContainsString('"Topic number 41"', $block);
+    }
+
+    // ── v1.10: exclusion spans already-QUEUED content, not just published ──
+
+    public function test_already_covered_status_set_is_planned_drafted_scheduled(): void
+    {
+        // The statuses that mark a calendar_entry as "already covered" for the
+        // anti-recycling exclusion. 'published' is picked up separately (via
+        // scheduled_posts); 'skipped' is fair game to re-plan. Locking this set
+        // prevents a silent regression back to published-only blindness.
+        $this->assertSame(
+            ['planned', 'drafted', 'scheduled'],
+            StrategistAgent::ALREADY_COVERED_ENTRY_STATUSES,
+        );
+    }
+
+    public function test_block_lists_queued_entries_without_a_publish_date(): void
+    {
+        // A queued/planned entry has no publish date — it must STILL appear in
+        // the exclusion list (this is the whole fix: the brand's own unshipped
+        // plan was previously invisible). Dateless entries render with a plain
+        // "- " prefix, no "Mon D ·" stamp.
+        $block = StrategistAgent::renderRecentlyPublishedBlock([
+            ['topic' => 'AI Impact Assessment walkthrough', 'pillar' => 'educational', 'angle' => 'the four questions', 'published_at' => null],
+        ]);
+
+        $this->assertStringContainsString('# Already covered — DO NOT REPEAT', $block);
+        $this->assertStringContainsString('- educational · "AI Impact Assessment walkthrough"', $block);
+        $this->assertStringContainsString('already SHIPPED or is already QUEUED', $block);
     }
 }

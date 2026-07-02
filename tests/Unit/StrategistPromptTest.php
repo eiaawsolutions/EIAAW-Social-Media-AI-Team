@@ -15,18 +15,20 @@ class StrategistPromptTest extends TestCase
         // "Recently published" exclusion + the goal-lagging pivot; v1.8 reworded
         // the unrecoverable scheduled_time instruction; v1.9 the director +
         // brand-marketer + platform-mechanics upgrade (positioning_goal +
-        // platform_angles + conceptual DO-NOT-REPEAT). The bump must be visible
-        // so the optimizer treats prior calendars as a different prompt-version
-        // input cohort.
-        $this->assertSame('strategist.v1.9', StrategistPrompt::VERSION);
+        // platform_angles + conceptual DO-NOT-REPEAT); v1.10 the exclusion now
+        // spans already-QUEUED (not just published) content, renamed the block
+        // to "Already covered". The bump must be visible so the optimizer treats
+        // prior calendars as a different prompt-version input cohort.
+        $this->assertSame('strategist.v1.10', StrategistPrompt::VERSION);
     }
 
     public function test_system_prompt_includes_recently_published_and_lagging_goal_directives(): void
     {
         $prompt = StrategistPrompt::system();
 
-        // Anti-recycling: the hard exclusion of already-shipped topics/angles.
-        $this->assertStringContainsString('Recently published', $prompt);
+        // Anti-recycling: the hard exclusion of already-covered (shipped OR
+        // queued) topics/angles. v1.10 renamed the block to "Already covered".
+        $this->assertStringContainsString('Already covered', $prompt);
         $this->assertStringContainsString('DO NOT REPEAT', $prompt);
         // Reusing a pillar stays allowed; reusing a topic/angle is the target.
         $this->assertStringContainsStringIgnoringCase('reusing a content pillar is expected', $prompt);
