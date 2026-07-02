@@ -43,9 +43,11 @@ final class CompetitorAdNormalizer
             ])));
         }
 
-        $sourceAdId = (string) ($row['id'] ?? '');
-        $sourceUrl = (string) ($row['ad_snapshot_url'] ?? '');
-        $cta = (string) ($captions[0] ?? '');
+        $body = self::cleanUtf8($body);
+        // varchar(255)-bound fields — clamp + UTF-8-safe (parity with fromLinkedin).
+        $sourceAdId = self::clampVarchar((string) ($row['id'] ?? ''));
+        $sourceUrl = self::clampVarchar((string) ($row['ad_snapshot_url'] ?? ''));
+        $cta = self::clampVarchar(self::cleanUtf8((string) ($captions[0] ?? '')));
 
         $platforms = (array) ($row['publisher_platforms'] ?? []);
         $platforms = array_values(array_filter(array_map(
@@ -105,12 +107,18 @@ final class CompetitorAdNormalizer
         int $retentionDays,
         ?int $pipelineRunId = null,
     ): array {
-        $body = trim((string) ($row['body'] ?? ''));
-        $imageUrl = trim((string) ($row['image_url'] ?? ''));
-        $adUrl = trim((string) ($row['ad_url'] ?? ''));
-        $sourceAdId = trim((string) ($row['ad_id'] ?? ''));
-        $cta = trim((string) ($row['cta_text'] ?? ''));
-        $landingUrl = trim((string) ($row['landing_url'] ?? ''));
+        // Sanitize to valid UTF-8 first: /search-derived bodies occasionally
+        // carry malformed bytes that later crash any mb_substr / LLM call that
+        // slices them (the injection grader hit exactly this). See
+        // [[rag_mbstring_utf8_split]].
+        $body = self::cleanUtf8(trim((string) ($row['body'] ?? '')));
+        $imageUrl = self::cleanUtf8(trim((string) ($row['image_url'] ?? '')));
+        // These map to varchar(255) columns — clamp so a long LinkedIn post URL
+        // or CTA can't overflow and drop the whole row (SQLSTATE 22001).
+        $adUrl = self::clampVarchar(trim((string) ($row['ad_url'] ?? '')));
+        $sourceAdId = self::clampVarchar(trim((string) ($row['ad_id'] ?? '')));
+        $cta = self::clampVarchar(trim((string) ($row['cta_text'] ?? '')));
+        $landingUrl = self::clampVarchar(trim((string) ($row['landing_url'] ?? '')));
 
         // Defence-in-depth against the historical incident where LinkedIn's
         // multilingual 404 shell got stored as "ads" (~12 language variants per
@@ -164,6 +172,33 @@ final class CompetitorAdNormalizer
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * mb-safe clamp for values bound to varchar(255) columns. A LinkedIn post
+     * permalink (long activity id + tracking params) or an over-long CTA would
+     * otherwise overflow and lose the entire row on insert (SQLSTATE 22001).
+     * 255 by default; never splits a multibyte char.
+     */
+    private static function clampVarchar(string $s, int $max = 255): string
+    {
+        return mb_strlen($s) > $max ? mb_substr($s, 0, $max) : $s;
+    }
+
+    /**
+     * Coerce to valid UTF-8, dropping malformed bytes. Search-derived competitor
+     * bodies sometimes contain invalid sequences that crash downstream mb_substr
+     * / LLM calls (the prompt-injection grader threw "Malformed UTF-8"). Cheap
+     * and idempotent on already-valid text.
+     */
+    private static function cleanUtf8(string $s): string
+    {
+        if ($s === '' || mb_check_encoding($s, 'UTF-8')) {
+            return $s;
+        }
+
+        // Substitute invalid byte sequences rather than fail.
+        return (string) mb_convert_encoding($s, 'UTF-8', 'UTF-8');
     }
 
     /**
