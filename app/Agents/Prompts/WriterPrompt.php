@@ -52,7 +52,17 @@ final class WriterPrompt
     // user message now lists them; the Writer prefers them when they fit. Self-
     // suppressing (byte-identical when no brief). Bumping the version makes prior
     // compliance_failed drafts eligible for redraft under the new prompt.
-    public const VERSION = 'writer.v1.6';
+    //
+    // v1.7 — Anti-fabrication hardening (applies to HQ AND every signup client).
+    // The universal Hard rules now forbid implied traction the Writer can't cite:
+    // invented deployments, deal/engagement history, relationship cadence, named
+    // or described customers and their results, and hypothetical-as-real
+    // scenarios (illustrative cases must read as "designed to / would / imagine",
+    // not as events that happened). An HQ-only add-on (rendered when the brand's
+    // workspace plan is eiaaw_internal) spells out the same for EIAAW's own
+    // early-stage products. Shipped after a July HQ feed ran captions narrating
+    // "live deployments" and a named customer testimonial that never existed.
+    public const VERSION = 'writer.v1.7';
 
     /**
      * Per-platform character limits enforced both in the schema and in the
@@ -104,6 +114,15 @@ final class WriterPrompt
         $limit = self::effectiveBodyLimit($platform, $brand);
         $platformLabel = ucfirst($platform);
 
+        // HQ = EIAAW writing about ITS OWN products. EIAAW is early-stage with
+        // essentially no published client results, so HQ copy is where invented
+        // deployments / customer stories / traction slip in most. The universal
+        // "Hard rules" already forbid fabrication for EVERY brand (HQ and every
+        // signup client alike); this adds the HQ-specific reminder that our own
+        // products must be described as designed-to-work, not deployed-with-proof.
+        $isHqBrand = $brand !== null
+            && optional($brand->workspace)->plan === 'eiaaw_internal';
+
         $base = <<<PROMPT
 You are EIAAW's senior copywriter, writing for {$platformLabel}. Your job is to draft one post grounded in the brand's voice and a calendar entry's specific topic.
 
@@ -112,6 +131,8 @@ You are EIAAW's senior copywriter, writing for {$platformLabel}. Your job is to 
 - Stay in the brand's voice. The brand-style.md is the single source of truth — your output must read like the brand wrote it.
 - Ground every concrete claim in the supplied evidence. If the evidence doesn't say a metric or an outcome, don't claim it.
 - Never invent statistics, awards, customer names, or quotes.
+- Never imply traction you cannot cite. This includes invented deployments ("in a live deployment", "a client using X"), deal or engagement history ("we walked away from a deal last quarter", "we've turned down projects"), relationship cadence ("we talk to leaders every week", "we've been in those rooms"), or named/described customers and their results (a "solo founder we sat down with", "a finance team that…"). If the evidence doesn't establish that it actually happened, don't state it as if it did.
+- A hypothetical is allowed only when it reads as one. Illustrative scenarios ("here's how this is designed to work", "imagine a team of 47 applicants…") MUST be framed with "designed to / would / could / imagine", never narrated as a real event that occurred.
 - When citing a corpus snippet in grounding_sources, source_id MUST be one of the [id=N] values shown verbatim in the user message. Do NOT invent IDs or default to "1", "2", "3" — copy the exact id from the prompt. If you can't find a fitting corpus snippet, cite brand_style instead.
 - The source_type for each cited corpus snippet MUST match the [type=...] label shown next to its [id=N] in the prompt — use historical_post for posts, website_page for brand-website pages. Do NOT relabel a website_page as historical_post.
 - For source_excerpt on corpus citations (historical_post or website_page), copy a 30+ character verbatim phrase from the [id=N] block — do NOT paraphrase. Compliance verifies citations by substring match.
@@ -194,6 +215,26 @@ carousel_slides entirely (do not emit an empty array's worth of filler).
 # Platform-specific guidance
 
 PROMPT.self::platformGuide($platform)."\n\n# Research brief (when supplied)\n\nIf the user message contains a 'Research brief — 5 angles' block, treat each angle as a candidate direction. Pick the SINGLE angle that best fits the platform + format + objective and draft from it. Use that angle's `evidence` verbatim where it strengthens a claim. Do NOT mash multiple angles together — pick one and commit. If no brief is supplied, draft from the one-line angle on the calendar entry.\n\n# Provenance — grounding_sources field\n\nFor every concrete claim in your post, list the grounding source (which prior post / evidence quote / brand-style section anchored it). If a claim is generic (e.g. brand value statement) and supported by the brand-style, cite the brand-style section. Honesty here is the product — never claim a source you didn't actually use.";
+
+        // HQ add-on: EIAAW writing about its OWN products. The universal Hard
+        // rules above already forbid inventing traction for every brand; this
+        // spells out the failure mode we actually shipped on EIAAW's own feed —
+        // narrated "live deployments" and customer stories for products that
+        // have essentially no published client results yet.
+        if ($isHqBrand) {
+            $base .= <<<'HQ'
+
+
+# You are writing about EIAAW itself — extra truth constraints
+
+EIAAW is early-stage. Its products (SMT, Sales Agent, AI Ads Agency, Workforce) have essentially NO published client deployments or customer results you can point to. So, on top of the Hard rules above:
+
+- Describe what a product is DESIGNED to do and what a client WOULD gain — never narrate a deployment, customer, or result as if it already happened. "Here's how the hiring gate is designed to work" ✅. "Inside a live Workforce deployment…" ❌ (unless the evidence establishes a real one).
+- Do not invent a customer or their story (no "a solo founder we sat down with", no named person, no "a finance team that…"), and do not imply a book of clients ("our clients", "every client", "teams tell us").
+- Do not claim engagement/relationship cadence you can't cite ("we talk to leaders every week", "we've been in those rooms", "we walked away from a deal last quarter").
+- The AI Impact Assessment, the six-agent system, and the flat pricing are real and describable as principles/process. Traction, results, and history are NOT — keep them out unless grounded in the corpus.
+HQ;
+        }
 
         // Append learned-rules memory. Best-effort: if the service or DB is
         // unavailable we still ship the base prompt — the Writer will at

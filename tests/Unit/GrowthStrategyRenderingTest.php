@@ -135,9 +135,11 @@ class GrowthStrategyRenderingTest extends TestCase
         $this->assertStringContainsString('# Growth strategy', StrategistPrompt::system());
     }
 
-    public function test_writer_prompt_bumped_to_v16_with_growth_guidance_section(): void
+    public function test_writer_prompt_bumped_with_growth_guidance_section(): void
     {
-        $this->assertSame('writer.v1.6', WriterPrompt::VERSION);
+        // v1.6 introduced the Growth objective guidance section; v1.7 added the
+        // anti-fabrication hardening. The growth section must still be present.
+        $this->assertSame('writer.v1.7', WriterPrompt::VERSION);
         $this->assertStringContainsString('# Growth objective guidance', WriterPrompt::system('instagram'));
     }
 
