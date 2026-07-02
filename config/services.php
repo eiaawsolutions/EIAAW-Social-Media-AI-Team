@@ -236,6 +236,23 @@ return [
         'auto_apply_best_times' => (bool) env('GROWTH_STRATEGY_AUTO_APPLY_BEST_TIMES', false),
     ],
 
+    // ─── Compliance / anti-recycling dedup ──────────────────────────
+    // Two-tier semantic dedup in ComplianceAgent::checkDedup. `hard` is the
+    // near-verbatim block that always fails a draft (routes to the redraft
+    // loop). `soft` is the thematic "too similar" band [soft, hard): it also
+    // fails so the Writer re-drafts with a fresh angle, BUT only while the
+    // draft still has redraft attempts left — once the redraft loop has given
+    // up (revision_count >= redraft_relent_after) the soft band DOWNGRADES to a
+    // non-blocking warning so a genuinely-hard-to-differentiate post isn't
+    // stranded and the pipeline isn't starved. Tunable without a deploy.
+    'compliance' => [
+        'dedup_hard_threshold' => (float) env('COMPLIANCE_DEDUP_HARD', 0.85),
+        'dedup_soft_threshold' => (float) env('COMPLIANCE_DEDUP_SOFT', 0.78),
+        // Mirror RedraftFailedDraft::MAX_REVISIONS by default: after this many
+        // revisions the soft band stops blocking.
+        'dedup_soft_relent_after' => (int) env('COMPLIANCE_DEDUP_SOFT_RELENT_AFTER', 3),
+    ],
+
     // ─── Publishing ─────────────────────────────────────────────────
     // Provider selection for the publish path (SubmitScheduledPost via
     // PublisherFactory). Default 'metricool' — the Blotato→Metricool switch.

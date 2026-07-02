@@ -143,14 +143,20 @@ class StrategistAgent extends BaseAgent
                     (int) ($entry['day_offset'] ?? 0),
                 ));
 
-                // Creative intent (target_emotion + content_angle) is folded
-                // into research_brief.creative — no migration. ResearcherAgent
-                // merges (preserves) this key when it later writes angles, and
-                // the Writer/Designer read it for emotional + hook direction.
+                // Creative intent (target_emotion + content_angle + positioning
+                // + per-platform angles) is folded into research_brief.creative —
+                // no migration. ResearcherAgent merges (preserves) this key when
+                // it later writes angles, and the Writer/Designer read it for
+                // emotional + hook + positioning direction. platform_angles gives
+                // the Writer a DISTINCT native angle per platform so sibling
+                // platforms don't get byte-identical bodies (the cloning fix).
+                $platformAngles = $this->sanitisePlatformAngles($entry['platform_angles'] ?? null, $platforms);
                 $creative = array_filter([
                     'content_angle' => isset($entry['content_angle']) ? (string) $entry['content_angle'] : null,
                     'target_emotion' => isset($entry['target_emotion']) ? (string) $entry['target_emotion'] : null,
-                ], fn ($v) => $v !== null && $v !== '');
+                    'positioning_goal' => isset($entry['positioning_goal']) ? (string) $entry['positioning_goal'] : null,
+                    'platform_angles' => $platformAngles ?: null,
+                ], fn ($v) => $v !== null && $v !== '' && $v !== []);
 
                 CalendarEntry::create([
                     'content_calendar_id' => $calendar->id,
@@ -186,6 +192,42 @@ class StrategistAgent extends BaseAgent
             'cost_usd' => $result->costUsd,
             'latency_ms' => $result->latencyMs,
         ]);
+    }
+
+    /**
+     * Keep only platform->angle pairs whose platform is actually one this entry
+     * targets, and whose angle is a non-empty string. LLMs sometimes key
+     * platform_angles on platforms not in the entry's `platforms` array (or emit
+     * blanks); we drop those so the Writer never gets an angle for a platform it
+     * won't publish to.
+     *
+     * @param  mixed  $raw
+     * @param  array<int,string>  $entryPlatforms
+     * @return array<string,string>
+     */
+    private function sanitisePlatformAngles($raw, array $entryPlatforms): array
+    {
+        if (! is_array($raw) || $raw === []) {
+            return [];
+        }
+
+        $allowed = array_flip($entryPlatforms);
+        $out = [];
+        foreach ($raw as $platform => $angle) {
+            if (! is_string($platform) || ! isset($allowed[$platform])) {
+                continue;
+            }
+            if (! is_string($angle)) {
+                continue;
+            }
+            $angle = trim($angle);
+            if ($angle === '') {
+                continue;
+            }
+            $out[$platform] = $angle;
+        }
+
+        return $out;
     }
 
     private function buildUserMessage(
@@ -793,8 +835,8 @@ MSG;
             return '';
         }
 
-        return "# Recently published — DO NOT REPEAT these topics or angles (last {$days} days)\n"
+        return "# Recently published — DO NOT REPEAT these topics, angles, or ideas (last {$days} days)\n"
             .implode("\n", $lines)
-            ."\n\nThis content already shipped for this brand. Plan topics and angles that are clearly DISTINCT from the list above. Re-using a PILLAR is fine (the mix targets require it); re-using a TOPIC or ANGLE is not — find a fresh take.";
+            ."\n\nThis content already shipped for this brand. Plan entries whose UNDERLYING IDEA is clearly distinct from every item above — not just a different topic string. If a planned entry would land on the audience as \"they already made this point\", it is recycling: change the idea, the proof point, or the takeaway, not merely the wording. Re-using a PILLAR is fine (the mix targets require it); re-using a topic, angle, or core message is not — advance the theme with a genuinely fresh take.";
     }
 }

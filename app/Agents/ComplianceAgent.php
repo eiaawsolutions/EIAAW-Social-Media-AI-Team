@@ -410,7 +410,7 @@ class ComplianceAgent extends BaseAgent
                 'brand_id' => $brand->id,
                 'check_type' => 'dedup',
                 'score' => 1.0,
-                'threshold' => 1.0 - self::DEDUP_SIMILARITY_THRESHOLD,
+                'threshold' => 1.0 - self::dedupHardThreshold(),
                 'result' => 'pass',
                 'reason' => 'No prior posts indexed — dedup not applicable.',
                 'checked_at' => now(),
@@ -419,26 +419,90 @@ class ComplianceAgent extends BaseAgent
 
         $similarity = (float) $row->similarity;
         $score = 1.0 - $similarity; // higher = more original
-        $threshold = 1.0 - self::DEDUP_SIMILARITY_THRESHOLD;
-        $passed = $similarity < self::DEDUP_SIMILARITY_THRESHOLD;
+
+        // Two-tier decision (pure, unit-tested): >= hard → fail; [soft, hard) →
+        // fail while the draft still has redraft attempts, else warning; < soft
+        // → pass. The soft band is what catches THEMATIC recycling that the old
+        // single 0.85 gate let through.
+        [$result, $reason] = self::decideDedupResult(
+            $similarity,
+            (int) ($draft->revision_count ?? 0),
+        );
 
         return ComplianceCheck::create([
             'draft_id' => $draft->id,
             'brand_id' => $brand->id,
             'check_type' => 'dedup',
             'score' => round($score, 4),
-            'threshold' => round($threshold, 4),
-            'result' => $passed ? 'pass' : 'fail',
-            'reason' => $passed
-                ? sprintf('Most similar prior post is %.0f%% similar (under %.0f%% threshold).', $similarity * 100, self::DEDUP_SIMILARITY_THRESHOLD * 100)
-                : sprintf('%.0f%% similar to a prior post — too close.', $similarity * 100),
+            'threshold' => round(1.0 - self::dedupHardThreshold(), 4),
+            'result' => $result,
+            'reason' => $reason,
             'details' => [
                 'closest_corpus_id' => $row->id,
                 'similarity' => round($similarity, 4),
+                'soft_threshold' => self::dedupSoftThreshold(),
+                'hard_threshold' => self::dedupHardThreshold(),
                 'closest_excerpt' => substr($row->content, 0, 200),
             ],
             'checked_at' => now(),
         ]);
+    }
+
+    private static function dedupHardThreshold(): float
+    {
+        return (float) config('services.compliance.dedup_hard_threshold', self::DEDUP_SIMILARITY_THRESHOLD);
+    }
+
+    private static function dedupSoftThreshold(): float
+    {
+        return (float) config('services.compliance.dedup_soft_threshold', 0.78);
+    }
+
+    private static function dedupSoftRelentAfter(): int
+    {
+        return (int) config('services.compliance.dedup_soft_relent_after', 3);
+    }
+
+    /**
+     * Pure two-tier dedup decision — no DB, no config side effects beyond the
+     * threshold reads, so it is directly unit-testable.
+     *
+     * - similarity >= hard  → 'fail' (near-verbatim; redraft loop rewrites it).
+     * - soft <= similarity < hard (THEMATIC band) → 'fail' while the draft still
+     *   has redraft attempts left (revision_count < relentAfter), so the Writer
+     *   re-drafts with a fresh angle; once the loop has given up it DOWNGRADES to
+     *   a non-blocking 'warning' so the draft isn't stranded (pipeline not starved).
+     * - similarity < soft  → 'pass'.
+     *
+     * @return array{0:string,1:string} [result, reason]
+     */
+    public static function decideDedupResult(float $similarity, int $revisionCount): array
+    {
+        $hard = self::dedupHardThreshold();
+        $soft = self::dedupSoftThreshold();
+        $relentAfter = self::dedupSoftRelentAfter();
+        $pct = $similarity * 100;
+
+        if ($similarity >= $hard) {
+            return ['fail', sprintf('%.0f%% similar to a prior post — too close (hard block).', $pct)];
+        }
+
+        if ($similarity >= $soft) {
+            if ($revisionCount < $relentAfter) {
+                return ['fail', sprintf(
+                    '%.0f%% similar to a prior post — same theme, needs a fresher angle (soft, redraft %d/%d).',
+                    $pct, $revisionCount + 1, $relentAfter,
+                )];
+            }
+
+            // Redraft loop exhausted — surface the closeness but stop blocking.
+            return ['warning', sprintf(
+                '%.0f%% similar to a prior post — still close after %d redrafts; allowing through for human review.',
+                $pct, $relentAfter,
+            )];
+        }
+
+        return ['pass', sprintf('Most similar prior post is %.0f%% similar (under %.0f%% soft threshold).', $pct, $soft * 100)];
     }
 
     // ─── Check 4: brand-voice score (LLM-as-judge) ────────────────────────

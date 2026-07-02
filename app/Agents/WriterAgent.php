@@ -435,7 +435,7 @@ MODE: REDRAFT — your previous draft failed Compliance. Fix the listed violatio
 - Resolve every listed Compliance failure. Do not introduce new violations.
 - If a "factual_grounding" failure is listed, you cited sources that didn't resolve. Re-cite ONLY from the [id=N] list below, copying the id verbatim, with a 30+ char excerpt copied verbatim from that block. If you can't ground a claim, REMOVE the claim — don't invent a source.
 - If a "brand_voice" failure is listed, the prior draft drifted from brand-style.md. Re-anchor the phrasing to the voice rules below.
-- If a "dedup" failure is listed, the prior draft was too similar to a published post — change the angle wording while keeping the topic.
+- If a "dedup" failure is listed, the prior draft was too similar to a published post — this is recycling. Keep the topic, but change the underlying IDEA/angle: a different proof point, a different take, a different takeaway. Do not just reword the same point; make it land as genuinely new.
 - If a "banned_phrase" failure is listed, rewrite the affected sentence without the banned phrase.
 - If an "embargo" failure is listed, drop or rephrase any reference to the embargoed topic for this draft.
 - If a "legal_compliance" failure is listed, the prior draft broke an advertising/industry law for this brand's jurisdiction. Rewrite the offending claim to comply with the legal rules below; if a claim cannot be made lawfully, REMOVE it.
@@ -499,7 +499,14 @@ MSG;
         $similarBlock = $this->renderSimilarBlock($similar);
         $researchBlock = $this->renderResearchBrief($entry);
         $creativeLines = $this->renderCreativeIntent($entry);
+        // Platform-native directive (+ the Strategist's per-platform angle when
+        // planned): stops sibling platforms of one entry getting a byte-identical
+        // user message and thus near-identical bodies (the cross-platform clone).
+        $platformDirective = $this->renderPlatformDirective($entry, $platform);
         $growthGuidance = $this->renderGrowthObjectiveGuidance($brand, $entry);
+        // DO-NOT-REPEAT the brand's own recent posts — the Writer now sees this
+        // DURING generation rather than only being caught by Compliance after.
+        $recentBlock = $this->renderRecentlyPublishedForWriter($brand, $entry);
         $factsBlock = $this->renderBrandFacts($brand);
         $legalBlock = $this->renderLegalRules($brand);
 
@@ -513,14 +520,14 @@ PLATFORM: {$platform}
 - Pillar: {$entry->pillar}
 - Format: {$entry->format}
 - Objective: {$entry->objective}
-- Visual direction: {$entry->visual_direction}{$creativeLines}{$growthGuidance}
-{$researchBlock}{$factsBlock}{$legalBlock}# brand-style.md (single source of truth)
+- Visual direction: {$entry->visual_direction}{$creativeLines}{$platformDirective}{$growthGuidance}
+{$researchBlock}{$recentBlock}{$factsBlock}{$legalBlock}# brand-style.md (single source of truth)
 {$brandStyleMd}
 
 # Top similar prior posts (for voice grounding — DO cite if your phrasing borrows from them)
 {$similarBlock}
 
-Now draft the post per the schema. The draft MUST NOT violate any legal rule above — rewrite a claim rather than break a rule. Only write the JSON object.
+Now draft the post per the schema. Write natively for {$platform} (see the platform directive above), keep the underlying idea DISTINCT from the recently-published list, and do NOT violate any legal rule — rewrite a claim rather than break a rule. Only write the JSON object.
 MSG;
     }
 

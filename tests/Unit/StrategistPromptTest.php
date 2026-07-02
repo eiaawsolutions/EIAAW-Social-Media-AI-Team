@@ -13,10 +13,12 @@ class StrategistPromptTest extends TestCase
         // v1.5 the Strategy Briefing (competitor-strategy synthesis + market &
         // trend brief); v1.6 the Growth strategy block; v1.7 the anti-recycling
         // "Recently published" exclusion + the goal-lagging pivot; v1.8 reworded
-        // the unrecoverable scheduled_time instruction. The bump must be visible
+        // the unrecoverable scheduled_time instruction; v1.9 the director +
+        // brand-marketer + platform-mechanics upgrade (positioning_goal +
+        // platform_angles + conceptual DO-NOT-REPEAT). The bump must be visible
         // so the optimizer treats prior calendars as a different prompt-version
         // input cohort.
-        $this->assertSame('strategist.v1.8', StrategistPrompt::VERSION);
+        $this->assertSame('strategist.v1.9', StrategistPrompt::VERSION);
     }
 
     public function test_system_prompt_includes_recently_published_and_lagging_goal_directives(): void
@@ -88,5 +90,61 @@ class StrategistPromptTest extends TestCase
 
         $this->assertStringContainsString('30 entries', $prompt);
         $this->assertStringContainsString('Output ONLY the JSON document', $prompt);
+    }
+
+    public function test_system_prompt_has_director_persona_and_positioning_discipline(): void
+    {
+        // v1.9: the persona is a social media DIRECTOR + brand strategist, and
+        // every entry ladders to a positioning job — not just "on-brand" filler.
+        $prompt = StrategistPrompt::system();
+
+        $this->assertStringContainsStringIgnoringCase('director', $prompt);
+        $this->assertStringContainsString('Brand positioning', $prompt);
+        $this->assertStringContainsString('positioning_goal', $prompt);
+        // Names the mono-theme trap explicitly: same message reworded = recycling.
+        $this->assertStringContainsStringIgnoringCase('in fresh wording is still recycling', $prompt);
+    }
+
+    public function test_system_prompt_has_platform_mechanics_and_per_platform_angles(): void
+    {
+        // v1.9: per-platform mechanics + the rule that one entry on multiple
+        // platforms gets a DISTINCT native angle each (the strategy-side half
+        // of the cross-platform de-cloning fix).
+        $prompt = StrategistPrompt::system();
+
+        $this->assertStringContainsString('Platform mechanics', $prompt);
+        $this->assertStringContainsString('platform_angles', $prompt);
+        // A couple of the platform-specific mechanics cues.
+        $this->assertStringContainsStringIgnoringCase('first 3 seconds', $prompt); // tiktok
+        $this->assertStringContainsStringIgnoringCase('watch-time', $prompt);      // youtube
+    }
+
+    public function test_do_not_repeat_rule_is_conceptual_not_just_string(): void
+    {
+        // v1.9: recycling is judged at the IDEA level, not just the topic string.
+        $prompt = StrategistPrompt::system();
+
+        $this->assertStringContainsStringIgnoringCase('distinct topic string is NOT enough', $prompt);
+    }
+
+    public function test_schema_exposes_positioning_goal_and_platform_angles_optional(): void
+    {
+        $items = StrategistPrompt::schema()['properties']['entries']['items'];
+        $props = $items['properties'];
+
+        $this->assertArrayHasKey('positioning_goal', $props);
+        $this->assertArrayHasKey('platform_angles', $props);
+
+        // positioning_goal is a constrained enum of strategic jobs.
+        $this->assertContains('whitespace', $props['positioning_goal']['enum']);
+        $this->assertContains('counter_position', $props['positioning_goal']['enum']);
+
+        // platform_angles is an object map of platform -> angle string.
+        $this->assertSame('object', $props['platform_angles']['type']);
+
+        // Both stay OPTIONAL so an un-enriched call and the agent's persistence
+        // tolerate their absence (behavioural compatibility with pre-v1.9).
+        $this->assertNotContains('positioning_goal', $items['required']);
+        $this->assertNotContains('platform_angles', $items['required']);
     }
 }

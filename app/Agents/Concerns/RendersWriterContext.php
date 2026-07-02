@@ -2,9 +2,12 @@
 
 namespace App\Agents\Concerns;
 
+use App\Agents\StrategistAgent;
 use App\Models\Brand;
 use App\Models\CalendarEntry;
 use App\Models\GrowthStrategyBrief;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Shared rendering of the calendar-entry-derived context blocks that any
@@ -79,8 +82,74 @@ trait RendersWriterContext
         if ($angle !== '') {
             $lines .= "\n- Content angle (build the hook from this direction): {$angle}";
         }
+        $positioning = trim((string) ($creative['positioning_goal'] ?? ''));
+        if ($positioning !== '') {
+            $lines .= "\n- Positioning goal (the strategic job this post does): {$positioning}";
+        }
 
         return $lines;
+    }
+
+    /**
+     * Render the platform-specific directive for THIS platform. This is the fix
+     * for cross-platform cloning: when the Strategist supplied a `platform_angles`
+     * map (research_brief.creative.platform_angles), the Writer gets the DISTINCT
+     * native angle the Strategist planned for this exact platform — so sibling
+     * platforms of the same calendar entry no longer receive a byte-identical
+     * user message and stop producing near-identical bodies.
+     *
+     * Always emits a native-mechanics line for the platform (even without a
+     * planned angle) instructing the model to write for THIS platform's audience
+     * and NOT to reproduce a generic entry angle verbatim across platforms.
+     * Self-suppresses to '' only for an unknown platform string.
+     */
+    protected function renderPlatformDirective(CalendarEntry $entry, string $platform): string
+    {
+        $mechanics = self::platformMechanics($platform);
+        if ($mechanics === '') {
+            return '';
+        }
+
+        $creative = is_array($entry->research_brief['creative'] ?? null)
+            ? $entry->research_brief['creative']
+            : [];
+        $angles = is_array($creative['platform_angles'] ?? null)
+            ? $creative['platform_angles']
+            : [];
+        $plannedAngle = trim((string) ($angles[$platform] ?? ''));
+
+        $siblings = is_array($entry->platforms) ? $entry->platforms : [];
+        $isMultiPlatform = count(array_unique($siblings)) > 1;
+
+        $out = "\n# Write natively for {$platform}\n- Platform mechanics: {$mechanics}";
+        if ($plannedAngle !== '') {
+            $out .= "\n- Native angle for {$platform} (the Strategist planned THIS take for this platform — build the hook from it): {$plannedAngle}";
+        }
+        if ($isMultiPlatform) {
+            $out .= "\n- This entry also ships to other platforms. Write a DISTINCT {$platform}-native take — do NOT produce the same body a sibling platform would get. Different hook, different rhythm, native to {$platform}.";
+        }
+
+        return $out."\n";
+    }
+
+    /**
+     * One-line native-mechanics cue per platform, mirroring the Strategist's
+     * platform-mechanics model so the Writer and Strategist speak the same
+     * language. Returns '' for an unrecognised platform.
+     */
+    protected static function platformMechanics(string $platform): string
+    {
+        return match ($platform) {
+            'linkedin' => 'professional authority + aspiration; insight-led first-person POV a peer would repost; hook is a specific claim or lesson.',
+            'instagram' => 'visual-first scroll-stop; first line is a headline; short paragraphs, generous line breaks.',
+            'tiktok' => 'trend + entertainment; wins or dies in the first 3 seconds; lower-case, conversational, native, never corporate.',
+            'x' => 'wit + opinion + conversation; one sharp idea, no preamble, punchy; every word earns its place.',
+            'threads' => 'casual, opinion-led, built for replies; softer and more human than X; start a conversation.',
+            'facebook' => 'community + slightly longer-form; question-led / story-led; relationship-driven.',
+            'youtube' => 'search + watch-time; title-style hook; the description sells the click; evergreen and discoverable.',
+            'pinterest' => 'search + save intent; keyword-front-loaded, aspirational, evergreen how-to / inspiration.',
+            default => '',
+        };
     }
 
     /**
@@ -109,6 +178,54 @@ trait RendersWriterContext
             (array) ($brief->objective_guidance ?? []),
             (string) $entry->objective,
         );
+    }
+
+    /**
+     * The brand's recently-published topics/angles as a DO-NOT-REPEAT block —
+     * the same exclusion list the Strategist plans against, now also handed to
+     * the Writer so it avoids echoing prior posts DURING generation (previously
+     * the Writer was blind to recycling until Compliance's post-hoc dedup).
+     * Excludes the entry currently being written so a redraft of the same slot
+     * doesn't see itself. Delegates to StrategistAgent's pure block renderer for
+     * identical formatting; self-suppresses to '' when there's no history.
+     */
+    protected function renderRecentlyPublishedForWriter(Brand $brand, CalendarEntry $entry, int $days = 90, int $limit = 25): string
+    {
+        try {
+            $since = Carbon::now()->subDays($days);
+
+            $rows = DB::table('scheduled_posts as sp')
+                ->join('drafts as d', 'd.id', '=', 'sp.draft_id')
+                ->join('calendar_entries as ce', 'ce.id', '=', 'd.calendar_entry_id')
+                ->where('sp.brand_id', $brand->id)
+                ->where('sp.status', 'published')
+                ->where('sp.published_at', '>=', $since)
+                ->where('ce.id', '!=', $entry->id)
+                ->whereNotNull('ce.topic')
+                ->orderByDesc('sp.published_at')
+                ->limit(150)
+                ->get(['ce.topic', 'ce.angle', 'ce.pillar', 'sp.published_at']);
+        } catch (\Throwable) {
+            return '';
+        }
+
+        $entries = [];
+        foreach ($rows as $r) {
+            $topic = trim((string) ($r->topic ?? ''));
+            if ($topic === '') {
+                continue;
+            }
+            $entries[] = [
+                'topic' => $topic,
+                'angle' => trim((string) ($r->angle ?? '')),
+                'pillar' => trim((string) ($r->pillar ?? '')),
+                'published_at' => $r->published_at ? Carbon::parse($r->published_at) : null,
+            ];
+        }
+
+        $block = StrategistAgent::renderRecentlyPublishedBlock($entries, $days, $limit);
+
+        return $block === '' ? '' : "\n".$block."\n";
     }
 
     /**

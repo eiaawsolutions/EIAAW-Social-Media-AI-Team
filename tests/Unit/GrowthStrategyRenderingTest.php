@@ -131,7 +131,7 @@ class GrowthStrategyRenderingTest extends TestCase
 
     public function test_strategist_prompt_bumped_with_growth_section(): void
     {
-        $this->assertSame('strategist.v1.8', StrategistPrompt::VERSION);
+        $this->assertSame('strategist.v1.9', StrategistPrompt::VERSION);
         $this->assertStringContainsString('# Growth strategy', StrategistPrompt::system());
     }
 
