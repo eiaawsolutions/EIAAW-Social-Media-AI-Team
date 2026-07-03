@@ -12,8 +12,10 @@ use App\Models\GrowthStrategyBrief;
 use App\Models\MarketTrendBrief;
 use App\Services\Compliance\LegalRulesProvider;
 use App\Services\Readiness\SetupReadiness;
+use App\Support\TextSimilarity;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Builds a month of content. Stage 6 of the wizard.
@@ -147,6 +149,28 @@ class StrategistAgent extends BaseAgent
             ));
         }
 
+        // Intra-batch dedup: the single 30-entry generation can drift into two
+        // entries that make the SAME point under different topic strings. The
+        // cross-batch "Already covered" exclusion (v1.10) can't catch that — it
+        // only knows prior calendars. Prune the same-call near-dupes here, before
+        // persist, so the recycling doesn't ship. Runs AFTER the <10 floor check
+        // (on the raw payload) so pruning can never re-trip that failure. Pure +
+        // deterministic — no cost, no DB, no LLM.
+        $entriesReturned = $entryCount;
+        $dedup = self::dedupeEntriesWithinBatch($payload['entries']);
+        $payload['entries'] = $dedup['kept'];
+        $duplicatesPruned = count($dedup['dropped']);
+        if ($duplicatesPruned > 0) {
+            // No silent caps: record what was dropped and why.
+            Log::info('Strategist: pruned intra-batch duplicate entries', [
+                'brand_id' => $brand->id,
+                'entries_returned' => $entriesReturned,
+                'entries_after_dedup' => count($payload['entries']),
+                'pruned' => $duplicatesPruned,
+                'dropped' => $dedup['dropped'],
+            ]);
+        }
+
         $calendar = DB::transaction(function () use ($brand, $payload, $pillarMix, $formatMix, $activePlatforms, $startsOn, $endsOn) {
             $calendar = ContentCalendar::create([
                 'brand_id' => $brand->id,
@@ -220,6 +244,9 @@ class StrategistAgent extends BaseAgent
             'prompt_version' => $result->promptVersion,
             'cost_usd' => $result->costUsd,
             'latency_ms' => $result->latencyMs,
+            'entries_returned' => $entriesReturned,
+            'entries_after_dedup' => count($payload['entries']),
+            'duplicates_pruned' => $duplicatesPruned,
         ]);
     }
 
@@ -931,5 +958,102 @@ MSG;
         return "# Already covered — DO NOT REPEAT these topics, angles, or ideas (last {$days} days)\n"
             .implode("\n", $lines)
             ."\n\nThis content has already SHIPPED or is already QUEUED for this brand. Plan entries whose UNDERLYING IDEA is clearly distinct from every item above — not just a different topic string. If a planned entry would land on the audience as \"they already made this point\", it is recycling: change the idea, the proof point, or the takeaway, not merely the wording. Re-using a PILLAR is fine (the mix targets require it); re-using a topic, angle, or core message is not — advance the theme with a genuinely fresh take.";
+    }
+
+    /**
+     * Default token-set (Jaccard) similarity at/above which two entries in the
+     * SAME batch are treated as the same underlying idea. 0.6 is the repo's
+     * "thematic near-dupe" cutoff (see ContentFindRecycled) — high enough that
+     * genuinely distinct angles on a shared pillar survive, low enough that a
+     * reworded restatement of the same point is caught.
+     */
+    public const INTRA_BATCH_DEDUP_THRESHOLD = 0.6;
+
+    /**
+     * Prune entries that repeat the same underlying idea under a different topic
+     * string WITHIN a single Strategist batch. The cross-batch "Already covered"
+     * exclusion (v1.10) stops re-covering what already shipped/queued; this
+     * catches same-call self-repetition — the single 30-entry generation drifting
+     * into two entries that make the same point with different wording.
+     *
+     * Pure + deterministic (token-set Jaccard on normalized topic+angle+
+     * content_angle, via {@see TextSimilarity}) — no DB, no embeddings, no LLM —
+     * so it is unit-testable in isolation and adds zero cost/latency. Keeps the
+     * FIRST (earliest) occurrence of each idea and drops later near-dupes; input
+     * order is preserved among survivors (mirrors the keep-earliest-sibling
+     * convention in ContentFindRecycled).
+     *
+     * Dropping an entry is safe: there is no unique constraint on
+     * calendar_entries.scheduled_date, nothing asserts a fixed entry count or
+     * pillar distribution after persist, and the autopilot/scheduler consume the
+     * entry SET per-entry — a pruned duplicate is simply one fewer planned post.
+     *
+     * @param  array<int, array<string, mixed>>  $entries  raw LLM entries
+     * @return array{kept: array<int, array<string, mixed>>, dropped: array<int, array{topic: string, similar_to: string, score: float}>}
+     */
+    public static function dedupeEntriesWithinBatch(array $entries, float $threshold = self::INTRA_BATCH_DEDUP_THRESHOLD): array
+    {
+        $kept = [];
+        $keptText = [];   // parallel to $kept: the normalized comparison text
+        $dropped = [];
+
+        foreach ($entries as $entry) {
+            $text = self::entryDedupText($entry);
+
+            // An entry with no idea-bearing text (empty topic+angle) can't be a
+            // meaningful duplicate — keep it and let downstream validation handle
+            // it, rather than silently collapsing several blanks into one.
+            if (trim($text) === '') {
+                $kept[] = $entry;
+                $keptText[] = $text;
+                continue;
+            }
+
+            $matchIndex = null;
+            $matchScore = 0.0;
+            foreach ($keptText as $i => $priorText) {
+                if ($priorText === '') {
+                    continue;
+                }
+                $score = TextSimilarity::jaccard($text, $priorText);
+                if ($score >= $threshold && $score > $matchScore) {
+                    $matchIndex = $i;
+                    $matchScore = $score;
+                }
+            }
+
+            if ($matchIndex !== null) {
+                $dropped[] = [
+                    'topic' => (string) ($entry['topic'] ?? ''),
+                    'similar_to' => (string) ($kept[$matchIndex]['topic'] ?? ''),
+                    'score' => round($matchScore, 3),
+                ];
+                continue; // drop this later near-dupe; earliest sibling stays
+            }
+
+            $kept[] = $entry;
+            $keptText[] = $text;
+        }
+
+        return ['kept' => $kept, 'dropped' => $dropped];
+    }
+
+    /**
+     * The idea-bearing text of an entry for intra-batch similarity: topic +
+     * angle + content_angle (when present). These carry the concrete claim/hook;
+     * positioning_goal/pillar are deliberately excluded (two genuinely different
+     * ideas can legitimately share the same positioning job or pillar).
+     *
+     * @param  array<string, mixed>  $entry
+     */
+    private static function entryDedupText(array $entry): string
+    {
+        $parts = [
+            (string) ($entry['topic'] ?? ''),
+            (string) ($entry['angle'] ?? ''),
+            (string) ($entry['content_angle'] ?? ''),
+        ];
+
+        return trim(implode(' ', array_filter($parts, static fn ($p) => trim($p) !== '')));
     }
 }
