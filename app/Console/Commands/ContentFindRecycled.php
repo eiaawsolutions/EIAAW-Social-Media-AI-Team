@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Agents\ComplianceAgent;
 use App\Agents\WriterAgent;
 use App\Models\Draft;
+use App\Support\TextSimilarity;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -199,45 +200,14 @@ class ContentFindRecycled extends Command
     }
 
     /**
-     * Token-set (Jaccard) similarity of two post bodies after normalization
-     * (lowercase, strip urls/hashtags/punctuation, drop short + stop words).
-     * Pure + deterministic so the detector is unit-testable without a DB or
-     * embeddings. Catches both verbatim clones and reworded thematic dupes.
+     * Token-set (Jaccard) similarity of two post bodies. Thin delegator to the
+     * shared {@see \App\Support\TextSimilarity} so the recycling detector and the
+     * Strategist's intra-batch dedup judge "same idea, different words"
+     * identically. Kept as a static method here for the existing call sites +
+     * tests.
      */
     public static function similarity(string $a, string $b): float
     {
-        $ta = self::tokens($a);
-        $tb = self::tokens($b);
-        if ($ta === [] || $tb === []) {
-            return 0.0;
-        }
-        $inter = count(array_intersect($ta, $tb));
-        $union = count(array_unique(array_merge($ta, $tb)));
-
-        return $union > 0 ? $inter / $union : 0.0;
-    }
-
-    /** @return array<int,string> */
-    private static function tokens(string $s): array
-    {
-        static $stop = null;
-        if ($stop === null) {
-            $stop = array_flip(explode(' ', 'the a an and or but if then your you they them their our we us is are was were be been being to of in on for with at by from as that this these those it its not do does did what when how why who which about into more most just like can will youre have has had our'));
-        }
-
-        $s = mb_strtolower($s);
-        $s = preg_replace('#https?://\S+#', ' ', $s);
-        $s = preg_replace('/#\w+/', ' ', $s);
-        $s = preg_replace('/[^a-z0-9 ]+/', ' ', $s);
-        $s = preg_replace('/\s+/', ' ', trim((string) $s));
-
-        $out = [];
-        foreach (explode(' ', (string) $s) as $w) {
-            if (mb_strlen($w) > 3 && ! isset($stop[$w])) {
-                $out[$w] = true;
-            }
-        }
-
-        return array_keys($out);
+        return TextSimilarity::jaccard($a, $b);
     }
 }
