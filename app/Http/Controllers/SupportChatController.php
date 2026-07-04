@@ -7,6 +7,7 @@ use App\Models\SupportEnquiry;
 use App\Services\Llm\LlmGateway;
 use App\Services\Support\ChatbotPrompts;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 
@@ -176,6 +177,7 @@ class SupportChatController extends Controller
             ]);
 
             $this->notifyHqOfEnquiry($enquiry);
+            $this->forwardLeadToSalesAgent($data, $surface);
         } catch (\Throwable $e) {
             Log::error('SupportChatController: chat-gate lead persist failed — recover from this log', [
                 'error' => $e->getMessage(),
@@ -194,6 +196,41 @@ class SupportChatController extends Controller
         }
 
         return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Dual-write the captured chat-gate lead into the central Sales Agent CRM
+     * (sa.eiaawsolutions.com) so every EIAAW chatbot lead lands in one place.
+     * The local support_enquiries row is the source of truth for SMT; this is an
+     * ADDITIVE forward. Fire-and-forget with a short timeout and its own
+     * try/catch — a sa outage must never delay or fail the visitor's chat, and
+     * (Lead Gen Contract) we forward ONLY the real submitted values, never a
+     * fabricated or inferred field. Disable by setting SA_LEAD_INTAKE_URL empty.
+     */
+    private function forwardLeadToSalesAgent(array $data, string $surface): void
+    {
+        $url = config('services.sales_agent.lead_intake_url', env('SA_LEAD_INTAKE_URL', 'https://sa.eiaawsolutions.com/api/forms/public/lead-intake'));
+        if (empty($url)) {
+            return;
+        }
+
+        try {
+            Http::timeout(4)
+                ->acceptJson()
+                ->post($url, [
+                    'name' => trim($data['name']),
+                    'email' => trim($data['email']),
+                    'phone' => trim((string) $data['phone']),
+                    'company' => trim((string) ($data['company'] ?? '')),
+                    'site' => 'social_media_team',
+                    'message' => 'Started an AI chat on the Social Media Team site.',
+                ]);
+        } catch (\Throwable $e) {
+            // Non-fatal: local capture already succeeded; just record the miss.
+            Log::warning('SupportChatController: sa lead forward failed (local capture unaffected)', [
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
