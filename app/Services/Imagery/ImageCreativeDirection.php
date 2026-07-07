@@ -183,10 +183,58 @@ final class ImageCreativeDirection
             return false;
         }
 
-        $headline = trim((string) (($platformPayload['headline'] ?? null)));
+        // Explicit photo-first intent (lifestyle / brand-moment / product shot)
+        // stays a clean editorial photo — those posts are ABOUT the image, not a
+        // hook line. Everything else defaults to the hook-poster net below.
+        if (self::isPhotoFirst($pillar, $visualDirection)) {
+            return false;
+        }
 
-        // A real hook, not an empty or one-word placeholder.
-        return mb_strlen($headline) >= 12 && str_word_count($headline) >= 3;
+        // NO MORE HOOKLESS PHOTOS: a single_image post that isn't explicitly
+        // photo-first should attempt the composited hook-poster — a legible hook
+        // is the #1 scroll-stopper and the composer spells it exactly. Previously
+        // this required a populated platform_payload.headline (≥12 chars, ≥3
+        // words); when the Writer omitted that field, hook-worthy educational
+        // posts fell straight through to a generic contentless photo. We now
+        // route by default and let buildPosterPrompt() be the arbiter — it
+        // distils title + points from the BODY and only returns null (→ photo)
+        // when the post genuinely has no distillable content. A present headline
+        // still counts, but is no longer REQUIRED.
+        return true;
+    }
+
+    /**
+     * True when a single_image post is explicitly PHOTO-FIRST — the image is the
+     * point (a lifestyle scene, brand moment, product/behind-the-scenes shot), so
+     * it should stay a clean editorial photo rather than be forced into a
+     * hook-poster. Read only from the calendar entry (no new columns).
+     *
+     * Deliberately conservative: only these clear photo pillars/visual-direction
+     * cues opt OUT of the poster net. Anything ambiguous defaults to the poster
+     * (hook) path per the "no hookless photos" contract.
+     */
+    public static function isPhotoFirst(?string $pillar, ?string $visualDirection): bool
+    {
+        $p = strtolower(trim((string) $pillar));
+        foreach (['behind_the_scenes', 'behind-the-scenes', 'lifestyle', 'culture', 'community_moment'] as $photoPillar) {
+            if ($p === $photoPillar) {
+                return true;
+            }
+        }
+
+        $vd = strtolower((string) $visualDirection);
+        foreach ([
+            'lifestyle', 'behind the scenes', 'behind-the-scenes', 'candid',
+            'portrait', 'product shot', 'product photo', 'photograph of',
+            'photo of', 'brand moment', 'on location', 'in the office',
+            'team photo', 'headshot',
+        ] as $needle) {
+            if ($vd !== '' && str_contains($vd, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

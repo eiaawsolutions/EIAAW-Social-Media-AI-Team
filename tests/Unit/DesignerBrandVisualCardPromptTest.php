@@ -135,16 +135,8 @@ class DesignerBrandVisualCardPromptTest extends TestCase
         $this->assertTrue(ImageCreativeDirection::shouldRouteToHookPoster(
             'single_image',
             'promotional',
-            'a lifestyle shot',
+            'an explainer graphic',
             ['headline' => 'Three mistakes killing your morning routine'],
-        ));
-
-        // Too-short headline → stays a photo.
-        $this->assertFalse(ImageCreativeDirection::shouldRouteToHookPoster(
-            'single_image',
-            'promotional',
-            'a lifestyle shot',
-            ['headline' => 'Hi'],
         ));
 
         // Not single_image → not a hook poster.
@@ -154,5 +146,71 @@ class DesignerBrandVisualCardPromptTest extends TestCase
             null,
             ['headline' => 'Three mistakes killing your morning routine'],
         ));
+    }
+
+    // ── "No hookless photos" contract ───────────────────────────────────────
+
+    /**
+     * The core fix: a single_image post that is NOT explicitly photo-first must
+     * route to the hook-poster path even when the Writer omitted the `headline`
+     * field. Previously an absent/short headline dropped hook-worthy educational
+     * posts to a generic contentless photo (the reported "no hooks" images).
+     */
+    public function test_hook_poster_fires_without_headline_when_not_photo_first(): void
+    {
+        // No headline field at all → still a poster (buildPosterPrompt arbitrates
+        // via body distillation).
+        $this->assertTrue(ImageCreativeDirection::shouldRouteToHookPoster(
+            'single_image',
+            'promotional',
+            null,
+            [],
+        ));
+
+        // Empty/short headline no longer blocks routing.
+        $this->assertTrue(ImageCreativeDirection::shouldRouteToHookPoster(
+            'single_image',
+            'thought_leadership',
+            'clean minimal background',
+            ['headline' => 'Hi'],
+        ));
+    }
+
+    /**
+     * Explicit photo-first intent (lifestyle / behind-the-scenes / product /
+     * portrait) stays a clean editorial photo — those posts are about the image,
+     * not a hook line.
+     */
+    public function test_photo_first_posts_stay_photos(): void
+    {
+        // Photo-first PILLAR.
+        $this->assertFalse(ImageCreativeDirection::shouldRouteToHookPoster(
+            'single_image',
+            'behind_the_scenes',
+            null,
+            [],
+        ));
+        $this->assertTrue(ImageCreativeDirection::isPhotoFirst('lifestyle', null));
+
+        // Photo-first VISUAL DIRECTION.
+        $this->assertFalse(ImageCreativeDirection::shouldRouteToHookPoster(
+            'single_image',
+            'promotional',
+            'a candid lifestyle shot of the team in the office',
+            ['headline' => 'Three mistakes killing your morning routine'],
+        ));
+        $this->assertTrue(ImageCreativeDirection::isPhotoFirst('promotional', 'product shot on a table'));
+
+        // Non-photo pillar + non-photo visual direction → NOT photo-first.
+        $this->assertFalse(ImageCreativeDirection::isPhotoFirst('educational', 'a clean explainer layout'));
+    }
+
+    public function test_educational_single_image_still_routes_via_poster_format(): void
+    {
+        // Educational single_image is already a poster by isPosterFormat, so
+        // shouldRouteToHookPoster defers to it (returns false) — but the DRAFT
+        // still becomes a poster through the isPosterFormat branch upstream.
+        $this->assertTrue(ImageCreativeDirection::isPosterFormat('single_image', 'educational', null));
+        $this->assertFalse(ImageCreativeDirection::shouldRouteToHookPoster('single_image', 'educational', null, []));
     }
 }
