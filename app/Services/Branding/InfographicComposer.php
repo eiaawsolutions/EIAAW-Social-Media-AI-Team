@@ -56,6 +56,20 @@ class InfographicComposer
 
     private const COLOR_MUTED = '5A6B68';      // muted ink for bullets
 
+    private const COLOR_GHOST = 'E6DFD4';      // faint tint for the ghost ordinal watermark
+
+    private const COLOR_SHADOW = 'BDB3A4';     // soft warm-grey drop shadow behind cards
+
+    /**
+     * Average glyph-width factor (em fraction) used to estimate a string's pixel
+     * width for wrapping / fitting. Tuned UP from the old 0.55 because the fonts
+     * we render (Inter-SemiBold / Arial Bold) are visibly wider than 0.55em per
+     * glyph — at 0.55 the estimate under-counted, so a "fitted" line still ran
+     * off the card and FFmpeg drawtext (which never clips) let it bleed past the
+     * edge ("decisi…", "understan…"). 0.60 leaves a safe right-margin cushion.
+     */
+    private const GLYPH_EM = 0.60;
+
     /**
      * Per-aspect canvas geometry. Matches FAL's output sizing the publish
      * pipeline already assumes (square 1080, portrait 1080x1920, landscape
@@ -168,19 +182,21 @@ class InfographicComposer
         $w = $canvas['w'];
         $h = $canvas['h'];
         $pad = (int) round($w * 0.045);          // outer margin
-        $gutter = (int) round($w * 0.025);
+        $gutter = (int) round($w * 0.028);
         $textW = $w - 2 * $pad;
 
         // Title bar height is CONTENT-AWARE: pick the title font, wrap it, then
         // size the band to fit however many lines it took (+ vertical padding),
         // so a 2-line title never bleeds past the band onto the cards. Bounded
         // so a pathological title can't eat the whole canvas.
-        $titleFont = $this->fitFontSize($title, $textW, (int) round($h * 0.044), (int) round($h * 0.06));
+        $titleFont = $this->fitFontSize($title, $textW, (int) round($h * 0.044), (int) round($h * 0.058));
         $titleWrapped = $this->wrapToWidth($title, $textW, $titleFont);
         $titleLines = substr_count($titleWrapped, "\n") + 1;
         $titleLineH = (int) round($titleFont * 1.24);
         $titlePadV = (int) round($h * 0.035);
-        $titleH = min((int) round($h * 0.34), $titleLines * $titleLineH + 2 * $titlePadV);
+        // Extra bottom room for the accent kicker rule under the headline.
+        $kickerGap = (int) round($h * 0.022);
+        $titleH = min((int) round($h * 0.34), $titleLines * $titleLineH + 2 * $titlePadV + $kickerGap);
 
         // Footer band is likewise content-aware (empty footer → no band).
         $footerH = 0;
@@ -209,11 +225,126 @@ class InfographicComposer
         $gridW = $w - 2 * $pad;
 
         $cellW = (int) floor(($gridW - ($cols - 1) * $gutter) / $cols);
-        $cellH = (int) floor(($gridH - ($rows - 1) * $gutter) / $rows);
+        // The vertical slot each row *could* occupy if we filled the grid evenly.
+        // We DON'T force cards to this height — an even split turned heading-only
+        // panels into giant empty boxes. Instead it's the upper bound; real card
+        // height is measured from content below.
+        $slotH = (int) floor(($gridH - ($rows - 1) * $gutter) / $rows);
+
+        // A card carries a bold accent SPINE down its left edge; text starts to
+        // the right of it. The spine reads as intentional structure and gives
+        // the ghost ordinal a lane, replacing the flat top-rule.
+        $spineW = max(8, (int) round($cellW * 0.028));
+        $innerPad = (int) round($cellW * 0.075);
+        $textX0 = $spineW + $innerPad; // relative to card left
+        $panelTextW = $cellW - $textX0 - $innerPad;
+
+        // Type scale, uniform across cards (measured against the slot so a dense
+        // 2x3 grid still reads on a phone). Heading is the hook; bullets support.
+        $headingSize = max(30, min((int) round($slotH * 0.15), (int) round($h * 0.036)));
+
+        // Guarantee no heading breaks a word mid-glyph: shrink the SHARED heading
+        // size until the longest single word in ANY heading fits the card's text
+        // column (minus the ordinal chip). One size for all headings keeps the
+        // grid aligned; fitting the worst-case word means wordwrap($cut=true)
+        // never has to hack a word in half ("personalisati|on"). Floor at 26 so a
+        // pathological word doesn't shrink the whole grid into unreadability —
+        // below the floor we accept a break rather than illegible type.
+        $ordinalReserve = (int) ceil(3 * $headingSize * self::GLYPH_EM); // "N  "
+        $headingWordW = max(40, $panelTextW - $ordinalReserve);
+        foreach (array_values($panels) as $panel) {
+            $heading = trim((string) ($panel['heading'] ?? ''));
+            if ($heading === '') {
+                continue;
+            }
+            $fit = $this->fitFontSize($heading, $headingWordW, 26, $headingSize);
+            $headingSize = min($headingSize, $fit);
+        }
+
+        $cardPadV = (int) round($cellW * 0.085);
+        $minCardH = (int) round($cellW * 0.44);
+
+        // ── Fit loop: measure real content, size the card to CONTAIN it, and if
+        // the resulting grid overflows the band, shrink the type scale and remeasure.
+        // Clamping the card to the slot (the old approach) let text spill BELOW the
+        // card — the card must always contain its content, so instead we shrink
+        // the font until the content-driven grid fits. Bounded iterations; a hard
+        // floor keeps type legible (below it we accept slight overflow over
+        // illegible text).
+        $measured = [];
+        $maxContentH = 0;
+        $cardH = $minCardH;
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $bulletSize = max(22, (int) round($headingSize * 0.72));
+            $headingLineH = (int) round($headingSize * 1.2);
+            $bulletLineH = (int) round($bulletSize * 1.28);
+
+            $measured = [];
+            $maxContentH = 0;
+            foreach (array_values($panels) as $i => $panel) {
+                $heading = trim((string) $panel['heading']);
+                $headingText = '';
+                $hLines = 0;
+                if ($heading !== '') {
+                    // Fold the ordinal chip INTO the width budget so the "N  " prefix
+                    // can never push the first line past the card edge.
+                    $ordinal = sprintf('%d  ', $i + 1);
+                    $ordinalW = (int) ceil(mb_strlen($ordinal) * $headingSize * self::GLYPH_EM);
+                    $headingText = sprintf('%s%s', $ordinal, $this->wrapToWidth($heading, max(40, $panelTextW - $ordinalW), $headingSize));
+                    $hLines = substr_count($headingText, "\n") + 1;
+                }
+
+                $bulletTexts = [];
+                $bLines = 0;
+                foreach ($panel['bullets'] as $bullet) {
+                    $bullet = trim((string) $bullet);
+                    if ($bullet === '') {
+                        continue;
+                    }
+                    $wrapped = $this->wrapToWidth('•  '.$bullet, $panelTextW, $bulletSize);
+                    $bulletTexts[] = $wrapped;
+                    $bLines += substr_count($wrapped, "\n") + 1;
+                }
+
+                $gapAfterHeading = ($heading !== '' && $bulletTexts !== []) ? (int) round($headingSize * 0.6) : 0;
+                $contentH = $hLines * $headingLineH
+                    + $gapAfterHeading
+                    + $bLines * $bulletLineH
+                    + ($bLines > 0 ? ($bLines - 1) * (int) round($bulletSize * 0.35) : 0);
+
+                $measured[] = [
+                    'heading' => $headingText,
+                    'hLines' => $hLines,
+                    'bullets' => $bulletTexts,
+                    'gapAfterHeading' => $gapAfterHeading,
+                    'contentH' => $contentH,
+                ];
+                $maxContentH = max($maxContentH, $contentH);
+            }
+
+            // Card ALWAYS contains the tallest content (never clamped short).
+            $cardH = max($minCardH, $maxContentH + 2 * $cardPadV);
+            $usedGridH = $rows * $cardH + ($rows - 1) * $gutter;
+
+            // Fits the band, or we've hit the legibility floor → stop.
+            if ($usedGridH <= $gridH || $headingSize <= 26) {
+                break;
+            }
+            // Overflow → shrink the shared type scale and remeasure.
+            $headingSize = max(26, (int) floor($headingSize * 0.92));
+        }
+        $bulletSize = max(22, (int) round($headingSize * 0.72));
+        $headingLineH = (int) round($headingSize * 1.2);
+        $bulletLineH = (int) round($bulletSize * 1.28);
+
+        // Centre the whole grid in the available band so a short grid isn't
+        // top-heavy with dead space beneath it.
+        $usedGridH = $rows * $cardH + ($rows - 1) * $gutter;
+        $gridYOffset = max(0, (int) round(($gridH - $usedGridH) / 2));
 
         $blocks = [];
 
-        // Title bar (accent band) + headline (cream ink), vertically centred.
+        // ── Title bar: accent band + headline + a short kicker rule ───────────
         $blocks[] = ['type' => 'rect', 'x' => 0, 'y' => 0, 'w' => $w, 'h' => $titleH, 'color' => $accent];
         $blocks[] = [
             'type' => 'text',
@@ -224,51 +355,88 @@ class InfographicComposer
             'color' => self::COLOR_CREAM,
             'line_spacing' => (int) round($titleFont * 0.22),
         ];
+        // Kicker: a short cream rule under the headline — a small craft signal
+        // that lifts the band above a plain coloured bar.
+        $blocks[] = [
+            'type' => 'rect',
+            'x' => $pad,
+            'y' => $titleH - $kickerGap - (int) round($h * 0.006),
+            'w' => (int) round($w * 0.14),
+            'h' => max(4, (int) round($h * 0.006)),
+            'color' => self::COLOR_CREAM,
+        ];
 
-        // Panels.
-        $headingSize = (int) round($cellH * 0.16);
-        $headingSize = max(26, min($headingSize, (int) round($h * 0.034)));
-        $bulletSize = (int) round($headingSize * 0.72);
-
-        foreach (array_values($panels) as $i => $panel) {
+        // ── Cards ─────────────────────────────────────────────────────────────
+        foreach ($measured as $i => $m) {
             $col = $i % $cols;
             $row = intdiv($i, $cols);
             $cx = $pad + $col * ($cellW + $gutter);
-            $cy = $gridTop + $row * ($cellH + $gutter);
+            $cy = $gridTop + $gridYOffset + $row * ($cardH + $gutter);
 
-            // Card background + a top accent rule.
-            $blocks[] = ['type' => 'rect', 'x' => $cx, 'y' => $cy, 'w' => $cellW, 'h' => $cellH, 'color' => self::COLOR_PANEL];
-            $blocks[] = ['type' => 'rect', 'x' => $cx, 'y' => $cy, 'w' => $cellW, 'h' => max(4, (int) round($cellH * 0.012)), 'color' => $accent];
-
-            $innerPad = (int) round($cellW * 0.07);
-            $textX = $cx + $innerPad;
-            $textW = $cellW - 2 * $innerPad;
-            $cursorY = $cy + $innerPad + (int) round($cellH * 0.04);
-
-            // Numbered chip + heading.
-            $heading = trim((string) $panel['heading']);
-            if ($heading !== '') {
-                $headingFit = $this->fitFontSize($heading, $textW, $bulletSize, $headingSize);
+            // Soft drop shadow: a few stacked, down-right-offset translucent
+            // boxes whose opacity falls off with distance — a cheap Gaussian-ish
+            // penumbra that lifts the card off the canvas without a per-card blur
+            // pass. Drawn BEFORE the fill so the card sits on top of its shadow.
+            $shadowMax = max(8, (int) round($cellW * 0.032));
+            $shadowLayers = 8;
+            for ($s = $shadowLayers; $s >= 1; $s--) {
+                $t = $s / $shadowLayers;              // 1 = outermost/softest
+                $off = (int) round($shadowMax * $t);
+                $grow = (int) round($off * 0.5);
                 $blocks[] = [
-                    'type' => 'text',
-                    'text' => sprintf('%d  %s', $i + 1, $this->wrapToWidth($heading, $textW, $headingFit)),
-                    'x' => $textX,
-                    'y' => $cursorY,
-                    'size' => $headingFit,
-                    'color' => self::COLOR_INK,
-                    'line_spacing' => (int) round($headingFit * 0.2),
+                    'type' => 'shadow',
+                    'x' => $cx - $grow + $off,
+                    'y' => $cy - $grow + $off,
+                    'w' => $cellW + 2 * $grow,
+                    'h' => $cardH + 2 * $grow,
+                    'color' => self::COLOR_SHADOW,
+                    // Lighter per-layer, more layers → smoother falloff (less
+                    // stepping) that deepens toward the card edge as they stack.
+                    'alpha' => 0.06,
                 ];
-                $headingLines = substr_count($this->wrapToWidth($heading, $textW, $headingFit), "\n") + 1;
-                $cursorY += $headingLines * (int) round($headingFit * 1.22) + (int) round($cellH * 0.05);
             }
 
-            // Bullets.
-            foreach ($panel['bullets'] as $bullet) {
-                $bullet = trim((string) $bullet);
-                if ($bullet === '') {
-                    continue;
+            // Card fill + a bold accent SPINE down the left edge.
+            $blocks[] = ['type' => 'rect', 'x' => $cx, 'y' => $cy, 'w' => $cellW, 'h' => $cardH, 'color' => self::COLOR_PANEL];
+            $blocks[] = ['type' => 'rect', 'x' => $cx, 'y' => $cy, 'w' => $spineW, 'h' => $cardH, 'color' => $accent];
+
+            $textX = $cx + $textX0;
+
+            // Ghost ordinal watermark — an oversized faint number pinned to the
+            // card's lower-right, giving each card depth + rhythm without adding
+            // reading load. Drawn BEFORE the content so text sits on top.
+            $ghostSize = (int) round($cardH * 0.58);
+            $blocks[] = [
+                'type' => 'text',
+                'text' => (string) ($i + 1),
+                'x' => $cx + $cellW - (int) round($ghostSize * 0.72),
+                'y' => $cy + $cardH - (int) round($ghostSize * 1.08),
+                'size' => $ghostSize,
+                'color' => self::COLOR_GHOST,
+                'line_spacing' => 0,
+            ];
+
+            // Content top-anchored with comfortable padding.
+            $cursorY = $cy + $cardPadV;
+
+            if ($m['heading'] !== '') {
+                $blocks[] = [
+                    'type' => 'text',
+                    'text' => $m['heading'],
+                    'x' => $textX,
+                    'y' => $cursorY,
+                    'size' => $headingSize,
+                    'color' => self::COLOR_INK,
+                    'line_spacing' => (int) round($headingSize * 0.2),
+                ];
+                $cursorY += $m['hLines'] * $headingLineH + $m['gapAfterHeading'];
+            }
+
+            foreach ($m['bullets'] as $wrapped) {
+                // Never draw a bullet that would spill past the card bottom.
+                if ($cursorY > $cy + $cardH - $cardPadV) {
+                    break;
                 }
-                $wrapped = $this->wrapToWidth('•  '.$bullet, $textW, $bulletSize);
                 $blocks[] = [
                     'type' => 'text',
                     'text' => $wrapped,
@@ -279,16 +447,11 @@ class InfographicComposer
                     'line_spacing' => (int) round($bulletSize * 0.25),
                 ];
                 $lines = substr_count($wrapped, "\n") + 1;
-                $cursorY += $lines * (int) round($bulletSize * 1.3) + (int) round($bulletSize * 0.35);
-
-                // Stop drawing bullets that would overflow the card.
-                if ($cursorY > $cy + $cellH - $innerPad) {
-                    break;
-                }
+                $cursorY += $lines * $bulletLineH + (int) round($bulletSize * 0.35);
             }
         }
 
-        // Footer takeaway banner (content-aware height computed above).
+        // ── Footer takeaway banner (content-aware height computed above) ───────
         if ($footer !== '' && $footerH > 0) {
             $fy = $h - $footerH;
             $blocks[] = ['type' => 'rect', 'x' => 0, 'y' => $fy, 'w' => $w, 'h' => $footerH, 'color' => $accent];
@@ -402,10 +565,16 @@ class InfographicComposer
         // scrim is a drawbox with an alpha-suffixed colour (0xRRGGBB@a) — a
         // reliable, alpha-channel-independent way to lighten an opaque JPEG
         // (colorchannelmixer=aa is a no-op on an image with no alpha plane).
+        // Soften + desaturate the AI background so its busy icons/objects (gears,
+        // arrows, lightbulbs) can never bleed through and fight the cards. A gentle
+        // blur + reduced saturation turns it into a calm textured field; then a
+        // heavy cream scrim lifts contrast for the drawn text. The old 55% scrim
+        // left too much of the illustration legible between cards → cluttered,
+        // generic look. 0.72 + blur/desat reads as an intentional brand backdrop.
         $chain = [
-            "[0:v]scale={$w}:{$h}:force_original_aspect_ratio=increase,crop={$w}:{$h}[bg];",
-            // Scrim: cream at 55% opacity across the full frame.
-            "[bg]drawbox=x=0:y=0:w={$w}:h={$h}:color=0x".self::COLOR_CREAM."@0.55:t=fill[base0];",
+            "[0:v]scale={$w}:{$h}:force_original_aspect_ratio=increase,crop={$w}:{$h},"
+                ."gblur=sigma=14,eq=saturation=0.55[bg];",
+            "[bg]drawbox=x=0:y=0:w={$w}:h={$h}:color=0x".self::COLOR_CREAM."@0.72:t=fill[base0];",
         ];
 
         $lastLabel = 'base0';
@@ -420,6 +589,17 @@ class InfographicComposer
                 $bh = (int) $block['h'];
                 $color = $this->hex($block['color']);
                 $chain[] = "[{$lastLabel}]drawbox=x={$x}:y={$y}:w={$bw}:h={$bh}:color=0x{$color}:t=fill[{$next}];";
+            } elseif (($block['type'] ?? '') === 'shadow') {
+                // Translucent fill for the stacked drop-shadow penumbra. Same
+                // drawbox as a rect but with an alpha suffix on the colour so the
+                // underlying canvas shows through (stacking deepens the edge).
+                $x = (int) $block['x'];
+                $y = (int) $block['y'];
+                $bw = (int) $block['w'];
+                $bh = (int) $block['h'];
+                $color = $this->hex($block['color']);
+                $alpha = number_format(max(0.0, min(1.0, (float) ($block['alpha'] ?? 0.1))), 2, '.', '');
+                $chain[] = "[{$lastLabel}]drawbox=x={$x}:y={$y}:w={$bw}:h={$bh}:color=0x{$color}@{$alpha}:t=fill[{$next}];";
             } elseif (($block['type'] ?? '') === 'text') {
                 $text = (string) $block['text'];
                 $textFile = $workDir.'/t'.$textFileIndex.'.txt';
@@ -529,7 +709,7 @@ class InfographicComposer
         if ($text === '') {
             return '';
         }
-        $charsPerLine = max(6, (int) floor($pixelWidth / max(1, $fontSize * 0.55)));
+        $charsPerLine = max(6, (int) floor($pixelWidth / max(1, $fontSize * self::GLYPH_EM)));
 
         return wordwrap($text, $charsPerLine, "\n", true);
     }
@@ -551,8 +731,8 @@ class InfographicComposer
         }
         $longest = max(1, $longest);
 
-        // Size at which the longest word still fits one line (glyph ~0.55em).
-        $fitForLongest = (int) floor($pixelWidth / ($longest * 0.55));
+        // Size at which the longest word still fits one line (glyph ~0.60em).
+        $fitForLongest = (int) floor($pixelWidth / ($longest * self::GLYPH_EM));
         $size = min($maxSize, max($minSize, $fitForLongest));
 
         return max($minSize, min($maxSize, $size));
