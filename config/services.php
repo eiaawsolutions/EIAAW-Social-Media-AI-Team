@@ -134,6 +134,12 @@ return [
         // Separate (larger) wall-time cap for the multi-block infographic
         // filtergraph, which draws far more text blocks than the quote stamp.
         'infographic_timeout_seconds' => (int) env('BRANDING_INFOGRAPHIC_TIMEOUT', 120),
+        // Hook posters: route single-image posts that carry a strong headline to
+        // the composited exact-text poster path (a legible hook line on a brand
+        // background — the #1 scroll-stopper on IG/LinkedIn) instead of a
+        // text-free photo. Photos are still used for lifestyle/brand-moment
+        // pillars. Set false to keep the photo-first bias.
+        'hook_posters' => (bool) env('BRANDING_HOOK_POSTERS', true),
     ],
 
     'voyage' => [

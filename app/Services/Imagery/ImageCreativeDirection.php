@@ -142,6 +142,54 @@ final class ImageCreativeDirection
     }
 
     /**
+     * True when a single-image post should be routed to the composited
+     * hook-poster path — a legible hook line + a couple of supporting points on
+     * a brand-coloured background — because it carries a strong headline. This
+     * is the "lean into hook posters" lever: a legible hook is the #1
+     * scroll-stopper on IG/LinkedIn feeds, and the composer draws the text with
+     * exact spelling (no diffusion garble).
+     *
+     * Deliberately NARROWER than isPosterFormat():
+     *   - Only fires for 'single_image' format (carousel has its own path;
+     *     reel/video are photo-anchored keyframes).
+     *   - Only when a non-trivial headline is present (so lifestyle /
+     *     brand-moment posts with no hook stay as clean editorial photos).
+     *   - Skips posts already caught by isPosterFormat() — those route through
+     *     the existing poster path unchanged.
+     *   - Gated behind config('services.branding.hook_posters') so the whole
+     *     behaviour is reversible without a deploy.
+     *
+     * The caller ALSO checks FalAiClient::modelUsesAspectRatio() (text-capable
+     * model) before choosing poster mode, exactly like the other poster gates.
+     *
+     * @param  array<string,mixed>|null  $platformPayload  draft.platform_payload
+     */
+    public static function shouldRouteToHookPoster(
+        ?string $format,
+        ?string $pillar,
+        ?string $visualDirection,
+        ?array $platformPayload,
+    ): bool {
+        if (! (bool) config('services.branding.hook_posters', true)) {
+            return false;
+        }
+
+        if (strtolower(trim((string) $format)) !== 'single_image') {
+            return false;
+        }
+
+        // Already a poster by pillar/visual_direction → existing path handles it.
+        if (self::isPosterFormat($format, $pillar, $visualDirection)) {
+            return false;
+        }
+
+        $headline = trim((string) (($platformPayload['headline'] ?? null)));
+
+        // A real hook, not an empty or one-word placeholder.
+        return mb_strlen($headline) >= 12 && str_word_count($headline) >= 3;
+    }
+
+    /**
      * Layout brief for a TEXT-FREE poster BACKGROUND. The headline + points are
      * NOT rendered by the image model — they are drawn programmatically by
      * {@see \App\Services\Branding\InfographicComposer} (FFmpeg drawtext), which
