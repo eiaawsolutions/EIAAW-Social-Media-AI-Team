@@ -261,16 +261,27 @@ class InfographicComposer
             $headingSize = min($headingSize, $fit);
         }
 
-        $cardPadV = (int) round($cellW * 0.085);
-        $minCardH = (int) round($cellW * 0.44);
+        // Vertical padding scales with the cell WIDTH, which is wrong for short,
+        // wide cards (landscape 3-row grids: a 847px-wide cell in a ~207px slot
+        // would spend 144px of it on padding and leave no room for a bullet, so
+        // the guard silently dropped every bullet). Cap it against the slot so
+        // padding is always a sane fraction of the card it pads.
+        $cardPadV = min((int) round($cellW * 0.085), max(8, (int) floor($slotH * 0.14)));
+        // The comfortable minimum is a fraction of the cell width, but it can NEVER
+        // exceed the slot — otherwise rows*minCardH + gutters > gridH and the
+        // bottom row is laid out below the canvas (FFmpeg silently clips it).
+        // That structural overflow hit landscape 5-6 panels, square 2-panels
+        // (cols=1 → a full-width cell → a huge minCardH) and dense square grids.
+        $minCardH = min((int) round($cellW * 0.44), max(1, $slotH));
 
-        // ── Fit loop: measure real content, size the card to CONTAIN it, and if
-        // the resulting grid overflows the band, shrink the type scale and remeasure.
-        // Clamping the card to the slot (the old approach) let text spill BELOW the
-        // card — the card must always contain its content, so instead we shrink
-        // the font until the content-driven grid fits. Bounded iterations; a hard
-        // floor keeps type legible (below it we accept slight overflow over
-        // illegible text).
+        // ── Fit loop: measure real content, then size the card to contain it —
+        // shrinking the SHARED type scale until the content fits its slot. The
+        // card is always clamped to $slotH so the grid can never exceed the band
+        // (no off-canvas rows); the loop is what makes that clamp safe, because it
+        // shrinks the type until the content actually fits inside the clamped card
+        // rather than spilling out of it (the original "text below the card" bug).
+        // Bounded iterations; a legibility floor stops the shrink, after which the
+        // per-bullet guard drops overflow lines rather than overdrawing.
         $measured = [];
         $maxContentH = 0;
         $cardH = $minCardH;
@@ -322,25 +333,75 @@ class InfographicComposer
                 $maxContentH = max($maxContentH, $contentH);
             }
 
-            // Card ALWAYS contains the tallest content (never clamped short).
-            $cardH = max($minCardH, $maxContentH + 2 * $cardPadV);
-            $usedGridH = $rows * $cardH + ($rows - 1) * $gutter;
+            // The card contains the tallest content, but never exceeds its slot —
+            // that clamp is what keeps the whole grid inside the canvas.
+            $neededH = $maxContentH + 2 * $cardPadV;
+            $cardH = max($minCardH, min($slotH, $neededH));
 
-            // Fits the band, or we've hit the legibility floor → stop.
-            if ($usedGridH <= $gridH || $headingSize <= 26) {
+            // Content fits inside the (clamped) card, or we've hit the legibility
+            // floor → stop. Targeting the SLOT (not the whole band) is equivalent
+            // to rows*cardH + gutters <= gridH, but states the real constraint.
+            if ($neededH <= $slotH || $headingSize <= 26) {
                 break;
             }
-            // Overflow → shrink the shared type scale and remeasure.
+            // Content taller than its slot → shrink the shared type and remeasure.
             $headingSize = max(26, (int) floor($headingSize * 0.92));
         }
         $bulletSize = max(22, (int) round($headingSize * 0.72));
         $headingLineH = (int) round($headingSize * 1.2);
         $bulletLineH = (int) round($bulletSize * 1.28);
 
-        // Centre the whole grid in the available band so a short grid isn't
-        // top-heavy with dead space beneath it.
+        // GROW cards to occupy the canvas on tall/short-content layouts. Four
+        // heading-only cards can't fill a 1920px portrait at content height —
+        // leaving a big empty zone below the grid. So before distributing gaps,
+        // let each card grow to absorb a share of the vertical slack (content
+        // stays TOP-anchored inside the taller card, which reads as intentional
+        // padding). Capped at ~85% of the card width so a card never becomes an
+        // awkward tall sliver, and only grows when there's meaningful slack.
+        $slackForCards = max(0, $gridH - ($rows * $cardH + ($rows - 1) * $gutter));
+        if ($rows > 0 && $slackForCards > 0) {
+            $growPerCard = (int) floor(($slackForCards * 0.45) / $rows);
+            $maxCardH = (int) round($cellW * 0.85);
+            // ADDITIVE ONLY. A naive min($maxCardH, $cardH + $growPerCard) SHRANK
+            // cards whose measured content already exceeded $maxCardH — silently
+            // dropping bullets and overdrawing text past the card edge (exactly
+            // the bug the fit loop exists to prevent). Growth may only ever make a
+            // card taller, never shorter, and never past its slot.
+            $grown = max($cardH, min($maxCardH, $cardH + $growPerCard));
+            $cardH = min($slotH, $grown);
+        }
+
+        // Distribute the remaining slack into inter-row gaps + margins so the grid
+        // fills the available height instead of clustering and centring — on TALL
+        // portrait canvases the old centre-in-band left a dead gap below the title
+        // and a marooned grid (excess reading as a stray band at the bottom).
         $usedGridH = $rows * $cardH + ($rows - 1) * $gutter;
-        $gridYOffset = max(0, (int) round(($gridH - $usedGridH) / 2));
+        $slack = max(0, $gridH - $usedGridH);
+
+        // Grow the inter-row gap only modestly so rows get comfortable breathing
+        // room without being flung to opposite ends of a tall canvas (which left
+        // a void in the middle). Cap the gap so it never exceeds ~55% of a card;
+        // any slack beyond that is centred as balanced top/bottom margin. The
+        // gap is also hard-capped in absolute px so a very tall canvas doesn't
+        // scale it up unboundedly.
+        $rowGap = $gutter;
+        if ($rows > 1 && $slack > 0) {
+            $extraPerGap = (int) floor(($slack * 0.55) / ($rows - 1));
+            $maxGap = min((int) round($cardH * 0.7), (int) round($h * 0.06));
+            $rowGap = max($gutter, min($maxGap, $gutter + $extraPerGap));
+        }
+
+        // Position the block: start a comfortable distance under the title and
+        // let any remaining slack fall below. Centring in the band looked wrong
+        // on portrait — it floated the grid in the vertical middle with a big
+        // void under the title. We cap the TOP margin so the grid always begins
+        // near the title; only when the block is short enough that even the
+        // capped top margin plus the block leaves the grid comfortably clear of
+        // the bottom do we nudge it toward centre.
+        $usedGridH = $rows * $cardH + ($rows - 1) * $rowGap;
+        $centreOffset = max(0, (int) round(($gridH - $usedGridH) / 2));
+        $topMarginCap = (int) round($h * 0.045);
+        $gridYOffset = min($centreOffset, $topMarginCap);
 
         $blocks = [];
 
@@ -371,7 +432,7 @@ class InfographicComposer
             $col = $i % $cols;
             $row = intdiv($i, $cols);
             $cx = $pad + $col * ($cellW + $gutter);
-            $cy = $gridTop + $gridYOffset + $row * ($cardH + $gutter);
+            $cy = $gridTop + $gridYOffset + $row * ($cardH + $rowGap);
 
             // Soft drop shadow: a few stacked, down-right-offset translucent
             // boxes whose opacity falls off with distance — a cheap Gaussian-ish
@@ -432,9 +493,14 @@ class InfographicComposer
                 $cursorY += $m['hLines'] * $headingLineH + $m['gapAfterHeading'];
             }
 
+            $cardFloor = $cy + $cardH - $cardPadV;
             foreach ($m['bullets'] as $wrapped) {
-                // Never draw a bullet that would spill past the card bottom.
-                if ($cursorY > $cy + $cardH - $cardPadV) {
+                // Never draw a bullet that would spill past the card bottom. Test
+                // the bullet's FULL wrapped height, not just its start: a 3-line
+                // bullet beginning just inside the card would otherwise overdraw
+                // (drawtext never clips).
+                $lines = substr_count($wrapped, "\n") + 1;
+                if ($cursorY + $lines * $bulletLineH > $cardFloor) {
                     break;
                 }
                 $blocks[] = [
@@ -446,7 +512,6 @@ class InfographicComposer
                     'color' => self::COLOR_MUTED,
                     'line_spacing' => (int) round($bulletSize * 0.25),
                 ];
-                $lines = substr_count($wrapped, "\n") + 1;
                 $cursorY += $lines * $bulletLineH + (int) round($bulletSize * 0.35);
             }
         }
@@ -628,10 +693,25 @@ class InfographicComposer
 
         $outputPath = $workDir.'/infographic.jpg';
 
+        // Pass the filtergraph via a SCRIPT FILE rather than an inline argv item.
+        // A dense infographic (6 panels x 8 shadow layers + cards + spines +
+        // ghosts + text) builds a ~10KB graph, and handing that to the process as
+        // a single argument made FFmpeg die with exit 1 and EMPTY stderr — the
+        // process never launched (command-line limits / shell escaping of the
+        // graph's [] @ : ' \ metacharacters). The DesignerAgent then soft-fell
+        // back to the raw background, silently degrading every 5-6 panel
+        // infographic. -filter_complex_script is FFmpeg's sanctioned path for
+        // large graphs and mirrors the textfile= indirection already used for the
+        // copy, so no value is ever shell-escaped.
+        $filterScriptPath = $workDir.'/filtergraph.txt';
+        if (file_put_contents($filterScriptPath, $filterChain) === false) {
+            throw new RuntimeException("InfographicComposer: failed to write filter script {$filterScriptPath}");
+        }
+
         $args = [
             $this->ffmpegBin, '-y', '-hide_banner', '-loglevel', 'error',
             '-i', $sourcePath,
-            '-filter_complex', $filterChain,
+            '-filter_complex_script', $filterScriptPath,
             '-map', '[final]',
             '-frames:v', '1',
             '-q:v', '2',
@@ -645,7 +725,7 @@ class InfographicComposer
         } catch (ProcessFailedException $e) {
             $stderr = trim((string) $e->getProcess()?->getErrorOutput());
             throw new RuntimeException(
-                'InfographicComposer FFmpeg failed: '.substr($stderr, 0, 400),
+                'InfographicComposer FFmpeg failed: '.($stderr !== '' ? substr($stderr, 0, 400) : 'ffmpeg exited non-zero with no stderr'),
                 0,
                 $e,
             );

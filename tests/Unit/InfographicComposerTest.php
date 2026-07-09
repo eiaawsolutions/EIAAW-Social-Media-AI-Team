@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\Branding\InfographicComposer;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -24,6 +25,33 @@ class InfographicComposerTest extends TestCase
     private function square(): array
     {
         return ['w' => 1080, 'h' => 1080];
+    }
+
+    /** Threads / TikTok / Pinterest canvas — where the dead-space bug appeared. */
+    private function portrait(): array
+    {
+        return ['w' => 1080, 'h' => 1920];
+    }
+
+    /** The card fill rects (white) define each card's box, in draw order. */
+    private function cardRects(array $blocks): array
+    {
+        return array_values(array_filter(
+            $blocks,
+            fn ($b) => ($b['type'] ?? '') === 'rect' && ($b['color'] ?? '') === 'FFFFFF',
+        ));
+    }
+
+    /** The full-width accent band at the very top is the title bar. */
+    private function titleBarHeight(array $blocks): int
+    {
+        foreach ($blocks as $b) {
+            if (($b['type'] ?? '') === 'rect' && $b['x'] === 0 && $b['y'] === 0 && $b['w'] === 1080) {
+                return (int) $b['h'];
+            }
+        }
+
+        return 0;
     }
 
     /** Collect the concatenated text of all 'text' blocks for substring asserts. */
@@ -353,6 +381,307 @@ class InfographicComposerTest extends TestCase
         foreach ($shadows as $s) {
             $this->assertGreaterThan(0.0, $s['alpha']);
             $this->assertLessThanOrEqual(1.0, $s['alpha']);
+        }
+    }
+
+    // ─── Portrait dead-space regression (threads / tiktok / pinterest) ───────
+
+    /**
+     * The reported portrait bug: on a tall 1080x1920 canvas the grid was centred
+     * in the whole band, marooning it in the vertical middle — a big dead gap
+     * under the title bar. The grid must now START near the title (capped top
+     * margin), not float in the middle.
+     */
+    public function test_portrait_grid_starts_near_the_title_bar(): void
+    {
+        $canvas = $this->portrait();
+        $blocks = $this->composer()->layoutInfographic(
+            'Sales Agent splits work with humans',
+            [
+                ['heading' => 'AI handles lead sourcing and scoring', 'bullets' => []],
+                ['heading' => 'Automated personalized outreach and follow-ups', 'bullets' => []],
+                ['heading' => 'SDRs own negotiation and relationship building', 'bullets' => []],
+                ['heading' => 'Humans keep judgment and decision making', 'bullets' => []],
+            ],
+            '',
+            $canvas,
+            '11766A',
+        );
+
+        $titleH = $this->titleBarHeight($blocks);
+        $this->assertGreaterThan(0, $titleH, 'Title bar must exist.');
+
+        $cards = $this->cardRects($blocks);
+        $this->assertCount(4, $cards);
+
+        $firstCardTop = min(array_map(fn ($c) => (int) $c['y'], $cards));
+        $gapUnderTitle = $firstCardTop - $titleH;
+
+        // The old bug produced a gap of several hundred px (grid centred in a
+        // ~1500px band). Allow generous padding but never a cavernous void.
+        $this->assertLessThan(
+            (int) round($canvas['h'] * 0.14),
+            $gapUnderTitle,
+            "Portrait grid must start near the title bar; found a {$gapUnderTitle}px dead gap.",
+        );
+        $this->assertGreaterThanOrEqual(0, $gapUnderTitle, 'Grid must not overlap the title bar.');
+    }
+
+    /**
+     * On a tall canvas the cards must GROW to occupy the space rather than
+     * clustering at content-height and leaving ~35% of the canvas empty. The
+     * grid block should span a healthy share of the band below the title.
+     */
+    public function test_portrait_cards_fill_the_available_height(): void
+    {
+        $canvas = $this->portrait();
+        $blocks = $this->composer()->layoutInfographic(
+            'Sales Agent splits work with humans',
+            [
+                ['heading' => 'AI handles lead sourcing', 'bullets' => []],
+                ['heading' => 'Automated outreach', 'bullets' => []],
+                ['heading' => 'SDRs own negotiation', 'bullets' => []],
+                ['heading' => 'Humans keep judgment', 'bullets' => []],
+            ],
+            '',
+            $canvas,
+            '11766A',
+        );
+
+        $titleH = $this->titleBarHeight($blocks);
+        $cards = $this->cardRects($blocks);
+        $this->assertCount(4, $cards);
+
+        $top = min(array_map(fn ($c) => (int) $c['y'], $cards));
+        $bottom = max(array_map(fn ($c) => (int) $c['y'] + (int) $c['h'], $cards));
+        $band = $canvas['h'] - $titleH;
+        $occupied = $bottom - $top;
+
+        $this->assertGreaterThan(
+            (int) round($band * 0.55),
+            $occupied,
+            'Portrait cards must fill a healthy share of the band, not cluster at content height.',
+        );
+
+        // And nothing may fall off the bottom of the canvas.
+        $this->assertLessThanOrEqual($canvas['h'], $bottom, 'Last row must stay on-canvas.');
+    }
+
+    /**
+     * Card growth must never push the grid past the canvas / into the footer
+     * band. Exercised with the densest supported grid (6 panels → 3 rows) plus
+     * a footer, on portrait.
+     */
+    public function test_portrait_dense_grid_with_footer_stays_within_canvas(): void
+    {
+        $canvas = $this->portrait();
+        $panels = [];
+        for ($i = 1; $i <= 6; $i++) {
+            $panels[] = ['heading' => "Panel number {$i} heading", 'bullets' => ['A supporting point here']];
+        }
+
+        $blocks = $this->composer()->layoutInfographic(
+            'A dense six panel explainer title',
+            $panels,
+            'The single takeaway line that anchors the whole graphic',
+            $canvas,
+            '11766A',
+        );
+
+        $cards = $this->cardRects($blocks);
+        $this->assertCount(6, $cards);
+
+        // Footer band = the full-width accent rect that is NOT at y=0.
+        $footerTop = $canvas['h'];
+        foreach ($blocks as $b) {
+            if (($b['type'] ?? '') === 'rect' && $b['x'] === 0 && $b['w'] === $canvas['w'] && $b['y'] > 0 && ($b['color'] ?? '') === '11766A') {
+                $footerTop = min($footerTop, (int) $b['y']);
+            }
+        }
+
+        foreach ($cards as $c) {
+            $cardBottom = (int) $c['y'] + (int) $c['h'];
+            $this->assertLessThanOrEqual($canvas['h'], $cardBottom, 'Card must stay on-canvas.');
+            $this->assertLessThanOrEqual($footerTop, $cardBottom, 'Card must not collide with the footer band.');
+        }
+    }
+
+    /** Square must be unaffected: growth/gap logic only absorbs real slack. */
+    public function test_square_layout_not_regressed_by_portrait_fill_logic(): void
+    {
+        $canvas = $this->square();
+        $blocks = $this->composer()->layoutInfographic(
+            'Four ways to de-risk an AI rollout',
+            [
+                ['heading' => 'Start with one workflow', 'bullets' => ['Pick a high-pain, low-risk task']],
+                ['heading' => 'Measure before and after', 'bullets' => ['Baseline the manual cost']],
+                ['heading' => 'Keep a human in the loop', 'bullets' => ['Approve outputs early on']],
+                ['heading' => 'Review the personalisation', 'bullets' => ['Check tone against brand']],
+            ],
+            '',
+            $canvas,
+            '11766A',
+        );
+
+        $cards = $this->cardRects($blocks);
+        $this->assertCount(4, $cards);
+        foreach ($cards as $c) {
+            $this->assertLessThanOrEqual($canvas['h'], (int) $c['y'] + (int) $c['h']);
+        }
+    }
+
+    // ─── Canvas-containment invariant (adversarial-audit regressions) ────────
+
+    /**
+     * Every scenario an adversarial geometry audit confirmed would push cards,
+     * shadows or text OFF-CANVAS. Root cause was twofold:
+     *   1. minCardH = cellW*0.44 was a hard floor the fit loop could not lower,
+     *      so rows*minCardH + gutters could structurally exceed the band
+     *      (landscape 5-6 panels; square 2-panels where cols=1 → full-width cell;
+     *      dense square grids with wrapping bullets).
+     *   2. Card GROWTH used min($maxCardH, $cardH + $grow), which SHRANK a
+     *      content-tall card below its measured height — dropping bullets and
+     *      overdrawing text.
+     * The invariant: nothing the layout emits may fall outside the canvas.
+     */
+    #[DataProvider('containmentScenarios')]
+    public function test_no_block_ever_falls_outside_the_canvas(string $label, array $canvas, array $panels, string $footer): void
+    {
+        $blocks = $this->composer()->layoutInfographic('A representative explainer title', $panels, $footer, $canvas, '11766A');
+
+        foreach ($blocks as $i => $b) {
+            $x = (int) $b['x'];
+            $y = (int) $b['y'];
+            $this->assertGreaterThanOrEqual(0, $x, "[{$label}] block #{$i} ({$b['type']}) has negative x.");
+            $this->assertGreaterThanOrEqual(0, $y, "[{$label}] block #{$i} ({$b['type']}) has negative y.");
+
+            if (($b['type'] ?? '') === 'text') {
+                continue; // text bounds asserted per-card below
+            }
+
+            $bottom = $y + (int) $b['h'];
+            $this->assertLessThanOrEqual(
+                $canvas['h'],
+                $bottom,
+                "[{$label}] block #{$i} ({$b['type']}) bottom {$bottom} exceeds canvas height {$canvas['h']}.",
+            );
+        }
+
+        // And every card must sit fully on-canvas.
+        foreach ($this->cardRects($blocks) as $c) {
+            $this->assertLessThanOrEqual(
+                $canvas['h'],
+                (int) $c['y'] + (int) $c['h'],
+                "[{$label}] a card falls off the bottom of the canvas.",
+            );
+        }
+    }
+
+    public static function containmentScenarios(): array
+    {
+        $heading = fn (int $i) => ['heading' => "Panel number {$i} heading text", 'bullets' => ['A supporting point here']];
+        $wrapping = fn (int $i) => [
+            'heading' => "Panel {$i} heading",
+            'bullets' => [
+                'A deliberately long supporting bullet that wraps onto two lines',
+                'Another long supporting bullet that also wraps onto two lines',
+                'A third long supporting bullet which wraps onto two lines as well',
+            ],
+        ];
+        $six = array_map($heading, range(1, 6));
+        $five = array_map($heading, range(1, 5));
+        $sixWrapping = array_map($wrapping, range(1, 6));
+
+        return [
+            // Audit finding: landscape 3-row grids put the bottom row off-canvas.
+            'landscape 6 panels' => ['landscape 6 panels', ['w' => 1920, 'h' => 1080], $six, ''],
+            'landscape 5 panels' => ['landscape 5 panels', ['w' => 1920, 'h' => 1080], $five, ''],
+            // Audit finding: square 2 panels → cols=1 → minCardH 432 > slot.
+            'square 2 panels' => ['square 2 panels', ['w' => 1080, 'h' => 1080], [
+                ['heading' => 'AI owns the grunt work', 'bullets' => []],
+                ['heading' => 'Humans own the judgment', 'bullets' => []],
+            ], ''],
+            'square 2 panels + footer' => ['square 2 panels + footer', ['w' => 1080, 'h' => 1080], [
+                ['heading' => 'AI owns the grunt work', 'bullets' => ['Sourcing and sequencing']],
+                ['heading' => 'Humans own the judgment', 'bullets' => ['Reading the room']],
+            ], 'AI augments the team — humans stay in charge'],
+            // Audit finding: dense square grid with wrapping bullets overflows.
+            'square 6 panels wrapping bullets' => ['square 6 panels wrapping bullets', ['w' => 1080, 'h' => 1080], $sixWrapping, ''],
+            'portrait 6 panels wrapping bullets' => ['portrait 6 panels wrapping bullets', ['w' => 1080, 'h' => 1920], $sixWrapping, ''],
+            'portrait 6 panels + footer' => ['portrait 6 panels + footer', ['w' => 1080, 'h' => 1920], $six, 'The single takeaway line'],
+            'landscape 2 panels' => ['landscape 2 panels', ['w' => 1920, 'h' => 1080], [
+                ['heading' => 'First half', 'bullets' => []],
+                ['heading' => 'Second half', 'bullets' => []],
+            ], ''],
+            'single panel portrait' => ['single panel portrait', ['w' => 1080, 'h' => 1920], [
+                ['heading' => 'Only one panel here', 'bullets' => ['With a supporting point']],
+            ], ''],
+        ];
+    }
+
+    /**
+     * Card growth must be ADDITIVE ONLY — it may never shrink a card whose
+     * measured content already exceeds the growth cap (cellW*0.85). The audit
+     * proved min($maxCardH, …) silently dropped bullets from content-rich cards.
+     * Here a content-rich panel on portrait must keep ALL of its bullets.
+     */
+    public function test_growth_never_shrinks_a_content_tall_card_or_drops_bullets(): void
+    {
+        $bullets = ['First supporting point', 'Second supporting point', 'Third supporting point'];
+        $blocks = $this->composer()->layoutInfographic(
+            'Sales Agent splits work',
+            [
+                ['heading' => 'AI handles lead sourcing and scoring today', 'bullets' => $bullets],
+                ['heading' => 'Humans keep judgment', 'bullets' => ['Reading the room']],
+                ['heading' => 'SDRs own negotiation', 'bullets' => ['Closing the deal']],
+                ['heading' => 'Review the personalisation', 'bullets' => ['Check tone']],
+            ],
+            '',
+            $this->portrait(),
+            '11766A',
+        );
+
+        $text = str_replace("\n", ' ', $this->renderedText($blocks));
+        foreach ($bullets as $b) {
+            $this->assertStringContainsString(
+                $b,
+                $text,
+                "Bullet \"{$b}\" was dropped — card growth shrank the card below its measured content.",
+            );
+        }
+    }
+
+    /**
+     * Vertical card padding scales with the cell WIDTH, which is wrong for the
+     * short, wide cards of a landscape 3-row grid: a ~847px-wide cell in a ~207px
+     * slot spent 144px on padding and left no room for a bullet, so every bullet
+     * was silently dropped. Padding is now capped against the slot.
+     */
+    public function test_landscape_dense_grid_still_renders_its_bullets(): void
+    {
+        $panels = [];
+        foreach (['Start with one workflow', 'Measure before and after', 'Keep a human in the loop', 'Review the personalisation', 'Name the decision owner', 'Retrain, do not replace'] as $heading) {
+            $panels[] = ['heading' => $heading, 'bullets' => ['A short supporting point']];
+        }
+
+        $blocks = $this->composer()->layoutInfographic(
+            'Six ways teams de-risk an AI rollout',
+            $panels,
+            '',
+            ['w' => 1920, 'h' => 1080],
+            '11766A',
+        );
+
+        $text = str_replace("\n", ' ', $this->renderedText($blocks));
+        $this->assertStringContainsString(
+            'A short supporting point',
+            $text,
+            'Landscape dense grid dropped its bullets — vertical padding is starving the card.',
+        );
+
+        // ...and every card is still on-canvas.
+        foreach ($this->cardRects($blocks) as $c) {
+            $this->assertLessThanOrEqual(1080, (int) $c['y'] + (int) $c['h']);
         }
     }
 }
