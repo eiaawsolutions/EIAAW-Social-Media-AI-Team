@@ -58,34 +58,37 @@ return [
         // internal post gets an on-message visual. Client workspaces keep
         // library-first (they upload their own brand-correct photography).
         'internal_prefers_ai' => (bool) env('FAL_INTERNAL_PREFERS_AI', true),
-        // Google Veo 3 Fast is the Q2 2026 quality leader for short-form: far
-        // better realism, motion coherence and prompt adherence than Wan, plus
-        // NATIVE synced audio (Veo speaks/scores the clip from the prompt). We
-        // feed it the caption-derived scene brief + the distilled voiceover as
-        // spoken dialogue, so the clip says what the post says.
-        //   - i2v: fal-ai/veo3/fast/image-to-video — used when a Designer still
-        //     exists (keyframe → brand consistency).
-        //   - t2v: fal-ai/veo3/fast — used when no still exists yet.
-        // Pricing (FAL, 2026-05): $0.10/sec audio-off, $0.15/sec audio-on. A 6s
-        // audio-on clip ≈ $0.90; an 8s ≈ $1.20. Veo accepts ONLY 4s/6s/8s
-        // durations and 16:9/9:16 aspect (i2v also 'auto'); NO 1:1. The
-        // FalAiClient maps our integer seconds → Veo's "Ns" string and clamps
-        // aspect, so flipping these IDs is safe.
-        // Roll back to Wan by setting these to fal-ai/wan-25-preview/* .
-        'video_model_image' => env('FAL_VIDEO_MODEL_IMAGE', 'fal-ai/veo3/fast/image-to-video'),
-        'video_model_text' => env('FAL_VIDEO_MODEL_TEXT', 'fal-ai/veo3/fast'),
-        // Veo 3.1 extend-video: appends a fixed +7s continuation per call so we
-        // can build clips longer than Veo Fast's 8s cap (8s base + N×7s). Used
-        // only on the native-audio path. Pricing: $0.20/sec off, $0.40/sec on.
+        // ByteDance Seedance 2.0 (Fast) is the default short-form model (switched
+        // from Google Veo 3 Fast 2026-07 for lower COGS). Like Veo it produces
+        // NATIVE synced audio (dialogue/SFX/music) from the prompt, so we feed it
+        // the caption-derived scene brief + the distilled voiceover as spoken
+        // dialogue and the clip says what the post says — but it renders the whole
+        // clip (up to 15s) in ONE call, so there is NO extend chain.
+        //   - i2v: bytedance/seedance-2.0/fast/image-to-video — used when a
+        //     Designer still exists (keyframe → brand consistency).
+        //   - t2v: bytedance/seedance-2.0/fast/text-to-video — no still yet.
+        // Pricing (FAL, 2026-07): ~$0.2419/sec at 720p (Fast), native audio
+        // bundled at no extra cost; a 15s clip ≈ $3.63. Seedance `duration` is a
+        // stringified int "4".."15"; aspect accepts 9:16/16:9 (and more). The
+        // FalAiClient normalises per model FAMILY, so flipping these IDs is safe.
+        // Roll back to Veo by setting these to fal-ai/veo3/fast/* (8s base + Veo
+        // 3.1 extend); roll back to Wan by setting fal-ai/wan-25-preview/* .
+        'video_model_image' => env('FAL_VIDEO_MODEL_IMAGE', 'bytedance/seedance-2.0/fast/image-to-video'),
+        'video_model_text' => env('FAL_VIDEO_MODEL_TEXT', 'bytedance/seedance-2.0/fast/text-to-video'),
+        // Veo 3.1 extend-video: appends a fixed +7s continuation per call so a Veo
+        // rollback can build clips longer than Veo Fast's 8s cap (8s base + N×7s).
+        // DORMANT under Seedance (single 15s call → never reached). Kept so a Veo
+        // rollback works; do not blank it. Pricing: $0.20/sec off, $0.40/sec on.
         'video_model_extend' => env('FAL_VIDEO_MODEL_EXTEND', 'fal-ai/veo3.1/extend-video'),
-        // Veo native audio: when true the model generates its own dialogue/SFX/
-        // music from the prompt and we SKIP the FFmpeg voiceover+music composer.
-        // Set false to mute Veo and keep the legacy Kokoro voiceover+music+subs
-        // brand composer (only meaningful while a Wan-style model is active).
+        // Native audio: when true the model generates its own dialogue/SFX/music
+        // from the prompt (Seedance and Veo) and we SKIP the FFmpeg voiceover+music
+        // composer. Set false only under a Wan-style model to keep the legacy
+        // Kokoro voiceover+music+subs brand composer.
         'video_native_audio' => (bool) env('FAL_VIDEO_NATIVE_AUDIO', true),
-        // Default TARGET clip length in seconds. Base call snaps to {4,6,8};
-        // anything >8 is built via +7s extend steps (15 = 8 base + 1 extend).
-        // VideoAgent caps the target at MAX_TARGET_SECONDS (22) regardless.
+        // Default TARGET clip length in seconds. Under Seedance this is a single
+        // 15s call (no extend). Under a Veo rollback the base snaps to {4,6,8} and
+        // anything >8 is built via +7s extend steps; VideoAgent caps the Veo
+        // target at MAX_TARGET_SECONDS (22).
         'video_duration_seconds' => (int) env('FAL_VIDEO_DURATION_SECONDS', 15),
         'request_timeout' => (int) env('FAL_REQUEST_TIMEOUT', 180),
         'video_request_timeout' => (int) env('FAL_VIDEO_REQUEST_TIMEOUT', 360),

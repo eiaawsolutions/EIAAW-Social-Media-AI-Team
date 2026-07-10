@@ -134,6 +134,8 @@ class ChatbotPromptsTest extends TestCase
         $this->assertStringNotContainsString('claude-sonnet', $p);
         $this->assertStringNotContainsString('fal-ai', $p);
         $this->assertStringNotContainsString('veo3', $p);
+        $this->assertStringNotContainsString('seedance', $p);
+        $this->assertStringNotContainsString('bytedance', $p);
         $this->assertStringNotContainsString('nano-banana', $p);
     }
 
