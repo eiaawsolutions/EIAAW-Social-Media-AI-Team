@@ -22,47 +22,46 @@ use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 /**
- * Generates one short-form video per Draft via FAL.AI Google Veo 3 Fast,
- * then re-hosts it on Blotato so it can attach to /v2/posts. Reels /
- * Shorts / TikTok are the highest-CPM organic distribution in 2026 —
- * skipping vertical video = leaving 60%+ of platform performance on
- * the table.
+ * Generates one short-form video per Draft via FAL.AI (ByteDance Seedance 2.0
+ * Fast by default), then re-hosts it on Blotato so it can attach to /v2/posts.
+ * Reels / Shorts / TikTok are the highest-CPM organic distribution in 2026 —
+ * skipping vertical video = leaving 60%+ of platform performance on the table.
  *
  * The clip is generated from the SCRIPTED post content: DraftSceneBrief
  * (hook + distilled quote + CTA + target emotion + visual_direction) drives
- * the motion, and the distilled voiceover is passed to Veo as SPOKEN DIALOGUE
- * so the clip literally narrates what the post says — not a generic stock
- * motion. Veo 3 generates its own synced audio (voice + ambience) from that
- * prompt, so when native audio is on we ship the Veo clip directly and skip
- * the legacy FFmpeg voiceover/music composer.
+ * the motion, and the distilled voiceover is passed to the model as SPOKEN
+ * DIALOGUE so the clip literally narrates what the post says — not a generic
+ * stock motion. Seedance 2.0 (like the previous Veo 3 path) generates its own
+ * synced audio (voice + ambience) from that prompt, so when native audio is on
+ * we ship the clip directly and skip the legacy FFmpeg voiceover/music composer.
  *
  * Routing:
- *   - If draft.asset_url is a still image → image-to-video (Veo 3 Fast i2v)
- *     uses the still as keyframe — better brand consistency, faster
- *     prompt convergence.
- *   - Else → text-to-video (Veo 3 Fast t2v) directly from the scene brief.
+ *   - If draft.asset_url is a still image → image-to-video (Seedance i2v) uses
+ *     the still as keyframe — better brand consistency, faster convergence.
+ *   - Else → text-to-video (Seedance t2v) directly from the scene brief.
  *
- * Longer clips: a single Veo Fast call caps at 8s. For a longer target the
- * agent generates an 8s base then chains Veo 3.1 extend-video steps (+7s each,
- * continuing the same shot + narration) until it reaches the target — e.g. 15s
- * = 8s base + one extend. Only on the native-audio path (the FFmpeg composer
- * path stays single-clip).
+ * Length: Seedance renders the whole clip (up to 15s) in a SINGLE call, so the
+ * default 15s target is one generation with no extend chain. The agent is model
+ * -family-agnostic (FalAiClient capability helpers): pointing FAL_VIDEO_MODEL_*
+ * at a Veo id restores the 8s-base + Veo 3.1 extend path (+7s/step); pointing at
+ * a Wan id restores the silent path + FFmpeg composer. Both are unchanged.
  *
  * Output: replaces draft.asset_url with the Blotato-hosted .mp4 URL,
  * keeps the original still in asset_urls history.
  *
- * Cost: Veo 3 Fast base is $0.10/sec (audio off) / $0.15/sec (audio on);
- * each Veo 3.1 extend step is $0.20/sec / $0.40/sec. A 6s audio-on clip ≈
- * \$0.90; a 15s audio-on clip (8s base + 7s extend) ≈ \$4.00. Bound ONLY by the
- * monthly video allowance (no per-day USD cap) — see [[no-daily-fal-cap]].
+ * Cost: Seedance 2.0 Fast (720p) ≈ $0.2419/sec with native audio bundled (no
+ * separate audio surcharge, no extend) — a 15s clip ≈ \$3.63. (Veo rollback:
+ * $0.10/$0.15 base + $0.20/$0.40 extend per sec.) Bound ONLY by the monthly
+ * video allowance (no per-day USD cap) — see [[no-daily-fal-cap]].
  *
  * Required input:
  *   - draft_id (int)
  *
  * Optional input:
  *   - prompt_override (string)
- *   - duration_seconds (int target — base snapped to Veo's 4/6/8s; >8s built
- *     via +7s extend steps, capped at MAX_TARGET_SECONDS)
+ *   - duration_seconds (int target — Seedance renders it in one call up to 15s;
+ *     under a Veo rollback, base snaps to 4/6/8s and >8s uses +7s extend steps,
+ *     capped at MAX_TARGET_SECONDS)
  *   - skip_blotato_upload (bool) — dev-only
  */
 class VideoAgent extends BaseAgent
@@ -79,6 +78,14 @@ class VideoAgent extends BaseAgent
      *  Fast base because each step is a fresh continuation generation. */
     private const VEO_EXTEND_USD_PER_SEC_AUDIO = 0.40;
     private const VEO_EXTEND_USD_PER_SEC_SILENT = 0.20;
+
+    /** Seedance 2.0 per-second pricing (FAL, 2026-07). Native audio is bundled
+     *  in the base price (no separate audio surcharge) and there is NO extend
+     *  step, so ONE rate per tier covers the whole clip. Fast is the active
+     *  default (720p parity with our output); Standard is here for completeness.
+     *  Reconcile against the real FAL invoice after the first live clips. */
+    private const SEEDANCE_FAST_USD_PER_SEC = 0.2419; // 720p fast tier
+    private const SEEDANCE_STD_USD_PER_SEC = 0.222;
 
     /** Single Veo Fast call caps at 8s. Longer targets are built as an 8s base
      *  + N×7s Veo 3.1 extend steps. */
@@ -112,18 +119,22 @@ class VideoAgent extends BaseAgent
     ];
 
     public function role(): string { return 'video'; }
-    // v2.0 — switched to Google Veo 3 Fast. The clip is still anchored to the
-    // SCRIPTED post content via DraftSceneBrief (hook + distilled quote + CTA +
-    // target emotion + visual_direction), but the distilled voiceover is now
-    // passed to Veo as SPOKEN DIALOGUE so the model narrates the post copy in
-    // its own native synced audio — no separate Kokoro voiceover/music pass.
+    // v3.0 — switched to ByteDance Seedance 2.0 (Fast) for lower COGS. The clip
+    // is still anchored to the SCRIPTED post content via DraftSceneBrief (hook +
+    // distilled quote + CTA + target emotion + visual_direction), and the
+    // distilled voiceover is still passed as SPOKEN DIALOGUE — Seedance, like the
+    // previous Veo 3 path, generates its own native synced audio, so there is no
+    // separate Kokoro voiceover/music pass. Seedance renders the whole clip
+    // (up to 15s) in ONE call, so there is no extend chain. The agent is
+    // model-family-agnostic: pointing FAL_VIDEO_MODEL_* back at a Veo id restores
+    // the 8s-base + extend path unchanged (see FalAiClient capability helpers).
     // v1.4 retained: scene-brief anchoring + lockstep with the Designer still.
     //
-    // NOTE: VideoAgent makes NO LLM call — generation goes to FAL.AI Veo 3.
+    // NOTE: VideoAgent makes NO LLM call — generation goes to FAL.AI.
     // This promptVersion is AUDIT TELEMETRY only (stamps the audit log + cost
     // ledger so prompt-construction changes are traceable); it does not route an
     // LLM. The LlmGateway inherited from BaseAgent is unused here.
-    public function promptVersion(): string { return 'video.veo3.v2.0'; }
+    public function promptVersion(): string { return 'video.seedance2.v3.0'; }
 
     protected function handle(Brand $brand, array $input): AgentResult
     {
@@ -227,17 +238,29 @@ class VideoAgent extends BaseAgent
         // for the HQ cost-monitor P&L and the monthly count.
 
         $aspect = $this->resolveAspectRatio($draft, $input);
-        // TARGET length the operator/draft wants. Veo Fast caps a single call at
-        // 8s, so anything longer is built as an 8s base + N×7s extend steps
-        // (Veo 3.1 extend-video). Clamp the target to a sane ceiling so a typo
-        // can't kick off a 20-step chain. Default comes from config.
+
+        // Length is MODEL-FAMILY aware. Seedance renders up to 15s in a SINGLE
+        // call (no extend), so its base clip IS the whole target. Veo Fast caps a
+        // single call at 8s, so a longer target is built as an 8s base + N×7s
+        // Veo 3.1 extend steps. maxSingleClipSeconds()/videoModelSupportsExtend()
+        // encode the difference so this flow stays identical for both.
+        $textModel = (string) config('services.fal.video_model_text');
+        $maxSingle = FalAiClient::maxSingleClipSeconds($textModel);      // Seedance 15, Veo 8
+        $supportsExtend = FalAiClient::videoModelSupportsExtend($textModel);
+
+        // TARGET length the operator/draft wants. Clamp to a sane ceiling so a
+        // typo can't kick off a long chain: extend-capable families may exceed a
+        // single call (up to MAX_TARGET_SECONDS); single-call families cap at
+        // their one-shot max. Default comes from config.
+        $targetCeiling = $supportsExtend ? self::MAX_TARGET_SECONDS : $maxSingle;
         $targetDuration = max(3, min(
-            self::MAX_TARGET_SECONDS,
+            $targetCeiling,
             (int) ($input['duration_seconds'] ?? config('services.fal.video_duration_seconds', 6)),
         ));
-        // Base Veo Fast call: snap target down to its 8s ceiling (the client
-        // further snaps to 4/6/8). Extends make up the remainder.
-        $baseDuration = min(self::VEO_FAST_MAX_SECONDS, $targetDuration);
+        // Base call: the target, capped at what one call can render. For Seedance
+        // this equals the target (single 15s call); for Veo it snaps to 8s (the
+        // client further snaps to 4/6/8) with extends making up the remainder.
+        $baseDuration = min($maxSingle, $targetDuration);
 
         // Ensure the distilled quote + voiceover exist BEFORE buildPrompt reads
         // them (DraftSceneBrief::voiceover / for() pull from branding_payload).
@@ -350,18 +373,22 @@ class VideoAgent extends BaseAgent
         $brandedLocalPath = null;
 
         // Length accounting: cost is summed across the base clip + every extend
-        // step. The base is the Veo Fast clip just generated; extends are added
-        // below and grow $finalDuration / $costUsd as they land.
+        // step. The base is the clip just generated (the whole clip for Seedance;
+        // the 8s Veo base otherwise); Veo extends are added below and grow
+        // $finalDuration / $costUsd as they land.
         $finalDuration = $baseDuration;
-        $costUsd = $this->clipCostUsd($baseDuration, $hasNativeAudio);
+        $costUsd = $this->clipCostUsd($generated['model'], $baseDuration, $hasNativeAudio);
 
-        // ── Extend chain — only when the target exceeds Veo Fast's 8s cap. ──
+        // ── Extend chain — Veo only, when the target exceeds its 8s cap. ──
         // Each Veo 3.1 extend-video step appends a fixed 7s, continuing the
         // scene + audio from the prior clip. We feed the FAL-hosted URL (720p,
         // reachable by FAL) — NOT a Blotato re-host — as the source. Soft-fail:
         // if an extend step breaks we keep the longest clip we have so far
-        // rather than losing the whole generation.
-        $extendSteps = FalAiClient::extendStepsForTarget($targetDuration, $baseDuration);
+        // rather than losing the whole generation. Seedance renders the whole
+        // clip in one call, so $supportsExtend is false and it never chains.
+        $extendSteps = $supportsExtend
+            ? FalAiClient::extendStepsForTarget($targetDuration, $baseDuration)
+            : 0;
         if ($extendSteps > 0 && $hasNativeAudio) {
             $extendPrompt = $this->buildExtendPrompt($brand, $draft);
             for ($i = 0; $i < $extendSteps; $i++) {
@@ -623,12 +650,24 @@ class VideoAgent extends BaseAgent
     }
 
     /**
-     * Cost of the Veo 3 Fast BASE clip = per-second rate × duration. Audio-on
-     * costs more because the model also generates the synced voice/ambience.
-     * Extend steps are priced separately by extendStepCostUsd().
+     * Cost of the BASE clip = per-second rate × duration, priced by model family.
+     *
+     * Seedance 2.0 bundles native audio into a single per-second rate (no audio
+     * surcharge, no extend), so the whole clip is one flat rate × duration — Fast
+     * or Standard tier by the model id. Veo bills a per-second rate that is higher
+     * with audio on, and extend steps are priced separately by extendStepCostUsd().
      */
-    private function clipCostUsd(int $durationSeconds, bool $hasNativeAudio): float
+    private function clipCostUsd(string $model, int $durationSeconds, bool $hasNativeAudio): float
     {
+        if (FalAiClient::isSeedanceModel($model)) {
+            $rate = str_contains(strtolower($model), '/fast/')
+                ? self::SEEDANCE_FAST_USD_PER_SEC
+                : self::SEEDANCE_STD_USD_PER_SEC;
+
+            return round($rate * max(1, $durationSeconds), 4);
+        }
+
+        // Veo (and any other non-Seedance family) — per-second rate, audio-aware.
         $rate = $hasNativeAudio
             ? self::VEO_FAST_USD_PER_SEC_AUDIO
             : self::VEO_FAST_USD_PER_SEC_SILENT;
@@ -735,15 +774,19 @@ class VideoAgent extends BaseAgent
                 . (string) \Illuminate\Support\Str::words(strip_tags((string) $draft->body), 30, ' …') . '.';
         }
 
-        // The distilled voiceover IS the post's message in spoken form. With Veo
-        // native audio on, we tell the model to SPEAK it as the clip's narration
-        // (synced audio Veo generates itself) — so the video literally says what
-        // the caption says. With native audio off (Wan rollback / silent path)
-        // we fall back to "match the motion to this narrative", since the spoken
-        // track is added later by the FFmpeg composer.
+        // The distilled voiceover IS the post's message in spoken form. With
+        // native audio on (Seedance / Veo), we tell the model to SPEAK it as the
+        // clip's narration (synced audio the model generates itself) — so the
+        // video literally says what the caption says. With native audio off (Wan
+        // rollback / silent path) we fall back to "match the motion to this
+        // narrative", since the spoken track is added later by the FFmpeg composer.
         $nativeAudio = self::audioIsNative();
         $voiceover = DraftSceneBrief::voiceover($draft);
-        $duration = max(3, min(8, (int) config('services.fal.video_duration_seconds', 6)));
+        // "%d-second …" wording — cap at what ONE call renders for the active
+        // family (Seedance 15s, Veo 8s base) so the prompt matches the clip the
+        // model actually returns.
+        $singleClipCap = FalAiClient::maxSingleClipSeconds((string) config('services.fal.video_model_text'));
+        $duration = max(3, min($singleClipCap, (int) config('services.fal.video_duration_seconds', 6)));
         if ($voiceover !== '') {
             $sceneBrief .= $nativeAudio
                 ? " AUDIO — a single calm narrator speaks exactly this line, clearly and unhurried, as the only dialogue (no other speech, no on-screen captions): \"{$voiceover}\""
@@ -814,15 +857,15 @@ class VideoAgent extends BaseAgent
     }
 
     /**
-     * Whether the active video model produces its own synced audio (Veo native
-     * audio). Reads config so buildPrompt() knows to write the voiceover as
-     * SPOKEN dialogue (Veo) vs a motion-matching cue (Wan + FFmpeg composer).
-     * Mirrors the gate in FalAiClient::generateVideo so the prompt and the
-     * payload stay in agreement.
+     * Whether the active video model produces its own synced audio (Veo or
+     * Seedance native audio). Reads config so buildPrompt() knows to write the
+     * voiceover as SPOKEN dialogue (native-audio models) vs a motion-matching cue
+     * (Wan + FFmpeg composer). Mirrors the gate in FalAiClient::generateVideo so
+     * the prompt and the payload stay in agreement.
      */
     private static function audioIsNative(): bool
     {
-        return FalAiClient::isVeoModel((string) config('services.fal.video_model_text'))
+        return FalAiClient::videoModelHasNativeAudio((string) config('services.fal.video_model_text'))
             && (bool) config('services.fal.video_native_audio', true);
     }
 

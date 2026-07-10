@@ -111,8 +111,8 @@ class FalAiClient
             apiKey: (string) config('services.fal.api_key'),
             imageModel: (string) config('services.fal.image_model', 'fal-ai/nano-banana'),
             timeout: (int) config('services.fal.request_timeout', 180),
-            videoModelImage: (string) config('services.fal.video_model_image', 'fal-ai/veo3/fast/image-to-video'),
-            videoModelText: (string) config('services.fal.video_model_text', 'fal-ai/veo3/fast'),
+            videoModelImage: (string) config('services.fal.video_model_image', 'bytedance/seedance-2.0/fast/image-to-video'),
+            videoModelText: (string) config('services.fal.video_model_text', 'bytedance/seedance-2.0/fast/text-to-video'),
             videoTimeout: (int) config('services.fal.video_request_timeout', 360),
             videoNativeAudio: (bool) config('services.fal.video_native_audio', true),
             videoModelExtend: (string) config('services.fal.video_model_extend', 'fal-ai/veo3.1/extend-video'),
@@ -417,12 +417,17 @@ class FalAiClient
      * the keyframe). Otherwise text-to-video.
      *
      * The payload is normalised PER MODEL FAMILY before the request:
-     *   - Veo 3 family (default): `duration` is a STRING enum "4s"/"6s"/"8s"
-     *     (we snap any integer/other value to the nearest allowed step),
-     *     aspect is clamped to 16:9 / 9:16 (i2v also allows 'auto') because
-     *     Veo rejects 1:1, and `generate_audio` is injected from config so the
-     *     model speaks/scores the clip itself. Veo has no `negative_prompt` on
-     *     the Fast endpoint — it is dropped here rather than 422-ing.
+     *   - Seedance 2.0 family (default): `duration` is a STRINGIFIED integer
+     *     "4".."15" (clamped), aspect is passed through (Seedance accepts
+     *     9:16/16:9 and more), and `generate_audio` is injected from config so
+     *     the model speaks/scores the clip itself. Renders up to 15s in ONE call
+     *     (no extend). No `negative_prompt` field — dropped here.
+     *   - Veo 3 family: `duration` is a STRING enum "4s"/"6s"/"8s" (we snap any
+     *     integer/other value to the nearest allowed step), aspect is clamped to
+     *     16:9 / 9:16 (i2v also allows 'auto') because Veo rejects 1:1, and
+     *     `generate_audio` is injected. Veo has no `negative_prompt` on the Fast
+     *     endpoint — it is dropped here rather than 422-ing. Longer clips use the
+     *     separate extend endpoint (extendVideo).
      *   - Wan / other families: `duration` stays an integer, 1:1 is allowed,
      *     and negative_prompt is forwarded (Wan honours it).
      *
@@ -430,8 +435,8 @@ class FalAiClient
      *   image_url?: string,
      *   aspect_ratio?: string,        // '9:16' default for vertical
      *   resolution?: string,          // '720p' default
-     *   duration?: int|string,        // seconds (int) — mapped to Veo's "Ns" string
-     *   generate_audio?: bool,        // overrides config default for Veo
+     *   duration?: int|string,        // seconds — mapped to Seedance "N" / Veo "Ns"
+     *   generate_audio?: bool,        // overrides config default (Veo/Seedance)
      *   negative_prompt?: string,
      *   seed?: int,
      * } $options
@@ -454,6 +459,10 @@ class FalAiClient
         }
 
         $isVeo = self::isVeoModel($model);
+        $isSeedance = self::isSeedanceModel($model);
+        // Both Veo and Seedance emit their own synced audio and reject a
+        // negative_prompt field; they differ only in the duration format.
+        $nativeAudioModel = self::videoModelHasNativeAudio($model);
 
         $payload = array_merge([
             'prompt' => $prompt,
@@ -464,27 +473,33 @@ class FalAiClient
 
         $nativeAudio = $this->videoNativeAudio;
 
-        if ($isVeo) {
-            // Duration → Veo enum string. Accept either an int (5) or a string
-            // ("6s") from the caller and snap to the nearest allowed step.
-            $payload['duration'] = self::veoDurationString($payload['duration']);
+        if ($nativeAudioModel) {
+            // Duration → per family. Veo snaps to its "4s"/"6s"/"8s" enum;
+            // Seedance takes a bare integer string "4".."15". Accept an int or a
+            // string from the caller either way.
+            $payload['duration'] = $isVeo
+                ? self::veoDurationString($payload['duration'])
+                : self::seedanceDurationString($payload['duration']);
 
-            // Aspect: Veo Fast supports 16:9 and 9:16 (i2v also 'auto'). Anything
-            // else (1:1, unknown) → 9:16 so a square draft still ships vertical.
-            $payload['aspect_ratio'] = self::clampVeoAspect((string) $payload['aspect_ratio']);
+            // Aspect: Veo rejects 1:1 and exotic ratios, so clamp to 16:9/9:16.
+            // Seedance's supported set (auto/21:9/16:9/4:3/1:1/3:4/9:16) is a
+            // superset of what we send (9:16 or 16:9) — pass it through unchanged.
+            if ($isVeo) {
+                $payload['aspect_ratio'] = self::clampVeoAspect((string) $payload['aspect_ratio']);
+            }
 
             // Native audio toggle: per-call override wins, else the configured
-            // default. When on, Veo generates dialogue/SFX/music from the prompt
-            // and the caller skips the FFmpeg voiceover/music composer.
+            // default. When on, the model generates dialogue/SFX/music from the
+            // prompt and the caller skips the FFmpeg voiceover/music composer.
             $nativeAudio = array_key_exists('generate_audio', $options)
                 ? (bool) $options['generate_audio']
                 : $this->videoNativeAudio;
             $payload['generate_audio'] = $nativeAudio;
 
-            // Veo Fast has no negative_prompt field — drop it to avoid a 422 /
-            // silent ignore. The realism "AVOID …" clauses live in the positive
-            // prompt (ImageCreativeDirection::videoRealismBlock) so steering is
-            // preserved without the field.
+            // Neither Veo Fast nor Seedance has a negative_prompt field — drop it
+            // to avoid a 422 / silent ignore. The realism "AVOID …" clauses live
+            // in the positive prompt (ImageCreativeDirection::videoRealismBlock)
+            // so steering is preserved without the field.
             unset($payload['negative_prompt']);
         }
 
@@ -499,7 +514,7 @@ class FalAiClient
         self::clearLockout();
 
         $body = $response->json();
-        // Veo / Wan response shape: { video: { url, content_type } } usually.
+        // Veo / Seedance / Wan response shape: { video: { url, content_type } }.
         $url = $body['video']['url']
             ?? $body['videos'][0]['url']
             ?? $body['output']['video']['url']
@@ -517,9 +532,9 @@ class FalAiClient
                 ?? $body['videos'][0]['content_type']
                 ?? 'video/mp4',
             // True when the returned clip already carries model-generated audio
-            // (Veo native audio). The caller uses this to decide whether to skip
-            // the voiceover/music composer.
-            'has_native_audio' => $isVeo && $nativeAudio,
+            // (Veo or Seedance native audio). The caller uses this to decide
+            // whether to skip the voiceover/music composer.
+            'has_native_audio' => $nativeAudioModel && $nativeAudio,
         ];
     }
 
@@ -636,6 +651,77 @@ class FalAiClient
     public static function isVeoModel(?string $model): bool
     {
         return $model !== null && str_contains(strtolower($model), 'veo');
+    }
+
+    /**
+     * True if the model is a ByteDance Seedance 2.0 endpoint
+     * (bytedance/seedance-2.0/[fast/]{text,image}-to-video). Substring match so
+     * the standard and fast tiers both route correctly. Like Veo it emits native
+     * synced audio and rejects a negative_prompt field, but its `duration` is a
+     * stringified integer "4".."15" (NOT Veo's "Ns" enum) and it renders up to
+     * 15s in ONE call (no extend endpoint).
+     */
+    public static function isSeedanceModel(?string $model): bool
+    {
+        return $model !== null && str_contains(strtolower($model), 'seedance');
+    }
+
+    /**
+     * True when the active video model generates its OWN synced audio (spoken
+     * dialogue / SFX / music) from the prompt — Veo 3 AND Seedance 2.0. Drives
+     * the generate_audio payload flag and the has_native_audio return value that
+     * keeps the FFmpeg voiceover composer dormant and makes the caller write the
+     * voiceover as spoken dialogue rather than a motion cue.
+     */
+    public static function videoModelHasNativeAudio(?string $model): bool
+    {
+        return self::isVeoModel($model) || self::isSeedanceModel($model);
+    }
+
+    /**
+     * True only for families with a separate +Ns extend endpoint (Veo 3.1).
+     * Seedance renders up to 15s in a single call, so it never chains extends.
+     */
+    public static function videoModelSupportsExtend(?string $model): bool
+    {
+        return self::isVeoModel($model);
+    }
+
+    /**
+     * Longest clip a single generateVideo() call can produce for this family.
+     * Seedance does 15s in one shot; Veo Fast caps a single call at 8s (longer
+     * clips are built with extend steps). Used by VideoAgent to size the base
+     * clip and the target ceiling.
+     */
+    public static function maxSingleClipSeconds(?string $model): int
+    {
+        return self::isSeedanceModel($model) ? 15 : 8;
+    }
+
+    /** Seedance 2.0 `duration` bounds (seconds). Sent as a bare integer string. */
+    private const SEEDANCE_MIN_SECONDS = 4;
+
+    private const SEEDANCE_MAX_SECONDS = 15;
+
+    /**
+     * Seedance 2.0 `duration` is a STRINGIFIED integer "4".."15" (seconds) — NOT
+     * Veo's "Ns" enum, and we always send an explicit int (never "auto") for a
+     * deterministic length and cost. Accept an int or a "Ns"/"12" string, clamp
+     * into range, and return the bare integer string ("15", never "15s").
+     *
+     * @param  int|string  $duration
+     */
+    public static function seedanceDurationString(int|string $duration): string
+    {
+        $seconds = is_string($duration)
+            ? (int) preg_replace('/[^0-9]/', '', $duration)
+            : (int) $duration;
+        if ($seconds <= 0) {
+            $seconds = 6;
+        }
+        $seconds = max(self::SEEDANCE_MIN_SECONDS, min(self::SEEDANCE_MAX_SECONDS, $seconds));
+
+        return (string) $seconds;
     }
 
     /**

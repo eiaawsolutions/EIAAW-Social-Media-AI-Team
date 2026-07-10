@@ -16,12 +16,17 @@
  *
  * Pricing rebase 2026-05-29 (final v1): RM 549/1099/3499 → RM 688/1688/6888,
  * and the media allowance split into IMAGE posts vs VIDEO posts (each a 15s
- * Veo 3 clip). Driven by the Veo 3 video COGS (~RM 18.80 per 15s clip) — the
- * video allowance is now small and explicit (5/15/60) so video can't sink the
- * tier, while image posts stay generous (60/180/720) since a Nano Banana still
- * is only ~RM 0.18. Realistic blended gross margin lands ~66-73% across tiers.
+ * clip). The video allowance is small and explicit (5/15/60) so video can't
+ * sink the tier, while image posts stay generous (60/180/720) since a Nano
+ * Banana still is only ~RM 0.18. Realistic blended gross margin lands ~66-73%.
  * Existing subscribers keep their old price (Stripe price_id is locked at
  * signup); only NEW signups see the new numbers.
+ *
+ * Video COGS update 2026-07: switched Veo 3 (~RM 18.80 / 15s clip, 8s base +
+ * extend) → ByteDance Seedance 2.0 Fast (~$0.2419/s @ 720p, native audio
+ * bundled, single 15s call, no extend ≈ $3.63 ≈ RM 17/clip). Slightly cheaper
+ * and simpler; the allowances/caps below are unchanged and margin improves a
+ * touch. See VideoAgent SEEDANCE_* constants for the live per-second rate.
  *
  * Cap rebase 2026-06-04 (allowance tightening + Enterprise tier): PRICES UNCHANGED
  * (RM 688/1688/6888) but allowances cut to lift margin —
@@ -52,7 +57,7 @@
  * hard-gated by the month/week/day video windows below.
  *
  * PLATFORMS: every tier supports the same set — Facebook, Instagram, Threads,
- * TikTok, YouTube, LinkedIn (the Blotato + Veo video-capable set). Platforms
+ * TikTok, YouTube, LinkedIn (the publish + video-capable set). Platforms
  * are not tier-gated; the list is documented per tier for marketing clarity.
  *
  * Cap philosophy: marketed limits are GENEROUS (60/300/unlimited posts, all
@@ -63,14 +68,14 @@
  * content); videos hard-fail with an upgrade nudge. See
  * App\Services\Billing\PlanCaps for the enforcement layer.
  *
- * VIDEO COST REBASE 2026-05-29: video moved from FAL Wan (~$0.50/clip) to
- * Google Veo 3 Fast + Veo 3.1 extend — a 6s clip ≈ $0.90, 8s ≈ $1.20, and a
- * 15s clip (8s base + 7s extend) ≈ $4.00 (≈ RM 18.80 at FX 4.7). The video
- * allowance is a single MONTHLY cap (Solo 5 / Studio 15 / Agency 60); the
- * customer self-paces within the month — no weekly or daily throttle. The
+ * VIDEO COST: Wan (~$0.50/clip, 2026-05) → Veo 3 Fast + extend (15s ≈ $4.00 ≈
+ * RM 18.80, 2026-05-29) → ByteDance Seedance 2.0 Fast (2026-07): ~$0.2419/s @
+ * 720p with native audio bundled and NO extend, so a 15s clip ≈ $3.63 ≈ RM 17.
+ * The video allowance is a single MONTHLY cap (Solo 5 / Studio 15 / Agency 60);
+ * the customer self-paces within the month — no weekly or daily throttle. The
  * allowance is small enough that even all-15s use can't sink the tier
- * (RM 94/282/1128 of video against RM 688/1688/6888 prices). Realistic blended
- * gross margin ~66-73%.
+ * (≈ RM 85/255/1020 of video against RM 688/1688/6888 prices). Realistic blended
+ * gross margin ~67-74%.
  *
  * There is intentionally NO per-day USD FAL breaker (removed 2026-06-01).
  * Image/video generation is bound ONLY by the monthly volume caps below — the
@@ -103,7 +108,7 @@ return [
                 // eats the image budget. Posts past this defer to next period
                 // (auto-release 1st of month at workspace TZ). Warning at 80%.
                 'max_published_posts_per_month' => 29, // 25 image + 4 video
-                // AI video generations (each a 15s Veo clip ≈ RM 18.80) —
+                // AI video generations (each a 15s Seedance 2.0 clip ≈ RM 17) —
                 // a single MONTHLY allowance; the customer self-paces within the
                 // month (no weekly/daily throttle). Hard fail past the month cap
                 // (no defer — video cost is at generation, not publish).

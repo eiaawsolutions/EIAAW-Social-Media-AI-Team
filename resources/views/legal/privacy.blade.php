@@ -72,7 +72,7 @@
   </p>
   <ul>
     <li><strong>Anthropic (Claude)</strong> — caption drafting, strategy, and compliance reasoning.</li>
-    <li><strong>FAL.AI</strong> — image (Nano Banana / Gemini 2.5 Flash Image) and short-form video (Google Veo 3) generation.</li>
+    <li><strong>FAL.AI</strong> — image (Nano Banana / Gemini 2.5 Flash Image) and short-form video (Seedance 2.0, ByteDance) generation.</li>
     <li><strong>Stripe</strong> — payment processing and subscription management.</li>
     <li><strong>Metricool</strong> — social scheduling, publishing, and per-post analytics.</li>
     <li><strong>Blotato</strong> — social-account connection and standby publishing.</li>
