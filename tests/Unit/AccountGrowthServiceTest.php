@@ -2,11 +2,13 @@
 
 namespace Tests\Unit;
 
+use App\Jobs\RefreshAccountGrowthJob;
 use App\Models\Brand;
 use App\Services\Metricool\AccountGrowthService;
 use App\Services\Metricool\MetricoolClient;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 /**
@@ -369,5 +371,63 @@ class AccountGrowthServiceTest extends TestCase
 
         $this->assertTrue($out['followers']['reachable']);
         $this->assertTrue($out['impressions']['reachable']);
+    }
+
+    // ─── Web-safe read path (cachedForBrand) ──────────────────────────────
+    // The /agency/performance render calls cachedForBrand(), which must NEVER
+    // fan out to Metricool inside the web request — that ~13-serial-call pull
+    // pinned the web worker and stalled everyone (prod_web_is_artisan_serve_dev_server).
+
+    public function test_cached_for_brand_cold_cache_warms_in_background_without_calling_metricool(): void
+    {
+        Http::fake();  // any real call = a regression (would re-pin the worker)
+        Queue::fake();
+
+        $brand = $this->brand();
+        $brand->id = 7; // dispatch serialises by id
+
+        $out = (new AccountGrowthService($this->client()))->cachedForBrand($brand, 30);
+
+        $this->assertTrue($out['warming'], 'cold cache → warming scaffold');
+        $this->assertFalse($out['followers']['has_data']);
+        $this->assertTrue($out['configured']);
+        Http::assertNothingSent();
+        Queue::assertPushed(
+            RefreshAccountGrowthJob::class,
+            fn (RefreshAccountGrowthJob $j) => $j->brandId === 7 && $j->windowDays === 30
+        );
+    }
+
+    public function test_cached_for_brand_warm_cache_returns_payload_and_does_not_queue(): void
+    {
+        Http::fake();
+        Queue::fake();
+
+        // Whatever the worker/forBrand() last wrote under the shared key is served
+        // verbatim — no recompute, no dispatch.
+        $sentinel = ['configured' => true, 'warming' => false, '_sentinel' => 'warm'];
+        Cache::put('metricool:growth:6322515:30', $sentinel, 300);
+
+        $out = (new AccountGrowthService($this->client()))->cachedForBrand($this->brand(), 30);
+
+        $this->assertSame($sentinel, $out);
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
+    }
+
+    public function test_queue_refresh_is_stampede_guarded(): void
+    {
+        Queue::fake();
+
+        $brand = $this->brand();
+        $brand->id = 7;
+        $svc = new AccountGrowthService($this->client());
+
+        // A poll/refresh storm: many calls in the guard window → one job only.
+        $svc->queueRefresh($brand, 30);
+        $svc->queueRefresh($brand, 30);
+        $svc->queueRefresh($brand, 30);
+
+        Queue::assertPushed(RefreshAccountGrowthJob::class, 1);
     }
 }

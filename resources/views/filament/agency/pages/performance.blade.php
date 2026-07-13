@@ -96,7 +96,19 @@
             <div class="perf-growth">
                 <div class="perf-section-title">Account growth · live from Metricool</div>
 
-                @if ($growthUnreachable)
+                @if (($g['data']['warming'] ?? false) === true)
+                    {{-- Cold cache: the worker is pulling growth off the web request
+                         (so the page stays fast). Poll briefly — this banner and the
+                         wire:poll disappear the moment the real tiles render. --}}
+                    <div class="perf-growth-outage" role="status" wire:poll.8s>
+                        <span class="ico" aria-hidden="true">⟳</span>
+                        <div class="msg">
+                            <strong>Pulling your latest followers &amp; impressions from Metricool…</strong>
+                            This runs in the background so your dashboard stays fast — your account growth
+                            will appear here automatically in a few seconds.
+                        </div>
+                    </div>
+                @elseif ($growthUnreachable)
                     <div class="perf-growth-outage" role="status">
                         <span class="ico" aria-hidden="true">⟳</span>
                         <div class="msg">

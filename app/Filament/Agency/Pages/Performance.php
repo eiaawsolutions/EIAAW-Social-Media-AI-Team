@@ -77,11 +77,18 @@ class Performance extends Page
                     $ws = $this->workspace();
                     $brand = $ws ? $svc->brandForWorkspace($ws) : null;
                     if ($brand && $brand->metricool_blog_id) {
+                        // Drop the cached payload AND the stampede guard, then
+                        // queue a fresh pull on the worker. Never pull inline —
+                        // that would re-pin the web worker (the original stall).
                         $svc->forget((int) $brand->metricool_blog_id, $this->window);
+                        \Illuminate\Support\Facades\Cache::forget(
+                            AccountGrowthService::refreshLockKey((int) $brand->metricool_blog_id, $this->window)
+                        );
+                        $svc->queueRefresh($brand, $this->window);
                     }
                     Notification::make()
-                        ->title('Growth refreshed')
-                        ->body('Pulled the latest account followers + impressions from Metricool.')
+                        ->title('Refreshing growth')
+                        ->body('Pulling the latest followers + impressions from Metricool in the background — they’ll appear here in a few seconds.')
                         ->success()
                         ->send();
                 }),
@@ -235,7 +242,11 @@ class Performance extends Page
         return [
             'configured' => \App\Services\Metricool\MetricoolClient::fromConfig() !== null,
             'brand' => ['id' => $brand->id, 'name' => $brand->name, 'blog_id' => $brand->metricool_blog_id],
-            'data' => $svc->forBrand($brand, $this->window),
+            // Web-safe read: cache-hit or a 'warming' scaffold — never the ~13
+            // serial Metricool calls inside this request (that pinned the web
+            // worker; see memory prod_web_is_artisan_serve_dev_server). The
+            // worker warms the cache and the view polls it in.
+            'data' => $svc->cachedForBrand($brand, $this->window),
         ];
     }
 

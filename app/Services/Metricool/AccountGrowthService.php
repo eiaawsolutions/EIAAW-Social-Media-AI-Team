@@ -2,6 +2,7 @@
 
 namespace App\Services\Metricool;
 
+use App\Jobs\RefreshAccountGrowthJob;
 use App\Models\Brand;
 use App\Models\Workspace;
 use Illuminate\Support\Carbon;
@@ -206,6 +207,99 @@ class AccountGrowthService
                 'impressions' => $this->impressionsDimension($blogId, $fromIso, $toIso, $deadline),
             ];
         });
+    }
+
+    /**
+     * WEB-SAFE read path — the version the /agency/performance render calls.
+     * NEVER fans out to Metricool inside the web request (that ~13-serial-call
+     * pull, up to the 18s budget, is what pinned the single web worker and made
+     * two users on two brands stall — see memory prod_web_is_artisan_serve_dev_server).
+     *
+     *   - Cache hit  → return the payload forBrand()/the job already computed.
+     *   - Cache miss → dispatch RefreshAccountGrowthJob (stampede-guarded) to warm
+     *                  the cache on the WORKER, and return a 'warming' scaffold so
+     *                  the page renders instantly. The view polls briefly and the
+     *                  real tiles/charts swap in once the worker fills the cache.
+     *   - Unconfigured / unmapped → the same empty scaffold forBrand() returns
+     *                  (no HTTP in that branch anyway).
+     *
+     * Reads the SAME metricool:growth:{blogId}:{window} key forBrand() writes, so
+     * the agent path, the goal-baseline path and the tests are all untouched.
+     *
+     * @return array<string,mixed>
+     */
+    public function cachedForBrand(Brand $brand, int $windowDays = 30): array
+    {
+        $windowDays = max(7, min(180, $windowDays));
+        $blogId = (int) ($brand->metricool_blog_id ?? 0);
+
+        // Not wired / not mapped: forBrand()'s early return makes no HTTP call,
+        // so it's already web-safe — reuse it for the identical empty scaffold.
+        if ($this->client === null || $blogId <= 0) {
+            return $this->forBrand($brand, $windowDays);
+        }
+
+        $cached = Cache::get(sprintf('metricool:growth:%d:%d', $blogId, $windowDays));
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $this->queueRefresh($brand, $windowDays);
+
+        return $this->warmingScaffold($brand, $blogId, $windowDays);
+    }
+
+    /**
+     * Queue a background growth pull, guarded so a poll/refresh storm can't spawn
+     * a pile of duplicate Metricool fan-outs. At most one in-flight refresh per
+     * brand+window; the job releases the guard when it finishes (or the 120s TTL
+     * does, whichever comes first). No-op when unconfigured / unmapped.
+     */
+    public function queueRefresh(Brand $brand, int $windowDays = 30): void
+    {
+        $blogId = (int) ($brand->metricool_blog_id ?? 0);
+        if ($this->client === null || $blogId <= 0) {
+            return;
+        }
+        $windowDays = max(7, min(180, $windowDays));
+
+        // Cache::add is atomic: only the first caller wins the lock and dispatches.
+        if (! Cache::add(self::refreshLockKey($blogId, $windowDays), 1, 120)) {
+            return;
+        }
+
+        RefreshAccountGrowthJob::dispatch($brand->id, $windowDays)->onQueue('metrics');
+    }
+
+    /** Stampede-guard key — shared with RefreshAccountGrowthJob so it can release it. */
+    public static function refreshLockKey(int $blogId, int $windowDays): string
+    {
+        return sprintf('metricool:growth:refreshing:%d:%d', $blogId, $windowDays);
+    }
+
+    /**
+     * The instant, HTTP-free payload the page shows on a cold cache: the same
+     * shape forBrand() returns, empty dimensions, plus warming=true so the view
+     * can show "pulling your latest growth…" instead of a wall of empty tiles.
+     *
+     * @return array<string,mixed>
+     */
+    private function warmingScaffold(Brand $brand, int $blogId, int $windowDays): array
+    {
+        $to = Carbon::now($brand->timezone ?: 'UTC')->endOfDay();
+        $from = $to->copy()->subDays($windowDays - 1)->startOfDay();
+
+        return [
+            'configured' => true,
+            'blog_id' => $blogId,
+            'window_days' => $windowDays,
+            'from' => $from->toDateString(),
+            'to' => $to->toDateString(),
+            'unsupported' => $this->unsupportedNetworks(),
+            'warming' => true,
+            'followers' => $this->emptyDimension('Followers'),
+            'impressions' => $this->emptyDimension('Impressions'),
+        ];
     }
 
     /**
