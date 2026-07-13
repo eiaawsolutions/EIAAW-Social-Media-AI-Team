@@ -153,6 +153,50 @@
                 margin-top: 4px;
             }
             .corpus-add-loc:hover { border-color: var(--eiaaw-primary); background: var(--eiaaw-primary-tint); }
+            .corpus-brand-switch {
+                background: var(--eiaaw-primary-tint);
+                border: 1px solid var(--eiaaw-line);
+                border-radius: 12px;
+                padding: 16px 18px;
+                margin-bottom: 20px;
+            }
+            .corpus-brand-switch select { max-width: 420px; }
+            .corpus-item {
+                border: 1px solid var(--eiaaw-line);
+                border-radius: 10px;
+                padding: 14px 16px;
+                margin-bottom: 10px;
+                background: var(--eiaaw-bg);
+            }
+            .corpus-item-head {
+                display: flex; align-items: baseline; gap: 10px;
+                margin-bottom: 6px; flex-wrap: wrap;
+            }
+            .corpus-item-type {
+                font-family: var(--eiaaw-mono);
+                font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+                color: var(--eiaaw-primary-dark);
+                background: var(--eiaaw-primary-tint);
+                border-radius: 999px; padding: 3px 9px;
+                white-space: nowrap;
+            }
+            .corpus-item-label {
+                font-size: 12.5px; font-weight: 500; color: var(--eiaaw-ink-2);
+            }
+            .corpus-item-body {
+                font-size: 13px; line-height: 1.55; color: var(--eiaaw-ink-2);
+                margin: 0 0 10px; white-space: pre-wrap;
+            }
+            .corpus-item-actions { display: flex; gap: 8px; }
+            .corpus-item-btn {
+                font-size: 12px; color: var(--eiaaw-ink-2);
+                background: white; border: 1px solid var(--eiaaw-line);
+                border-radius: 8px; padding: 5px 12px; cursor: pointer;
+                transition: all .2s ease;
+            }
+            .corpus-item-btn:hover { border-color: var(--eiaaw-ink); background: var(--eiaaw-bg-warm); }
+            .corpus-item-btn-danger { color: #b4413c; }
+            .corpus-item-btn-danger:hover { border-color: #b4413c; background: #fbeceb; }
         </style>
     @endpush
 
@@ -177,6 +221,28 @@
                 <span aria-hidden="true">→</span>
             </a>
         @else
+            @php $allBrands = $this->brands(); @endphp
+            @if ($allBrands->count() > 1)
+                {{-- Brand selector: the corpus is per-brand, so the operator ties
+                     every entry below to the RIGHT brand here. Without this the
+                     page always operated on the first brand and all corpus items
+                     piled onto it. --}}
+                <div class="corpus-brand-switch">
+                    <label class="corpus-field-label" for="corpus-brand-select" style="margin: 0 0 6px;">
+                        Which brand is this corpus for?
+                    </label>
+                    <select id="corpus-brand-select" class="corpus-input" wire:model.live="brand">
+                        @foreach ($allBrands as $b)
+                            <option value="{{ $b->id }}">{{ $b->name }}</option>
+                        @endforeach
+                    </select>
+                    <p style="font-size:12px;color:var(--eiaaw-mute);margin:8px 0 0;">
+                        Everything below — business facts, profile, pasted posts, website chunks — is tied to
+                        <strong>{{ $brand->name }}</strong>. Switch here to seed a different brand.
+                    </p>
+                </div>
+            @endif
+
             <div class="corpus-meta">{{ $brand->name }} · Corpus seeding</div>
             <div class="corpus-progress">
                 <div class="corpus-progress-num">{{ $existing }}</div>
@@ -394,6 +460,58 @@
                     </span>
                     <span wire:loading wire:target="seedFromWebsite">Scraping & embedding…</span>
                 </button>
+            </div>
+
+            {{-- Manage existing corpus items: edit re-embeds so the vector tracks
+                 the text; delete removes it from grounding + the dedup gate. --}}
+            <div class="corpus-card">
+                <h3>Corpus items for {{ $brand->name }}</h3>
+                <p class="lead">
+                    Everything indexed for this brand. <strong>Edit</strong> fixes the text and re-embeds it so
+                    the Writer and the dedup gate stay in sync; <strong>delete</strong> removes it from grounding
+                    entirely. Newest first.
+                </p>
+
+                @php $items = $this->corpusItems(); @endphp
+                @forelse ($items as $item)
+                    <div class="corpus-item" wire:key="corpus-item-{{ $item->id }}">
+                        @if ($editingId === $item->id)
+                            <label class="corpus-field-label" for="edit-label-{{ $item->id }}" style="margin-top:0;">Label</label>
+                            <input id="edit-label-{{ $item->id }}" type="text" class="corpus-input"
+                                   wire:model="editLabel" placeholder="Label (optional)">
+                            <label class="corpus-field-label" for="edit-content-{{ $item->id }}">Content</label>
+                            <textarea id="edit-content-{{ $item->id }}" class="corpus-textarea"
+                                      style="min-height:140px;" wire:model="editContent"></textarea>
+                            <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+                                <button type="button" class="corpus-cta"
+                                        wire:click="saveEdit" wire:loading.attr="disabled" wire:target="saveEdit">
+                                    <span wire:loading.remove wire:target="saveEdit">Save &amp; re-embed</span>
+                                    <span wire:loading wire:target="saveEdit">Saving…</span>
+                                </button>
+                                <button type="button" class="corpus-cta corpus-cta-ghost" wire:click="cancelEdit">Cancel</button>
+                            </div>
+                        @else
+                            <div class="corpus-item-head">
+                                <span class="corpus-item-type">{{ str_replace('_', ' ', $item->source_type) }}</span>
+                                <span class="corpus-item-label">{{ $item->source_label ?: '—' }}</span>
+                            </div>
+                            <p class="corpus-item-body">{{ \Illuminate\Support\Str::limit($item->content, 240) }}</p>
+                            <div class="corpus-item-actions">
+                                <button type="button" class="corpus-item-btn"
+                                        wire:click="startEdit({{ $item->id }})">Edit</button>
+                                <button type="button" class="corpus-item-btn corpus-item-btn-danger"
+                                        wire:click="deleteItem({{ $item->id }})"
+                                        wire:confirm="Delete this corpus item? It's removed from the Writer's grounding and the dedup gate.">
+                                    Delete
+                                </button>
+                            </div>
+                        @endif
+                    </div>
+                @empty
+                    <p style="font-size:12.5px;color:var(--eiaaw-mute);margin:0;">
+                        No corpus items yet for {{ $brand->name }}. Paste posts above, or seed from the website.
+                    </p>
+                @endforelse
             </div>
 
             <div style="margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--eiaaw-line-soft); font-family: var(--eiaaw-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--eiaaw-mute);">

@@ -11,6 +11,7 @@ use App\Services\Readiness\SetupReadiness;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use GuzzleHttp\Client as Http;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -72,6 +73,17 @@ class BrandCorpusSeed extends Page
     public string $pasteText = '';
 
     /**
+     * Inline-edit state for a single corpus item. `editingId` is the row being
+     * edited (null = none); `editContent`/`editLabel` hold the working copy the
+     * operator is typing. Kept flat + scalar so Livewire can hydrate it safely.
+     */
+    public ?int $editingId = null;
+
+    public string $editContent = '';
+
+    public string $editLabel = '';
+
+    /**
      * Operator-supplied business facts state (locations + target audience).
      * Hydrated from the brand on mount, persisted by saveBrandFacts(). These
      * enrich the brand voice the Writer + Strategist reason over — they're
@@ -109,6 +121,24 @@ class BrandCorpusSeed extends Page
     public function mount(): void
     {
         $this->brand = request()->integer('brand') ?: null;
+        // Pin the selector to a CONCRETE brand id so the dropdown shows the
+        // brand every action will tie to. Without this, $this->brand stays null
+        // and the page silently operated on the first brand (the bug: every
+        // corpus item landed on brand #1 because there was no picker).
+        $this->brand = $this->resolveBrand()?->id;
+        $this->hydrateBrandFacts();
+    }
+
+    /**
+     * Livewire hook: the brand selector changed. Re-scope the whole page to the
+     * newly-chosen brand — refill the business facts, abandon any in-progress
+     * edit, and clear the paste box so half-typed content can NEVER be saved
+     * against the wrong brand (the entire point of the selector).
+     */
+    public function updatedBrand(): void
+    {
+        $this->cancelEdit();
+        $this->pasteText = '';
         $this->hydrateBrandFacts();
     }
 
@@ -156,17 +186,26 @@ class BrandCorpusSeed extends Page
         $this->locations = array_values($this->locations);
     }
 
-    public function resolveBrand(): ?Brand
+    /**
+     * The operator's active workspace. The Agency panel is always
+     * own-workspace (see AgencyPanelProvider), so this is the tenant boundary
+     * every brand/corpus query is scoped to.
+     */
+    public function workspace(): ?Workspace
     {
         $user = auth()->user();
         if (! $user) {
             return null;
         }
 
-        /** @var ?Workspace $ws */
-        $ws = $user->currentWorkspace
+        return $user->currentWorkspace
             ?? $user->workspaces()->first()
             ?? $user->ownedWorkspaces()->first();
+    }
+
+    public function resolveBrand(): ?Brand
+    {
+        $ws = $this->workspace();
         if (! $ws) {
             return null;
         }
@@ -182,6 +221,200 @@ class BrandCorpusSeed extends Page
             ->whereNull('archived_at')
             ->orderBy('id')
             ->first();
+    }
+
+    /**
+     * Every non-archived brand in the workspace, for the corpus brand selector.
+     * The corpus is per-brand, so the operator picks WHICH brand each entry ties
+     * to — this selector is the fix for corpus items silently piling onto the
+     * first brand because the page had no picker.
+     *
+     * @return \Illuminate\Support\Collection<int, Brand>
+     */
+    public function brands(): Collection
+    {
+        $ws = $this->workspace();
+        if (! $ws) {
+            return collect();
+        }
+
+        return Brand::where('workspace_id', $ws->id)
+            ->whereNull('archived_at')
+            ->orderBy('name')
+            ->get(['id', 'name']);
+    }
+
+    /**
+     * The selected brand's corpus items, newest first, for the manage list.
+     * Deliberately never selects the 1024-d `embedding` column — it's huge and
+     * useless in the view. Capped at 200 rows (the list is a management surface,
+     * not a paginated archive; a brand with more than 200 items is well past the
+     * 5-item readiness threshold and can prune from the top).
+     *
+     * @return \Illuminate\Support\Collection<int, BrandCorpusItem>
+     */
+    public function corpusItems(): Collection
+    {
+        $brand = $this->resolveBrand();
+        if (! $brand) {
+            return collect();
+        }
+
+        return BrandCorpusItem::where('brand_id', $brand->id)
+            ->orderByDesc('id')
+            ->limit(200)
+            ->get(['id', 'brand_id', 'source_type', 'source_label', 'source_url', 'content', 'created_at']);
+    }
+
+    /**
+     * Load a corpus item by id, but ONLY when it belongs to a brand in the
+     * operator's own workspace. Returns null otherwise — the caller shows a
+     * generic "not found" and never reveals whether the id exists in another
+     * tenant (IDOR-safe: no cross-workspace enumeration).
+     */
+    private function findOwnedItem(int $id): ?BrandCorpusItem
+    {
+        $ws = $this->workspace();
+        if (! $ws) {
+            return null;
+        }
+
+        return BrandCorpusItem::whereKey($id)
+            ->whereHas('brand', fn ($q) => $q->where('workspace_id', $ws->id))
+            ->first();
+    }
+
+    /** Open the inline editor for a corpus item, loading its full text. */
+    public function startEdit(int $id): void
+    {
+        $item = $this->findOwnedItem($id);
+        if (! $item) {
+            Notification::make()->title('Item not found')->danger()->send();
+
+            return;
+        }
+
+        $this->editingId = $item->id;
+        $this->editContent = (string) $item->content;
+        $this->editLabel = (string) $item->source_label;
+    }
+
+    /** Discard the inline editor without saving. */
+    public function cancelEdit(): void
+    {
+        $this->editingId = null;
+        $this->editContent = '';
+        $this->editLabel = '';
+    }
+
+    /**
+     * Persist an edited corpus item. If the CONTENT changed we re-embed it —
+     * the vector MUST track the text, or the Writer's RAG retrieval and the
+     * Compliance dedup gate would reason over a caption that no longer exists.
+     * A label-only edit skips the (paid) embedding call. If re-embedding fails
+     * we change NOTHING (no half-written row with a stale vector).
+     */
+    public function saveEdit(): void
+    {
+        @set_time_limit(180); // a content change triggers an outbound Voyage call
+
+        if ($this->editingId === null) {
+            return;
+        }
+
+        $item = $this->findOwnedItem($this->editingId);
+        if (! $item) {
+            Notification::make()->title('Item not found')->danger()->send();
+            $this->cancelEdit();
+
+            return;
+        }
+
+        $newContent = trim($this->editContent);
+        if (mb_strlen($newContent) < 20) {
+            Notification::make()
+                ->title('Content too short')
+                ->body('A corpus item needs at least 20 characters to be a useful voice / dedup signal.')
+                ->warning()
+                ->send();
+
+            return;
+        }
+
+        $newLabel = mb_substr(trim($this->editLabel), 0, 255);
+        $contentChanged = $newContent !== (string) $item->content;
+
+        if ($contentChanged) {
+            $brand = $item->brand;
+            try {
+                $vector = app(EmbeddingService::class)->embed($newContent, $brand, $brand?->workspace);
+            } catch (\Throwable $e) {
+                Log::error('BrandCorpusSeed: edit re-embed failed', [
+                    'item_id' => $item->id,
+                    'brand_id' => $item->brand_id,
+                    'error' => $e->getMessage(),
+                ]);
+                Notification::make()
+                    ->title('Could not re-embed the edited item')
+                    ->body('The embedding service errored, so nothing was changed: '.mb_substr($e->getMessage(), 0, 160))
+                    ->danger()
+                    ->persistent()
+                    ->send();
+
+                return;
+            }
+
+            $item->content = $newContent;
+            $item->embedding = $vector;
+        }
+
+        if ($newLabel !== '') {
+            $item->source_label = $newLabel;
+        }
+        $item->save();
+
+        app(SetupReadiness::class)->invalidate($item->brand);
+        $this->cancelEdit();
+
+        Notification::make()
+            ->title('Corpus item updated')
+            ->body($contentChanged ? 'Saved and re-embedded with the new text.' : 'Label updated.')
+            ->success()
+            ->send();
+    }
+
+    /** Delete a corpus item, removing it from grounding + the dedup corpus. */
+    public function deleteItem(int $id): void
+    {
+        $item = $this->findOwnedItem($id);
+        if (! $item) {
+            Notification::make()->title('Item not found')->danger()->send();
+
+            return;
+        }
+
+        $brand = $item->brand;
+        $brandId = $item->brand_id;
+        $item->delete();
+
+        if ($this->editingId === $id) {
+            $this->cancelEdit();
+        }
+        if ($brand) {
+            app(SetupReadiness::class)->invalidate($brand);
+        }
+
+        $remaining = BrandCorpusItem::where('brand_id', $brandId)->count();
+        Notification::make()
+            ->title('Corpus item deleted')
+            ->body(sprintf(
+                'Removed. %d item%s remain for %s.',
+                $remaining,
+                $remaining === 1 ? '' : 's',
+                $brand?->name ?? 'this brand',
+            ))
+            ->success()
+            ->send();
     }
 
     public function existingCount(): int
