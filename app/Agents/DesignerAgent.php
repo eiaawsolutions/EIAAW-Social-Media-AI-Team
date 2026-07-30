@@ -64,6 +64,24 @@ class DesignerAgent extends BaseAgent
     private ?array $pendingCompose = null;
 
     /**
+     * RECORD of the routing decision buildPrompt() actually made: 'poster',
+     * 'infographic', or null for the photo path. Set alongside $pendingCompose
+     * (and also on the legacy "model bakes the text in" rollback, where
+     * $pendingCompose stays null but the image is still a text-carrying poster).
+     *
+     * handle() MUST read this rather than re-deriving the route from the
+     * calendar entry. Re-derivation is what shipped six blank posts: PR#84 added
+     * shouldRouteToHookPoster() to buildPrompt()'s poster branch but not to the
+     * copy of the condition in handle(). Because shouldRouteToHookPoster()
+     * returns false whenever isPosterFormat() is true, the two predicates are
+     * mutually exclusive by construction — so EVERY hook-poster-routed draft
+     * evaluated the handle() gate as false, skipped the compose step, and
+     * published the deliberately text-free background that the prompt had just
+     * asked the model for. One decision, recorded once, read once.
+     */
+    private ?string $pendingRouteKind = null;
+
+    /**
      * Per-image cost lookup keyed by FAL model id. Defaults to schnell
      * pricing when model is unknown (errs on under-counting → operator
      * notices on the FAL dashboard, not the other way around).
@@ -122,9 +140,12 @@ class DesignerAgent extends BaseAgent
             return AgentResult::fail('Draft not found.');
         }
 
-        // Reset any compose payload from a prior run on this instance (agents are
+        // Reset the routing state from a prior run on this instance (agents are
         // resolved fresh per call today, but this keeps handle() re-entrant).
+        // Both must be cleared together — a stale route with a null compose
+        // payload would silently mean "poster" for a photo draft.
         $this->pendingCompose = null;
+        $this->pendingRouteKind = null;
 
         // Already has an asset? No-op (idempotent). Re-running is allowed
         // if the user explicitly clears asset_url (e.g. "regenerate image").
@@ -234,29 +255,53 @@ class DesignerAgent extends BaseAgent
         $falUrl = $generated['url'];
         $brandedLocalPath = null;
 
-        // Skip the quote-stamp when this draft was rendered as a summary poster
-        // or multi-panel infographic — those already carry headings + points as
-        // text, so stamping the quote panel on top would double-up the text.
-        // The poster/infographic IS the branded artefact.
-        $entry = $draft->calendarEntry;
-        $isPoster = FalAiClient::modelUsesAspectRatio($generated['model'])
-            && (ImageCreativeDirection::isPosterFormat($entry?->format, $entry?->pillar, $entry?->visual_direction)
-                || ImageCreativeDirection::isInfographicFormat($entry?->format, $entry?->pillar, $entry?->visual_direction));
+        // Read the routing decision buildPrompt() RECORDED — never re-derive it
+        // from the calendar entry. See $pendingRouteKind for why: the re-derived
+        // copy of this condition drifted from the real one and shipped six blank
+        // posts.
+        $isPoster = $this->pendingRouteKind !== null;
 
-        // POSTER / INFOGRAPHIC composition: the generated image is a TEXT-FREE
-        // background; draw the headline + panels/points PROGRAMMATICALLY on top
-        // (exact spelling — the diffusion model garbles dense text). Soft-fail:
-        // if FFmpeg/font/compose breaks, publish the raw background rather than
-        // no media (a bare designed background still beats an image-less post).
-        if ($isPoster && $this->pendingCompose !== null) {
+        // TEXT-FREE BACKGROUND CONTRACT. When $pendingCompose is set, the prompt
+        // we just sent FAL said "render ABSOLUTELY NO TEXT of any kind" — the
+        // model returned an intentionally empty designed card and the composer
+        // owes it a headline. Composition is therefore NOT optional here: the
+        // background on its own is not a degraded image, it is a blank one.
+        $mustCompose = $this->pendingCompose !== null;
+
+        if ($mustCompose) {
             try {
                 $brandedLocalPath = $this->composePosterArtifact($brand, $draft, $falUrl, $this->pendingCompose);
             } catch (\Throwable $e) {
-                Log::warning('DesignerAgent: infographic compose failed; falling back to raw background', [
+                // DO NOT fall back to the raw background. The old soft-fail
+                // rationale ("a bare designed background still beats an
+                // image-less post") is false for this path: what we hold is a
+                // canvas the model was explicitly told to leave empty. Publishing
+                // it is worse than publishing nothing, because it reaches the
+                // audience looking like a broken post. Degrade to a real brand
+                // asset instead, and fail the run if there isn't one — a held
+                // draft is recoverable, a live blank post is not.
+                Log::error('DesignerAgent: poster compose failed on a text-free background; refusing to publish the blank canvas', [
                     'draft_id' => $draft->id,
+                    'route' => $this->pendingRouteKind,
                     'error' => $e->getMessage(),
                 ]);
-                $brandedLocalPath = null;
+
+                app(MediaGenerationAlerter::class)->generationFailed(
+                    'image', $brand, $draft,
+                    'Poster text composition failed: '.substr($e->getMessage(), 0, 160),
+                );
+
+                $fallback = $this->tryLibraryAsset($brand, $draft, 'library-fallback');
+                if ($fallback !== null) {
+                    return $fallback;
+                }
+
+                return AgentResult::fail(
+                    'Poster text composition failed and there is no brand-library image to fall back to, '
+                    .'so this draft has no usable media. The generated background is intentionally blank '
+                    .'(the headline is drawn on afterwards) and must not be published on its own. '
+                    .'Underlying error: '.substr($e->getMessage(), 0, 160),
+                );
             }
         }
 
@@ -315,17 +360,33 @@ class DesignerAgent extends BaseAgent
         // so the /storage/ URL 404'd ("Media preview unavailable") and
         // regenerating only re-wrote the same dead URL.
         $urlForBlotato = $falUrl;
+        $composed = false;
         if ($brandedLocalPath !== null && is_file($brandedLocalPath)) {
             try {
                 $relPath = 'branding/'.$draft->id.'-'.substr(md5(uniqid('', true)), 0, 12).'.jpg';
                 $urlForBlotato = $this->publishArtifact($brandedLocalPath, $relPath);
+                $composed = true;
                 @unlink($brandedLocalPath);
             } catch (\Throwable $e) {
-                Log::warning('DesignerAgent: failed to publish branded image; falling back to FAL URL', [
+                // Falling back to $falUrl is safe for the quote-stamp path (the
+                // FAL still is a real photograph) but NOT when the still is a
+                // text-free poster scaffold — that lands us right back on the
+                // blank canvas the compose step just fixed. Same reasoning as
+                // the compose catch above: hold the draft instead.
+                Log::error('DesignerAgent: failed to publish branded image', [
                     'draft_id' => $draft->id,
+                    'must_compose' => $mustCompose,
                     'error' => $e->getMessage(),
                 ]);
-                // urlForBlotato stays as $falUrl — soft fallback.
+
+                if ($mustCompose) {
+                    return AgentResult::fail(
+                        'The poster was composed but could not be stored on the durable disk, and its '
+                        .'background is intentionally blank so it cannot be published on its own. '
+                        .'Underlying error: '.substr($e->getMessage(), 0, 160),
+                    );
+                }
+                // urlForBlotato stays as $falUrl — soft fallback (real photo).
             }
         }
 
@@ -354,7 +415,9 @@ class DesignerAgent extends BaseAgent
             // Stamp the body this still was generated from so a later caption
             // edit can detect the still is stale and regenerate it (e.g. before
             // reusing it as a video keyframe). See Draft::mediaIsStaleForBody().
-            'branding_payload' => $this->brandingPayloadWithMediaHash($draft),
+            // Also stamp WHAT this asset is (renderContract) so the compliance
+            // gate can prove a text-free background actually got its text.
+            'branding_payload' => $this->brandingPayloadWithMediaHash($draft, $this->renderContract($composed)),
         ]);
 
         return AgentResult::ok([
@@ -465,12 +528,38 @@ class DesignerAgent extends BaseAgent
      * a distiller, so they'd never satisfy that gate and would loop the
      * regenerate forever.
      */
-    private function brandingPayloadWithMediaHash(Draft $draft): array
+    private function brandingPayloadWithMediaHash(Draft $draft, ?array $renderContract = null): array
     {
         $payload = is_array($draft->branding_payload) ? $draft->branding_payload : [];
         $payload['media_body_hash'] = Draft::hashBody($draft->body);
 
+        if ($renderContract !== null) {
+            $payload['render_contract'] = $renderContract;
+        }
+
         return $payload;
+    }
+
+    /**
+     * Describe WHAT this asset is supposed to be, so a later gate can verify it
+     * without re-deriving any routing logic.
+     *
+     * `text_free_background` is the load-bearing field: true means the image
+     * model was told to render an empty canvas, which makes "blank" the EXPECTED
+     * output of generation and the composited text the only thing that turns it
+     * into publishable creative. A draft carrying text_free_background=true with
+     * composed=false is, by definition, a blank post — ComplianceAgent blocks it
+     * outright rather than relying on the pixel heuristics to notice.
+     *
+     * @return array{route:string, text_free_background:bool, composed:bool}
+     */
+    private function renderContract(bool $composed): array
+    {
+        return [
+            'route' => $this->pendingRouteKind ?? 'photo',
+            'text_free_background' => $this->pendingCompose !== null,
+            'composed' => $composed,
+        ];
     }
 
     /**
@@ -573,6 +662,7 @@ class DesignerAgent extends BaseAgent
             $infographic = $this->buildInfographicPrompt($brand, $draft);
             if ($infographic !== null) {
                 $this->pendingCompose = $infographic['compose'];
+                $this->pendingRouteKind = 'infographic';
 
                 return $infographic['prompt'];
             }
@@ -595,6 +685,7 @@ class DesignerAgent extends BaseAgent
             $posterPrompt = $this->buildPosterPrompt($brand, $draft);
             if ($posterPrompt !== null) {
                 $this->pendingCompose = $posterPrompt['compose'];
+                $this->pendingRouteKind = 'poster';
 
                 return $posterPrompt['prompt'];
             }

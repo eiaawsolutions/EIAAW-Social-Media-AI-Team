@@ -143,6 +143,24 @@ return [
         // text-free photo. Photos are still used for lifestyle/brand-moment
         // pillars. Set false to keep the photo-first bias.
         'hook_posters' => (bool) env('BRANDING_HOOK_POSTERS', true),
+
+        // ── Rendered-media vetting (App\Services\Imagery\RenderedMediaInspector) ──
+        // Pixel-level floors the compliance gate enforces on EVERY image before
+        // a draft can be approved. Calibrated 2026-07-30 against the six blank
+        // posts that shipped (scheduled_posts #541-#546) versus known-good
+        // creative; see MediaQualityVettingTest for the measured separation.
+        // Env-tunable so a false positive can be relaxed without a deploy.
+        'media_vetting' => [
+            'enabled' => (bool) env('BRANDING_MEDIA_VETTING', true),
+            // Fraction of pixels that must differ from the modal background tone.
+            'min_ink_coverage' => (float) env('BRANDING_MEDIA_MIN_INK', 0.015),
+            // Fraction of pixels that must sit on a hard local luminance step.
+            // THE discriminator: measured blanks top out at 0.0171, the weakest
+            // real creative starts at 0.0727. 0.035 is the geometric midpoint.
+            'min_edge_density' => (float) env('BRANDING_MEDIA_MIN_EDGE', 0.035),
+            // Wall-clock budget for fetching a remote asset to inspect it.
+            'fetch_timeout_seconds' => (int) env('BRANDING_MEDIA_FETCH_TIMEOUT', 8),
+        ],
     ],
 
     'voyage' => [
