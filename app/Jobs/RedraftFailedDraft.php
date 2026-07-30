@@ -132,6 +132,22 @@ class RedraftFailedDraft implements ShouldQueue
             // video formats). Skip Writer — body is fine, only the asset
             // needs producing. Then re-run Compliance against the now-
             // attached media.
+
+            // media_quality is the one media failure where an asset IS present
+            // — it is just blank. DesignerAgent no-ops when asset_url is set,
+            // so without clearing it first the draft would re-run Designer,
+            // keep the same empty canvas, fail again, and burn every revision
+            // until the cap. Retire the bad URL into asset_urls (history, never
+            // a publish manifest — see [[asset_urls_history_not_manifest]]) so
+            // the audit trail survives.
+            if (in_array('media_quality', $this->collectKinds($failures), true) && $draft->asset_url) {
+                $history = is_array($draft->asset_urls) ? $draft->asset_urls : [];
+                if (! in_array($draft->asset_url, $history, true)) {
+                    $history[] = $draft->asset_url;
+                }
+                $draft->update(['asset_url' => null, 'asset_urls' => array_values($history)]);
+            }
+
             try {
                 app(DesignerAgent::class)->run($brand, ['draft_id' => $draft->id]);
             } catch (\Throwable $e) {
@@ -241,12 +257,17 @@ class RedraftFailedDraft implements ShouldQueue
         $kinds = $this->collectKinds($failures);
 
         // Media-only failures route to regenerate_media (Designer/Video).
-        // Both kinds describe the same condition: the draft needs an asset
-        // it doesn't have. media_required = platform-mandated (IG/TikTok/YT
-        // text-only refusal). calendar_format_media_missing = calendar entry
-        // says single_image/carousel/reel/video/story but asset_url is empty
-        // even on text-permitting platforms (LinkedIn / Threads / Facebook).
-        $mediaKinds = ['media_required', 'calendar_format_media_missing'];
+        // All three describe the same condition: the draft needs an asset it
+        // does not currently have in publishable form. media_required =
+        // platform-mandated (IG/TikTok/YT text-only refusal).
+        // calendar_format_media_missing = calendar entry says
+        // single_image/carousel/reel/video/story but asset_url is empty even on
+        // text-permitting platforms (LinkedIn / Threads / Facebook).
+        // media_quality = an asset IS attached but it is a blank canvas
+        // (compliance check 9). No amount of rewording fixes any of them —
+        // routing media_quality to Writer would rewrite a perfectly good caption
+        // and leave the empty image exactly where it was.
+        $mediaKinds = ['media_required', 'calendar_format_media_missing', 'media_quality'];
         $rewriteableKinds = array_diff($kinds, $mediaKinds);
         $hasRewriteable = !empty($rewriteableKinds);
 

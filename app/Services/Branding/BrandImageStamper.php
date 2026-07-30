@@ -133,7 +133,7 @@ class BrandImageStamper
         file_put_contents($quoteFile, $wrappedQuote);
 
         $tagFile = $workDir . '/tag.txt';
-        file_put_contents($tagFile, 'POWERED BY EIAAW SOLUTIONS');
+        file_put_contents($tagFile, self::trackedTag('POWERED BY EIAAW SOLUTIONS'));
 
         $outputPath = $workDir . '/stamped.jpg';
 
@@ -248,10 +248,39 @@ class BrandImageStamper
             "[bg4][logo]overlay={$logoX}:{$logoY}[bg5];",
 
             // "POWERED BY EIAAW SOLUTIONS" tag.
+            //
+            // NO letter_spacing HERE. drawtext gained that option in FFmpeg 7.x;
+            // production runs 5.1 (Debian 12), where it is not merely ignored —
+            // the whole filtergraph fails to initialise:
+            //   Option 'letter_spacing' not found / Error initializing filter 'drawtext'
+            // which made EVERY quote-card stamp throw, silently degrading each
+            // EIAAW-brand image to the raw FAL still for as long as it shipped.
+            // The tracked-out look is achieved in the tag TEXT instead (see
+            // trackedTag()), which needs no FFmpeg feature at all.
             "[bg5]drawtext=fontfile='{$fontPathEsc}':textfile='{$tagFileEsc}':"
-                . "fontcolor=0x{$teal}:fontsize=18:letter_spacing=2:"
+                . "fontcolor=0x{$teal}:fontsize=18:"
                 . "x={$tagX}:y={$tagY}[final]",
         ]);
+    }
+
+    /**
+     * Letterspace a short all-caps tag by widening the gaps in the STRING,
+     * rather than with drawtext's `letter_spacing` option (FFmpeg 7+ only —
+     * production is on 5.1, where naming it kills the whole filtergraph).
+     *
+     * Only ASCII spaces are used, so this renders identically in any font that
+     * can already render the tag — no risk of tofu from an exotic space glyph.
+     * Word gaps get three spaces so words still read as words once every
+     * character is separated by one.
+     */
+    public static function trackedTag(string $tag): string
+    {
+        $words = preg_split('/\s+/', trim($tag), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+
+        return implode('   ', array_map(
+            static fn (string $word): string => implode(' ', mb_str_split($word)),
+            $words,
+        ));
     }
 
     /**

@@ -15,7 +15,9 @@ use App\Services\Compliance\LearnedRulesProvider;
 use App\Services\Compliance\LearnedRulesRecorder;
 use App\Services\Compliance\LegalRulesProvider;
 use App\Services\Embeddings\EmbeddingService;
+use App\Services\Imagery\RenderedMediaInspector;
 use App\Services\Llm\LlmGateway;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -52,6 +54,20 @@ use InvalidArgumentException;
  *      curated rules (industry unset / 'other' with no rules) it records a
  *      non-blocking 'warning' rather than failing, so existing drafts aren't
  *      retroactively held — the warning nudges the operator to set an industry.
+ *   9. media_quality — the ONLY check that opens the image. Every other check
+ *      reasons about text and metadata; platform_publishability asks merely
+ *      whether an asset_url is PRESENT. That gap let six blank posts go live on
+ *      2026-07-29/30 (scheduled_posts #541-#546): the poster path asks the image
+ *      model for a deliberately TEXT-FREE background because InfographicComposer
+ *      draws the copy afterwards, the compose step was skipped by a routing bug,
+ *      and the empty canvas satisfied all eight checks behind a flawless caption.
+ *      Two layers, cheapest first: (a) the RENDER CONTRACT — DesignerAgent stamps
+ *      branding_payload.render_contract with what the asset is meant to be, so
+ *      "text-free background that never got its text" is a deterministic fail
+ *      with no heuristics involved; (b) PIXEL FORENSICS via
+ *      RenderedMediaInspector for everything else — assets generated before the
+ *      contract existed, operator uploads, and failure modes nobody has seen yet.
+ *      Video is not pixel-inspected (records a non-blocking note).
  *
  * Each check writes a ComplianceCheck row. If ALL pass, the draft moves to
  * 'awaiting_approval' (or 'approved' if its lane is green). If ANY fails, the
@@ -137,6 +153,7 @@ class ComplianceAgent extends BaseAgent
             $this->checkBrandVoice($draft, $brand),
             $this->checkFactualGrounding($draft, $brand),
             $this->checkLegalCompliance($draft, $brand),
+            $this->checkMediaQuality($draft, $brand),
         ];
 
         // A 'warning' is NON-blocking by design (no-rules legal check; dedup
@@ -910,6 +927,230 @@ class ComplianceAgent extends BaseAgent
         $needle = mb_substr($norm($excerpt), 0, 50);
 
         return mb_strlen($needle) >= 20 && stripos($norm($haystack), $needle) !== false;
+    }
+
+    // ─── Check 9: media quality (pixels, not metadata) ────────────────────
+
+    /**
+     * Open the attached image and decide whether it is finished creative.
+     *
+     * Layer 1 — RENDER CONTRACT (deterministic, free, zero false positives).
+     * DesignerAgent records what it set out to produce. `text_free_background`
+     * means the image model was explicitly instructed to render an empty canvas
+     * ("render ABSOLUTELY NO TEXT of any kind") because the headline gets drawn
+     * on afterwards. If that asset was never composed, it IS blank — no pixel
+     * analysis required, and no threshold can be argued with.
+     *
+     * Layer 2 — PIXEL FORENSICS (heuristic, ~5ms + one fetch). Catches the same
+     * class of defect for assets with no contract stamped: everything generated
+     * before this check existed, operator uploads, library assets, and whatever
+     * breaks next.
+     *
+     * Failure policy. A definite blank BLOCKS — that is the whole point, and a
+     * held draft is trivially recoverable where a live blank post is not. A
+     * transient FETCH failure does NOT block (recorded as a warning, like
+     * dedup's fail-open) because a flaky CDN must not freeze the pipeline; but
+     * an HTTP 4xx/5xx from the asset URL DOES block, since a media URL the
+     * platform cannot fetch either is a real, publish-breaking defect
+     * ([[asset_urls_history_not_manifest]] shipped exactly that).
+     */
+    private function checkMediaQuality(Draft $draft, Brand $brand): ComplianceCheck
+    {
+        $record = fn (string $result, float $score, string $reason, array $details) => ComplianceCheck::create([
+            'draft_id' => $draft->id,
+            'brand_id' => $brand->id,
+            'check_type' => 'media_quality',
+            'score' => $score,
+            'threshold' => 1.0,
+            'result' => $result,
+            'reason' => $reason,
+            'details' => $details + ['platform' => $draft->platform],
+            'checked_at' => now(),
+        ]);
+
+        if (! (bool) config('services.branding.media_vetting.enabled', true)) {
+            return $record('pass', 1.0, 'Media vetting is disabled for this environment.', ['skipped' => 'disabled']);
+        }
+
+        $assetUrl = trim((string) $draft->asset_url);
+        if ($assetUrl === '') {
+            // Whether a missing asset is allowed is platform_publishability's
+            // call, not ours. Don't double-fail the same draft.
+            return $record('pass', 1.0, 'No image attached — media presence is judged by the platform rules check.', ['asset' => 'none']);
+        }
+
+        $contract = is_array($draft->branding_payload['render_contract'] ?? null)
+            ? $draft->branding_payload['render_contract']
+            : null;
+
+        // Layer 1 short-circuits BEFORE any network I/O: when the contract
+        // already proves the asset is an uncomposed blank there is nothing a
+        // download could add.
+        $inspection = null;
+        if (! self::contractProvesBlank($contract) && ! self::looksLikeVideo($assetUrl)) {
+            $inspection = $this->inspectCached($assetUrl);
+        }
+
+        $decision = self::decideMediaQuality($contract, $inspection, self::looksLikeVideo($assetUrl));
+
+        return $record($decision['result'], $decision['score'], $decision['reason'], $decision['details']);
+    }
+
+    /**
+     * Fetch-and-inspect, memoised per asset URL.
+     *
+     * This gate runs on SYNCHRONOUS paths too — the draft editor's Re-check
+     * button, the scheduled-post re-check, the setup wizard — on top of two LLM
+     * calls that are already in the request. An unbounded image download on that
+     * path is how /agency/performance earned its 500s
+     * ([[performance_page_timeout_500]]), so the fetch is short-budgeted and the
+     * result is cached.
+     *
+     * Caching by URL is sound here because asset URLs are immutable by
+     * construction: DesignerAgent mints a new randomised path per render and
+     * never overwrites one (see the `branding/<draft>-<random>.jpg` key). A
+     * given URL therefore always denotes the same bytes, and the re-check /
+     * redraft loops that hit the same asset repeatedly cost one fetch, not N.
+     *
+     * A failed inspection is cached for a much shorter window than a successful
+     * one, so a transient outage cannot pin a draft in the warning state.
+     *
+     * @return array{ok:bool,verdict:string,reason:string,metrics:array}
+     */
+    private function inspectCached(string $assetUrl): array
+    {
+        $key = 'media_vet:'.sha1($assetUrl);
+        $cached = Cache::get($key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $inspection = app(RenderedMediaInspector::class)->inspectUrl(
+            $assetUrl,
+            (int) config('services.branding.media_vetting.fetch_timeout_seconds', 8),
+        );
+
+        Cache::put(
+            $key,
+            $inspection,
+            $inspection['verdict'] === RenderedMediaInspector::VERDICT_UNREADABLE
+                ? now()->addMinutes(5)
+                : now()->addHours(24),
+        );
+
+        return $inspection;
+    }
+
+    /**
+     * Pure decision function for check 9 — no DB, no network, no container.
+     * Split out for the same reason decideLegalResult() was: the interesting
+     * part is the policy, and policy that cannot be unit-tested is policy that
+     * drifts. See MediaQualityDecisionTest.
+     *
+     * @param  array<string,mixed>|null  $contract  branding_payload.render_contract
+     * @param  array{ok:bool,verdict:string,reason:string,metrics:array}|null  $inspection  null when not inspected
+     * @return array{result:string, score:float, reason:string, details:array<string,mixed>}
+     */
+    public static function decideMediaQuality(?array $contract, ?array $inspection, bool $isVideo): array
+    {
+        // ── Layer 1: render contract (deterministic) ──
+        if (self::contractProvesBlank($contract)) {
+            return [
+                'result' => 'fail',
+                'score' => 0.0,
+                'reason' => 'This image is an empty designed background: it was generated with "no text" on purpose so '
+                    .'the headline could be drawn onto it afterwards, and that step never completed. Regenerate the '
+                    .'image (Designer) before approving — publishing it would post a blank card.',
+                'details' => ['layer' => 'render_contract', 'render_contract' => $contract],
+            ];
+        }
+
+        if ($isVideo) {
+            return [
+                'result' => 'pass',
+                'score' => 1.0,
+                'reason' => 'Video asset — frame-level vetting is not applied to video.',
+                'details' => ['layer' => 'skipped', 'asset' => 'video'],
+            ];
+        }
+
+        if ($inspection === null) {
+            return [
+                'result' => 'warning',
+                'score' => 0.0,
+                'reason' => 'The image was not inspected this run — not blocking.',
+                'details' => ['layer' => 'skipped'],
+            ];
+        }
+
+        // ── Layer 2: pixel forensics ──
+        $base = ['layer' => 'pixels', 'verdict' => $inspection['verdict']]
+            + ($contract !== null ? ['render_contract' => $contract] : []);
+
+        if ($inspection['verdict'] === RenderedMediaInspector::VERDICT_UNREADABLE) {
+            // A URL the platform will not be able to fetch either is a real,
+            // publish-breaking defect and BLOCKS. A flaky fetch on our side is
+            // not the draft's fault and only warns — same fail-open posture as
+            // dedup when embeddings are unavailable.
+            $deadUrl = str_contains($inspection['reason'], 'HTTP')
+                || str_contains($inspection['reason'], 'not a decodable image');
+
+            return [
+                'result' => $deadUrl ? 'fail' : 'warning',
+                'score' => 0.0,
+                'reason' => $inspection['reason'].($deadUrl
+                    ? ' Regenerate or re-upload the image before approving.'
+                    : ' Could not vet the pixels this run — not blocking.'),
+                'details' => $base + ['dead_url' => $deadUrl],
+            ];
+        }
+
+        if (! $inspection['ok']) {
+            return [
+                'result' => 'fail',
+                'score' => 0.0,
+                'reason' => $inspection['reason'].' Regenerate the image (Designer) before approving.',
+                'details' => $base + ['metrics' => $inspection['metrics']],
+            ];
+        }
+
+        return [
+            'result' => 'pass',
+            'score' => 1.0,
+            'reason' => $inspection['reason'],
+            'details' => $base + ['metrics' => $inspection['metrics']],
+        ];
+    }
+
+    /**
+     * True when the render contract ALONE proves the asset is a blank canvas:
+     * the image model was told to leave it empty and the compositing step that
+     * was supposed to add the words never landed. No pixels needed.
+     *
+     * @param  array<string,mixed>|null  $contract
+     */
+    public static function contractProvesBlank(?array $contract): bool
+    {
+        return $contract !== null
+            && (bool) ($contract['text_free_background'] ?? false)
+            && ! (bool) ($contract['composed'] ?? false);
+    }
+
+    /**
+     * Cheap extension sniff so the inspector is never handed an MP4. Query
+     * strings are stripped first — signed CDN URLs routinely carry them.
+     */
+    public static function looksLikeVideo(string $url): bool
+    {
+        $path = strtolower((string) (parse_url($url, PHP_URL_PATH) ?: $url));
+
+        foreach (['.mp4', '.mov', '.webm', '.m4v', '.avi', '.mkv'] as $ext) {
+            if (str_ends_with($path, $ext)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
