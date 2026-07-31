@@ -107,6 +107,30 @@ class OptimizerAgent extends BaseAgent
     /** Floor for any live platform, so one strong network can't take 100%. */
     private const MIN_PLATFORM_WEIGHT = 0.05;
 
+    /**
+     * Collapse verdict. A window median is backward-looking, so a surface that
+     * was healthy for three weeks and then stopped delivering still reads as
+     * healthy on the median alone — and would attract MORE cadence.
+     *
+     * Real case: TikTok held ~93-116 views per post through 2026-07-20, then
+     * every post from 07-23 sat at 0-4. Old posts kept their views and every
+     * post published fine, so this was new-upload suppression at the platform's
+     * end — invisible to a median test (window median was still ~102) and
+     * invisible to the publishing pipeline.
+     *
+     * A surface is COLLAPSED when its most recent posts have fallen to a small
+     * fraction of what the same surface was doing earlier in the window. The
+     * prior-median floor keeps this distinct from DEAD: a surface that never
+     * delivered has no height to fall from and is dead, not collapsed.
+     */
+    private const COLLAPSE_RECENT_FRACTION = 0.3;
+
+    private const COLLAPSE_MIN_RECENT_POSTS = 3;
+
+    private const COLLAPSE_PRIOR_MEDIAN_FLOOR = 10;
+
+    private const COLLAPSE_RATIO = 0.25;
+
     protected function handle(Brand $brand, array $input): AgentResult
     {
         $windowDays = (int) ($input['window_days'] ?? self::DEFAULT_WINDOW_DAYS);
@@ -212,6 +236,8 @@ class OptimizerAgent extends BaseAgent
             'engagement' => $this->engagement($m),
             'pillar' => $m->scheduledPost?->draft?->calendarEntry?->pillar,
             'format' => $m->scheduledPost?->draft?->calendarEntry?->format,
+            // Chronology is what makes the collapse check meaningful.
+            'published_at' => (string) ($m->scheduledPost?->published_at ?? ''),
         ])->all();
     }
 
@@ -341,22 +367,48 @@ class OptimizerAgent extends BaseAgent
 
         $stats = [];
         foreach ($grouped as $platform => $rows) {
+            // Chronological, so "recent" means recent. Posts without a
+            // published_at keep their incoming order.
+            usort($rows, fn ($a, $b) => ($a['published_at'] ?? '') <=> ($b['published_at'] ?? ''));
+
             $imps = array_map(fn ($r) => (int) $r['impressions'], $rows);
-            sort($imps);
             $n = count($imps);
-            $median = $n % 2 === 1
-                ? (float) $imps[intdiv($n, 2)]
-                : ($imps[$n / 2 - 1] + $imps[$n / 2]) / 2;
+
+            // Split into "recent tail" vs "everything before it" before sorting,
+            // so the comparison is over time rather than over rank.
+            $recentCount = max(self::COLLAPSE_MIN_RECENT_POSTS, (int) floor($n * self::COLLAPSE_RECENT_FRACTION));
+            $recentMedian = null;
+            $priorMedian = null;
+            if ($n >= self::DEAD_SURFACE_MIN_POSTS && $recentCount < $n) {
+                $recentMedian = self::median(array_slice($imps, -$recentCount));
+                $priorMedian = self::median(array_slice($imps, 0, $n - $recentCount));
+            }
 
             $stats[$platform] = [
                 'posts' => $n,
                 'engagement' => array_sum(array_map(fn ($r) => (int) $r['engagement'], $rows)),
                 'impressions' => array_sum($imps),
-                'median_impressions' => $median,
+                'median_impressions' => self::median($imps),
+                'recent_median_impressions' => $recentMedian,
+                'prior_median_impressions' => $priorMedian,
             ];
         }
 
         return $stats;
+    }
+
+    /** @param array<int,int> $values */
+    private static function median(array $values): float
+    {
+        if ($values === []) {
+            return 0.0;
+        }
+        sort($values);
+        $n = count($values);
+
+        return $n % 2 === 1
+            ? (float) $values[intdiv($n, 2)]
+            : ($values[$n / 2 - 1] + $values[$n / 2]) / 2;
     }
 
     /** @param array{posts:int,median_impressions:float} $s */
@@ -364,6 +416,41 @@ class OptimizerAgent extends BaseAgent
     {
         return $s['posts'] >= self::DEAD_SURFACE_MIN_POSTS
             && $s['median_impressions'] <= self::DEAD_SURFACE_MEDIAN_IMPRESSIONS;
+    }
+
+    /**
+     * Was this surface delivering, and then abruptly stopped?
+     *
+     * Checked only when the surface is NOT already dead — a platform that never
+     * worked is dead, not collapsed, and the two want different operator
+     * actions (fix/abandon the page vs check for a platform restriction).
+     *
+     * @param  array{posts:int,recent_median_impressions:?float,prior_median_impressions:?float}  $s
+     */
+    private static function isCollapsedSurface(array $s): bool
+    {
+        $recent = $s['recent_median_impressions'];
+        $prior = $s['prior_median_impressions'];
+
+        return $recent !== null
+            && $prior !== null
+            && $prior >= self::COLLAPSE_PRIOR_MEDIAN_FLOOR
+            && $recent <= $prior * self::COLLAPSE_RATIO;
+    }
+
+    /**
+     * 'dead' | 'collapsed' | 'live'. Order matters: dead wins, because a
+     * surface that never delivered cannot have collapsed.
+     *
+     * @param  array<string,mixed>  $s
+     */
+    private static function verdictFor(array $s): string
+    {
+        if (self::isDeadSurface($s)) {
+            return 'dead';
+        }
+
+        return self::isCollapsedSurface($s) ? 'collapsed' : 'live';
     }
 
     /**
@@ -405,7 +492,10 @@ class OptimizerAgent extends BaseAgent
 
         $raw = [];
         foreach ($stats as $platform => $s) {
-            if (self::isDeadSurface($s)) {
+            // Dead and collapsed both collapse to the token weight: one never
+            // delivered, the other has stopped, and neither should attract more
+            // of next month's cadence than it can carry.
+            if (self::verdictFor($s) !== 'live') {
                 $raw[$platform] = self::DEAD_SURFACE_WEIGHT;
 
                 continue;
@@ -434,11 +524,13 @@ class OptimizerAgent extends BaseAgent
         $out = [];
         foreach (self::platformStats($posts) as $platform => $s) {
             $out[$platform] = [
-                'verdict' => self::isDeadSurface($s) ? 'dead' : 'live',
+                'verdict' => self::verdictFor($s),
                 'posts' => $s['posts'],
                 'impressions' => $s['impressions'],
                 'engagement' => $s['engagement'],
                 'median_impressions' => $s['median_impressions'],
+                'recent_median_impressions' => $s['recent_median_impressions'],
+                'prior_median_impressions' => $s['prior_median_impressions'],
             ];
         }
 
@@ -591,8 +683,9 @@ class OptimizerAgent extends BaseAgent
         // Name any surface that is not delivering, with the evidence. The
         // weighting already de-prioritises it; this is what tells a human to
         // make the call the system deliberately will not make on its own.
-        $dead = array_filter($surfaceHealth, fn ($h) => ($h['verdict'] ?? null) === 'dead');
         $deadClause = '';
+
+        $dead = array_filter($surfaceHealth, fn ($h) => ($h['verdict'] ?? null) === 'dead');
         if ($dead !== []) {
             $parts = [];
             foreach ($dead as $platform => $h) {
@@ -604,8 +697,29 @@ class OptimizerAgent extends BaseAgent
                     number_format((int) $h['engagement']),
                 );
             }
-            $deadClause = sprintf(
+            $deadClause .= sprintf(
                 ' Not delivering: %s — cadence reduced to a token share; review the account before spending more on it.',
+                implode('; ', $parts),
+            );
+        }
+
+        // Collapsed reads differently to the operator: the surface WAS working,
+        // so the action is to check for a platform restriction, not to fix or
+        // abandon the page.
+        $collapsed = array_filter($surfaceHealth, fn ($h) => ($h['verdict'] ?? null) === 'collapsed');
+        if ($collapsed !== []) {
+            $parts = [];
+            foreach ($collapsed as $platform => $h) {
+                $parts[] = sprintf(
+                    '%s (was ~%s impressions per post, now ~%s)',
+                    ucfirst((string) $platform),
+                    number_format((float) $h['prior_median_impressions'], 0),
+                    number_format((float) $h['recent_median_impressions'], 0),
+                );
+            }
+            $deadClause .= sprintf(
+                ' Stopped delivering: %s — recent posts collapsed against this account\'s own history;'
+                .' check the platform for a restriction on the account before publishing more there.',
                 implode('; ', $parts),
             );
         }

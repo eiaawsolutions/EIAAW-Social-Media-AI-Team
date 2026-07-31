@@ -236,7 +236,92 @@ class OptimizerScoringTest extends TestCase
         $this->assertSame([], OptimizerAgent::meanValueByDimension([], [], 'pillar'));
     }
 
-    // ─── 5. Surface health is reported, not silently applied ───────────────
+    // ─── 5. Collapse detection: a surface that STOPPED delivering ──────────
+    //
+    // A window median is backward-looking. TikTok's real prod shape on
+    // 2026-07-31: ~93-116 views per post all month, then every post from 07-23
+    // onward stuck at 0-4 (old posts unaffected, all posts published fine —
+    // i.e. new-upload suppression at the platform's end). The 30-day median was
+    // still ~102, so a median-only test called the surface healthy and would
+    // have pushed MORE of August's cadence at a restricted account.
+
+    /** @return array<int,array<string,mixed>> */
+    private function series(string $platform, array $impressions, int $engagement = 1): array
+    {
+        $out = [];
+        foreach (array_values($impressions) as $i => $imp) {
+            $out[] = [
+                'platform' => $platform,
+                'impressions' => $imp,
+                'engagement' => $imp > 5 ? $engagement : 0,
+                'pillar' => null,
+                'format' => null,
+                // Ascending, one per day — chronological order is what makes
+                // "recent" meaningful.
+                'published_at' => sprintf('2026-07-%02d 09:00:00', $i + 1),
+            ];
+        }
+
+        return $out;
+    }
+
+    public function test_a_surface_whose_recent_posts_collapsed_is_flagged_even_though_its_median_looks_fine(): void
+    {
+        // TikTok's real trajectory: ten healthy posts, then three at ~0.
+        $posts = $this->series('tiktok', [93, 112, 102, 115, 111, 113, 116, 96, 96, 111, 1, 1, 4]);
+
+        $health = OptimizerAgent::surfaceHealth($posts);
+
+        $this->assertSame('collapsed', $health['tiktok']['verdict']);
+        // The window median on its own still looks perfectly healthy.
+        $this->assertGreaterThan(90, $health['tiktok']['median_impressions']);
+    }
+
+    public function test_a_collapsed_surface_loses_its_share_of_cadence(): void
+    {
+        $posts = array_merge(
+            $this->series('tiktok', [93, 112, 102, 115, 111, 113, 116, 96, 96, 111, 1, 1, 4]),
+            $this->series('instagram', [13, 11, 15, 12, 14, 13, 16, 12, 13, 15, 12, 14]),
+        );
+
+        $mix = OptimizerAgent::platformViability($posts);
+
+        $this->assertLessThan(0.05, $mix['tiktok'], 'A suppressed account must not attract more of the month.');
+        $this->assertGreaterThan(0.0, $mix['tiktok'], 'but must keep a slot so recovery is detected');
+        $this->assertEqualsWithDelta(1.0, array_sum($mix), 0.0001);
+    }
+
+    public function test_normal_week_to_week_variance_is_not_called_a_collapse(): void
+    {
+        // Instagram's real July: noisy but healthy, no suppression.
+        $posts = $this->series('instagram', [17, 6, 13, 67, 7, 3, 61, 36, 53, 12, 40, 28]);
+
+        $health = OptimizerAgent::surfaceHealth($posts);
+
+        $this->assertSame('live', $health['instagram']['verdict']);
+    }
+
+    public function test_an_already_tiny_surface_is_called_dead_not_collapsed(): void
+    {
+        // Facebook never delivered — there is no height to fall from.
+        $posts = $this->series('facebook', [1, 2, 1, 0, 3, 1, 2, 1, 1, 0, 2, 1]);
+
+        $health = OptimizerAgent::surfaceHealth($posts);
+
+        $this->assertSame('dead', $health['facebook']['verdict']);
+    }
+
+    public function test_collapse_needs_enough_posts_to_judge(): void
+    {
+        // Three healthy then two bad is not yet evidence of suppression.
+        $posts = $this->series('threads', [40, 35, 38, 1, 2]);
+
+        $health = OptimizerAgent::surfaceHealth($posts);
+
+        $this->assertSame('live', $health['threads']['verdict']);
+    }
+
+    // ─── 6. Surface health is reported, not silently applied ───────────────
 
     public function test_dead_surfaces_are_named_for_the_operator(): void
     {
