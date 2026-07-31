@@ -123,6 +123,16 @@ return Application::configure(basePath: dirname(__DIR__))
             ->withoutOverlapping(60)
             ->runInBackground();
 
+        // Goal-lifecycle watchdog — Mondays 04:00 UTC, AFTER intel:refresh has
+        // rewritten the growth briefs, so it reads this week's evaluation rather
+        // than last week's. Reports goals that are expiring, structurally
+        // unmeasurable, arithmetically unreachable, never evaluated, or pinned at
+        // max pressure with no actuator left. Read-only and fast, so it runs
+        // INLINE (no runInBackground) — see the PID-leak policy note above.
+        $schedule->command('goals:review')
+            ->weekly()->mondays()->at('04:00')
+            ->withoutOverlapping(30);
+
         // Plan-cap release valve: hourly, flip any scheduled_posts that were
         // deferred to next period back to status='queued' once their
         // queued_for_period_at has arrived. Hourly cadence is plenty — the

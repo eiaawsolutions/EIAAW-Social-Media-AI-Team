@@ -257,10 +257,28 @@ return [
     // the hardcoded 09:00). It NEVER overrides an operator-set time. DEFAULT OFF
     // — this is the only change to the live publish path, so it ships dark and is
     // enabled per-env only after validation. ALERT before enabling in prod.
+    // time_exploration_* is the ε-greedy posting-hour arm (TimeSlotExplorer). It
+    // affects ONLY calendar entries with no operator-pinned scheduled_time —
+    // entries that today all collapse onto a hardcoded 09:00. Without it the
+    // best-time learner has no variance to learn from and reads back its own
+    // default as a discovery (prod 2026-08-01: 606 of 661 entries unpinned,
+    // Instagram's "best hour" computed off n=3 at the fallback hour). ON by
+    // default because a learner with no explore arm is not a learner; set
+    // GROWTH_TIME_EXPLORATION_ENABLED=false to restore the flat 09:00 fallback.
+    //
+    // pressure_actuation gates the L3 rung of GrowthPressure — per-brand
+    // best-time application and format-mix skew for goals far behind pace. L3
+    // touches publish timing AND media COGS (more reels = more AI video against
+    // a capped budget), so it ships dark. L1 (prompt) and L2 (platform/objective
+    // mix) need no flag: they only change what gets PLANNED, are bounded
+    // transfers, and reverse themselves next month. ALERT before enabling L3.
     'growth_strategy' => [
         'enabled' => (bool) env('GROWTH_STRATEGY_ENABLED', true),
         'min_posts' => (int) env('GROWTH_STRATEGY_MIN_POSTS', 6),
         'auto_apply_best_times' => (bool) env('GROWTH_STRATEGY_AUTO_APPLY_BEST_TIMES', false),
+        'time_exploration_enabled' => (bool) env('GROWTH_TIME_EXPLORATION_ENABLED', true),
+        'time_exploration_epsilon' => (float) env('GROWTH_TIME_EXPLORATION_EPSILON', 0.30),
+        'pressure_actuation_enabled' => (bool) env('GROWTH_PRESSURE_ACTUATION_ENABLED', false),
     ],
 
     // ─── Compliance / anti-recycling dedup ──────────────────────────

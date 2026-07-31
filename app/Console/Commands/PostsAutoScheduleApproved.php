@@ -2,12 +2,15 @@
 
 namespace App\Console\Commands;
 
+use App\Agents\StrategistAgent;
 use App\Models\CalendarEntry;
 use App\Models\Draft;
 use App\Models\GrowthStrategyBrief;
 use App\Models\PlatformConnection;
 use App\Models\ScheduledPost;
 use App\Services\Growth\BestTimeResolver;
+use App\Services\Growth\GrowthPressure;
+use App\Services\Growth\TimeSlotExplorer;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -64,6 +67,8 @@ class PostsAutoScheduleApproved extends Command
         $skippedNoConnection = 0;
         $skippedPastFallback = 0;
         $errors = 0;
+        /** @var array<string,int> $strategyTally how each time was chosen, for the run summary */
+        $strategyTally = [];
 
         foreach ($drafts as $draft) {
             try {
@@ -84,17 +89,19 @@ class PostsAutoScheduleApproved extends Command
                     continue;
                 }
 
-                $when = $this->resolveScheduledFor($draft, $brand, $fallbackOffset, $skippedPastFallback);
+                $strategy = null;
+                $when = $this->resolveScheduledFor($draft, $brand, $fallbackOffset, $skippedPastFallback, $strategy);
+                $strategyTally[$strategy] = ($strategyTally[$strategy] ?? 0) + 1;
 
                 if ($dry) {
                     $this->line(sprintf(
-                        '[dry] would schedule draft #%d (%s) brand=%d at %s UTC',
-                        $draft->id, $draft->platform, $brand->id, $when->format('Y-m-d H:i'),
+                        '[dry] would schedule draft #%d (%s) brand=%d at %s UTC [%s]',
+                        $draft->id, $draft->platform, $brand->id, $when->format('Y-m-d H:i'), $strategy,
                     ));
                     continue;
                 }
 
-                DB::transaction(function () use ($draft, $brand, $connection, $when) {
+                DB::transaction(function () use ($draft, $brand, $connection, $when, $strategy) {
                     // Race-safe re-check inside the transaction — another worker
                     // could have created the row between our SELECT and INSERT.
                     $existing = ScheduledPost::where('draft_id', $draft->id)
@@ -112,6 +119,7 @@ class PostsAutoScheduleApproved extends Command
                         'scheduled_for' => $when,
                         'status' => 'queued',
                         'attempt_count' => 0,
+                        'scheduling_strategy' => $strategy,
                     ]);
                     $draft->update(['status' => 'scheduled']);
                 });
@@ -137,6 +145,12 @@ class PostsAutoScheduleApproved extends Command
         $this->line("skipped (no connection):   {$skippedNoConnection}");
         $this->line("fell back to now+offset:   {$skippedPastFallback}");
         $this->line("errors:                    {$errors}");
+        if ($strategyTally !== []) {
+            ksort($strategyTally);
+            $this->line('time chosen by:            '.collect($strategyTally)
+                ->map(fn ($n, $s) => "{$s}={$n}")
+                ->implode(' '));
+        }
 
         return self::SUCCESS;
     }
@@ -154,7 +168,7 @@ class PostsAutoScheduleApproved extends Command
      *
      * @param-out int $skippedPastFallback incremented when fallback path used
      */
-    private function resolveScheduledFor(Draft $draft, \App\Models\Brand $brand, int $fallbackOffsetMinutes, int &$skippedPastFallback): Carbon
+    private function resolveScheduledFor(Draft $draft, \App\Models\Brand $brand, int $fallbackOffsetMinutes, int &$skippedPastFallback, ?string &$strategy = null): Carbon
     {
         $brandTz = $brand->timezone ?: 'UTC';
         $entry = $draft->calendarEntry;
@@ -164,16 +178,20 @@ class PostsAutoScheduleApproved extends Command
             $datePart = Carbon::parse($entry->scheduled_date)->format('Y-m-d');
             $operatorPinned = trim((string) ($entry->scheduled_time ?? '')) !== '';
             // Operator's time wins outright. Only when unpinned do we consider
-            // the computed best hour (else the legacy 09:00 default).
-            $timePart = $operatorPinned
-                ? trim((string) $entry->scheduled_time)
-                : $this->fallbackTimeFor($draft, $brand, $datePart, $brandTz);
+            // the computed best hour (else exploration / the legacy 09:00).
+            if ($operatorPinned) {
+                $timePart = trim((string) $entry->scheduled_time);
+                $strategy = ScheduledPost::SCHEDULING_OPERATOR_PINNED;
+            } else {
+                [$timePart, $strategy] = $this->fallbackTimeFor($draft, $brand, $datePart, $brandTz);
+            }
             // CalendarEntry.scheduled_time is stored as a TIME — combine with
             // date in the brand's TZ, then convert to UTC for storage.
             try {
                 $when = Carbon::createFromFormat('Y-m-d H:i:s', "{$datePart} {$timePart}", $brandTz);
             } catch (\Throwable) {
                 $when = Carbon::createFromFormat('Y-m-d H:i', "{$datePart} 09:00", $brandTz);
+                $strategy = ScheduledPost::SCHEDULING_DEFAULT_FALLBACK;
             }
             $whenUtc = $when->copy()->setTimezone('UTC');
 
@@ -184,32 +202,72 @@ class PostsAutoScheduleApproved extends Command
             $skippedPastFallback++;
         }
 
+        // This hour records when our pipeline caught up, NOT when the audience
+        // was there. Labelling it keeps it out of the best-time learner.
+        $strategy = ScheduledPost::SCHEDULING_PAST_SLOT_FALLBACK;
+
         return $now->copy()->addMinutes($fallbackOffsetMinutes);
     }
 
     /**
-     * The fallback time (HH:MM:SS) to use when the operator didn't pin one.
-     * Legacy default is 09:00. When auto-apply-best-times is enabled and the
-     * brand's GrowthStrategyBrief has a best hour for this (platform, day), use
-     * that hour instead. Pure-fallback path — touches no operator-set time.
+     * The fallback time for an unpinned entry, plus the label describing how it
+     * was chosen. Never touches an operator-set time.
+     *
+     * Three sources, in order:
+     *   1. EXPLOIT — the brief's measured best hour for (platform, day-of-week),
+     *      when best-times application is on for this brand (globally, or via L3
+     *      pressure for a brand whose goal is far behind pace).
+     *   2. EXPLORE — a sampled candidate hour, so the learner has variance to
+     *      learn from. Without this arm every unpinned entry lands on the same
+     *      hour and the learner reads back its own default forever.
+     *   3. DEFAULT — the legacy 09:00.
+     *
+     * The draft id seeds the choice, so a --dry-run preview and the real write
+     * agree, and a re-run picks the same hour.
+     *
+     * @return array{0:string,1:string}  [HH:MM:SS, strategy label]
      */
-    private function fallbackTimeFor(Draft $draft, \App\Models\Brand $brand, string $datePart, string $brandTz): string
+    private function fallbackTimeFor(Draft $draft, \App\Models\Brand $brand, string $datePart, string $brandTz): array
     {
-        if (! (bool) config('services.growth_strategy.auto_apply_best_times', false)) {
-            return '09:00:00';
-        }
-
         $brief = GrowthStrategyBrief::currentForBrand($brand->id)->first();
-        if (! $brief || ! is_array($brief->best_posting_times)) {
-            return '09:00:00';
+
+        // The measured hour is only admissible when best-time application is
+        // enabled — globally, or for this brand because L3 pressure unlocked it.
+        $exploitHour = null;
+        if ($brief && is_array($brief->best_posting_times) && $this->bestTimesEnabledFor($brief)) {
+            $dayOfWeek = (int) Carbon::parse($datePart, $brandTz)->dayOfWeek; // 0=Sun..6=Sat
+            $exploitHour = BestTimeResolver::hourFor($brief->best_posting_times, $draft->platform, $dayOfWeek);
         }
 
-        $dayOfWeek = (int) Carbon::parse($datePart, $brandTz)->dayOfWeek; // 0=Sun..6=Sat
-        $hour = BestTimeResolver::hourFor($brief->best_posting_times, $draft->platform, $dayOfWeek);
-        if ($hour === null) {
-            return '09:00:00';
+        $epsilon = (bool) config('services.growth_strategy.time_exploration_enabled', true)
+            ? (float) config('services.growth_strategy.time_exploration_epsilon', 0.30)
+            : 0.0;
+
+        $decision = TimeSlotExplorer::decide(
+            platform: (string) $draft->platform,
+            seed: (int) $draft->id,
+            exploitHour: $exploitHour,
+            epsilon: $epsilon,
+        );
+
+        return [sprintf('%02d:00:00', $decision['hour']), $decision['strategy']];
+    }
+
+    /**
+     * May we apply the brief's MEASURED best hour for this brand?
+     *
+     * Globally off by default. L3 pressure turns it on per-brand: a goal far
+     * enough behind pace has earned the schedule actuator, and only for as long
+     * as it stays behind. Both switches are required for L3 — the ladder cannot
+     * escalate itself past a flag an operator set.
+     */
+    private function bestTimesEnabledFor(GrowthStrategyBrief $brief): bool
+    {
+        if ((bool) config('services.growth_strategy.auto_apply_best_times', false)) {
+            return true;
         }
 
-        return sprintf('%02d:00:00', $hour);
+        return (bool) config('services.growth_strategy.pressure_actuation_enabled', false)
+            && StrategistAgent::maxRung((array) ($brief->goal_progress ?? [])) >= GrowthPressure::RUNG_SCHEDULE;
     }
 }

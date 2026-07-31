@@ -8,9 +8,12 @@ use App\Models\CalendarEntry;
 use App\Models\CompetitorAd;
 use App\Models\CompetitorStrategyBrief;
 use App\Models\ContentCalendar;
+use App\Models\BrandGrowthGoal;
 use App\Models\GrowthStrategyBrief;
 use App\Models\MarketTrendBrief;
 use App\Services\Compliance\LegalRulesProvider;
+use App\Services\Growth\GoalPressureMix;
+use App\Services\Growth\GrowthPressure;
 use App\Services\Readiness\SetupReadiness;
 use App\Support\TextSimilarity;
 use Illuminate\Support\Carbon;
@@ -59,6 +62,21 @@ class StrategistAgent extends BaseAgent
         'video' => 0.05,
     ];
 
+    /**
+     * L3 format actuation target (see GoalPressureMix::skewFormatMix).
+     *
+     * Carousels and reels are the formats that earn SAVES and SHARES — the
+     * signals platforms use to show a post to people who do not already follow
+     * the account. A follower goal is only moved by non-follower reach, so when
+     * a goal is far behind pace the month shifts toward those two and away from
+     * broadcast formats. Weighted, not absolute: this is a pressure map, and the
+     * transfer it drives is still bounded and floored like every other skew.
+     */
+    private const DISTRIBUTION_FORMAT_PRESSURE = [
+        'carousel' => 1.0,
+        'reel' => 0.8,
+    ];
+
     public function role(): string { return 'strategist'; }
     public function promptVersion(): string { return StrategistPrompt::VERSION; }
 
@@ -100,6 +118,32 @@ class StrategistAgent extends BaseAgent
             $activePlatforms,
             $input['platform_mix'] ?? $reco?->platform_mix,
         );
+
+        // ── L2 goal actuation ────────────────────────────────────────────
+        // Move the weights BEFORE the prompt is built. The pre-existing L1
+        // actuator only asked the model, in prose, to over-index a platform;
+        // whether it complied was unverifiable, and prod showed a goal sitting
+        // at 0% against 47.4% expected for weeks with no observable change. An
+        // explicit caller-supplied mix always wins — this only bends what the
+        // system chose for itself.
+        $goalProgress = $this->goalProgressFor($brand);
+        $pressureMaps = self::pressureMapsFrom($goalProgress);
+        if (! isset($input['platform_mix']) && $pressureMaps['platform'] !== []) {
+            $platformMix = GoalPressureMix::skewPlatformMix($platformMix, $pressureMaps['platform']);
+        }
+
+        // ── L3 format actuation (gated, ships dark) ──────────────────────
+        // Only for goals FAR behind pace. Shifts the month toward formats that
+        // earn distribution (saves/shares reach non-followers) rather than
+        // impressions among people who already follow. Flagged off because it
+        // moves real media spend against a capped video budget.
+        if (! isset($input['format_mix'])
+            && (bool) config('services.growth_strategy.pressure_actuation_enabled', false)
+            && self::maxRung($goalProgress) >= GrowthPressure::RUNG_SCHEDULE
+        ) {
+            $formatMix = GoalPressureMix::skewFormatMix($formatMix, self::DISTRIBUTION_FORMAT_PRESSURE);
+        }
+
         $startsOn = isset($input['period_starts_on'])
             ? Carbon::parse($input['period_starts_on'])
             : Carbon::now($brand->timezone)->startOfMonth();
@@ -756,12 +800,21 @@ MSG;
             return '';
         }
 
+        // L2 objective actuation. The objective distribution is only expressed
+        // in the prompt (unlike platform mix, which is a first-class input), so
+        // the skew is applied here on the way to being rendered.
+        $objectiveMix = (array) ($brief->recommended_objective_mix ?? []);
+        $objectivePressure = self::pressureMapsFrom((array) ($brief->goal_progress ?? []))['objective'];
+        if ($objectiveMix !== [] && $objectivePressure !== []) {
+            $objectiveMix = GoalPressureMix::skewObjectiveMix($objectiveMix, $objectivePressure);
+        }
+
         return self::renderGrowthStrategyBlock(
             (array) ($brief->best_posting_times ?? []),
             (array) ($brief->platform_focus ?? []),
             (array) ($brief->hook_performance ?? []),
             (array) ($brief->follower_velocity ?? []),
-            (array) ($brief->recommended_objective_mix ?? []),
+            $objectiveMix,
         );
     }
 
@@ -847,6 +900,7 @@ MSG;
 
         if ($followerVelocity !== []) {
             $velLines = [];
+            $anyColdStart = false;
             foreach ($followerVelocity as $v) {
                 if (! is_array($v)) {
                     continue;
@@ -856,10 +910,34 @@ MSG;
                 if ($label === '' || $dir === '') {
                     continue;
                 }
-                $velLines[] = "- {$label}: {$dir}";
+
+                // MAGNITUDE, not just direction. Printing bare "flat" made
+                // "flat at 9 followers" indistinguishable from "flat at 90,000"
+                // — situations that call for opposite strategies. Prod brand#1
+                // was the former and the planner could not tell.
+                $latest = $v['latest'] ?? null;
+                $netNew = $v['net_new'] ?? null;
+                if (! empty($v['cold_start'])) {
+                    $anyColdStart = true;
+                    $velLines[] = "- {$label}: cold start — {$latest} followers, ".self::signed($netNew).' in 30d';
+                } elseif ($latest !== null) {
+                    $velLines[] = "- {$label}: {$dir} — {$latest} followers, ".self::signed($netNew).' in 30d';
+                } else {
+                    $velLines[] = "- {$label}: {$dir}";
+                }
             }
             if ($velLines !== []) {
-                $lines[] = "## Follower momentum\n".implode("\n", $velLines);
+                $block = "## Follower momentum\n".implode("\n", $velLines);
+                if ($anyColdStart) {
+                    // The cold-start playbook is different in kind, not degree.
+                    // More posts to an audience that does not exist yet is not a
+                    // growth plan.
+                    $block .= "\n\nA cold-start account has almost no existing audience, so posting volume alone will not compound —"
+                        ." there is nobody there to distribute it. Favour entries that can reach people who do NOT already follow this brand:"
+                        ." search-legible and evergreen topics, saveable/shareable reference formats, angles that invite replies,"
+                        ." and topics tied to communities or partners the brand can credibly appear alongside. Prefer this over broadcast-style announcements.";
+                }
+                $lines[] = $block;
             }
         }
 
@@ -880,6 +958,17 @@ MSG;
             ."\n\nThese are computed from this brand's REAL metrics. Lean platform + objective distribution and posting times toward what's working here, and favour the winning hook patterns. Never assert a number not shown above.";
     }
 
+    /** Render a signed delta ("+12" / "-3" / "0"), or "no change" when unknown. */
+    private static function signed(mixed $value): string
+    {
+        if ($value === null) {
+            return 'net change unknown';
+        }
+        $n = (int) $value;
+
+        return ($n > 0 ? '+' : '').$n;
+    }
+
     /**
      * Read the current growth brief's goal_progress and surface only the goals
      * whose pace_status is 'lagging' (computed by GrowthStrategistAgent from
@@ -897,6 +986,88 @@ MSG;
     }
 
     /**
+     * The goal_progress rows of the brand's current growth brief, or [] when
+     * there is no brief. Best-effort: a lookup failure degrades to no pressure
+     * rather than breaking the calendar build.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function goalProgressFor(Brand $brand): array
+    {
+        try {
+            $brief = GrowthStrategyBrief::currentForBrand($brand->id)->first();
+        } catch (\Throwable) {
+            return [];
+        }
+
+        return $brief ? (array) ($brief->goal_progress ?? []) : [];
+    }
+
+    /**
+     * L2 actuation — pressure-by-platform and pressure-by-objective, extracted
+     * from the brief's goal_progress rows.
+     *
+     * Only rows at or above RUNG_MIX contribute. Below that the goal is only
+     * entitled to L1 (prompt text), and mechanically moving the mix for a goal
+     * that is barely off pace would make the mix jitter week to week.
+     *
+     * @param  array<int,array<string,mixed>>  $goalProgress
+     * @return array{platform:array<string,float>,objective:array<string,float>}
+     */
+    public static function pressureMapsFrom(array $goalProgress): array
+    {
+        $byPlatform = [];
+        $byObjective = [];
+
+        foreach ($goalProgress as $g) {
+            if (! is_array($g)) {
+                continue;
+            }
+            $pressure = $g['pressure'] ?? null;
+            if ($pressure === null || (int) ($g['rung'] ?? 0) < GrowthPressure::RUNG_MIX) {
+                continue;
+            }
+            $pressure = (float) $pressure;
+
+            // An unreachable target must not bend the whole month toward itself.
+            // It still gets L1 narration (which now says so plainly), but it
+            // does not get to consume the mix budget that a closeable goal needs.
+            if (($g['feasibility_verdict'] ?? null) === BrandGrowthGoal::FEASIBILITY_INFEASIBLE) {
+                continue;
+            }
+
+            $platform = trim((string) ($g['platform'] ?? ''));
+            if ($platform !== '') {
+                $byPlatform[$platform] = max($byPlatform[$platform] ?? 0.0, $pressure);
+            }
+
+            $objective = GrowthPressure::objectiveForMetric((string) ($g['target_metric'] ?? ''));
+            if ($objective !== null) {
+                $byObjective[$objective] = max($byObjective[$objective] ?? 0.0, $pressure);
+            }
+        }
+
+        return ['platform' => $byPlatform, 'objective' => $byObjective];
+    }
+
+    /**
+     * Highest actuator rung any goal in the brief has reached.
+     *
+     * @param  array<int,array<string,mixed>>  $goalProgress
+     */
+    public static function maxRung(array $goalProgress): int
+    {
+        $max = GrowthPressure::RUNG_NONE;
+        foreach ($goalProgress as $g) {
+            if (is_array($g)) {
+                $max = max($max, (int) ($g['rung'] ?? 0));
+            }
+        }
+
+        return $max;
+    }
+
+    /**
      * Pure renderer for the goals-behind-pace directive — no DB. Filters the
      * goal_progress rows to those flagged 'lagging' and turns each into a
      * concrete "bias toward X" line the Strategist acts on. Returns '' when
@@ -908,6 +1079,9 @@ MSG;
     public static function renderLaggingGoalsBlock(array $goalProgress): string
     {
         $lines = [];
+        $maxRung = 0;
+        $mixApplied = false;
+
         foreach ($goalProgress as $g) {
             if (! is_array($g) || ($g['pace_status'] ?? null) !== 'lagging') {
                 continue;
@@ -923,9 +1097,30 @@ MSG;
                 ? ', ~'.round((float) $g['expected_pct']).'% of the window elapsed'
                 : '';
 
-            $line = "- {$metric}{$scope}: {$progress}{$expected} — LAGGING.";
-            $line .= "\n  → Over-index ".($platform !== '' ? "{$platform} in the platform split" : 'the platform(s) tied to this metric')
-                ." and weight the objective mix toward the objective that drives {$metric}, using the brand's proven winning hooks for it.";
+            $rung = (int) ($g['rung'] ?? 0);
+            $maxRung = max($maxRung, $rung);
+            $mixApplied = $mixApplied || $rung >= GrowthPressure::RUNG_MIX;
+
+            // Magnitude + persistence, so the model can tell a goal that slipped
+            // last week from one that has been stuck for two months. Before this
+            // both produced byte-identical text.
+            $streak = (int) ($g['lagging_streak'] ?? 0);
+            $streakNote = $streak > 1 ? ", behind for {$streak} consecutive checks" : '';
+            $daysNote = isset($g['days_remaining']) && $g['days_remaining'] !== null
+                ? ', '.max(0, (int) $g['days_remaining']).' days left'
+                : '';
+
+            $line = "- {$metric}{$scope}: {$progress}{$expected}{$streakNote}{$daysNote} — LAGGING ("
+                .GrowthPressure::rungLabel($rung).').';
+
+            // An unreachable target must not generate encouragement about the
+            // stated number — say what the month can actually do instead.
+            if (($g['feasibility_verdict'] ?? null) === BrandGrowthGoal::FEASIBILITY_INFEASIBLE) {
+                $line .= "\n  → This target is NOT reachable at this brand's measured rate. Do not plan around hitting the stated number; plan for the largest honest gain on {$metric}.";
+            } else {
+                $line .= "\n  → Over-index ".($platform !== '' ? "{$platform} in the platform split" : 'the platform(s) tied to this metric')
+                    ." and weight the objective mix toward the objective that drives {$metric}, using the brand's proven winning hooks for it.";
+            }
             $lines[] = $line;
         }
 
@@ -933,8 +1128,21 @@ MSG;
             return '';
         }
 
-        return "# Goals behind pace (bias the month toward closing these)\n".implode("\n", $lines)
+        $block = "# Goals behind pace (bias the month toward closing these)\n".implode("\n", $lines)
             ."\n\nThese goals are behind the timeline they need to hit their target. Make closing them the priority for this month — skew platform distribution and objective mix toward the metric each one targets, even beyond the even reach-share split.";
+
+        // Tell the model the weights it was handed have ALREADY been moved, so
+        // it does not "helpfully" skew a second time on top of the mechanical
+        // transfer and over-concentrate the month.
+        if ($mixApplied) {
+            $block .= "\n\nThe platform and objective mix targets above have ALREADY been shifted toward these goals. Plan to the stated targets exactly — do not skew them further.";
+        }
+
+        if ($maxRung >= GrowthPressure::RUNG_DISTRIBUTION) {
+            $block .= "\n\nAt this level of shortfall, publishing cadence alone is unlikely to close the gap: prioritise entries built for DISTRIBUTION (saveable/shareable formats, collaborative or reply-provoking angles, search-legible topics) over broadcast-style posts.";
+        }
+
+        return $block;
     }
 
     /**

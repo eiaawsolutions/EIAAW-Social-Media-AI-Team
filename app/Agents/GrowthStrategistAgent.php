@@ -7,6 +7,8 @@ use App\Models\Brand;
 use App\Models\BrandGrowthGoal;
 use App\Models\GrowthStrategyBrief;
 use App\Models\PostMetric;
+use App\Models\ScheduledPost;
+use App\Services\Growth\GrowthPressure;
 use App\Services\Metricool\AccountGrowthService;
 use App\Services\Llm\LlmGateway;
 use Illuminate\Support\Carbon;
@@ -42,6 +44,14 @@ class GrowthStrategistAgent extends BaseAgent
     private const MIN_SAMPLE_PER_BUCKET = 2;
 
     private const WINDOW_DAYS = 30;
+
+    /**
+     * Below this follower count, percentage momentum is meaningless and we
+     * report raw counts instead. See classifyFollowerVelocity — at prod
+     * brand#1's real base of 9 followers, a single follow swung the classifier
+     * from "flat" to "accelerating".
+     */
+    public const COLD_START_FOLLOWERS = 100;
 
     /** cta_styles are short button-label phrasings — bound them so a model that
      *  emits a paragraph (or a flood) doesn't poison the Writer's guidance. */
@@ -155,6 +165,8 @@ class GrowthStrategistAgent extends BaseAgent
             $brand->forceFill(['growth_strategy_config' => $cfg])->save();
         });
 
+        $pressures = array_filter(array_column($goalProgress, 'pressure'), fn ($p) => $p !== null);
+
         return AgentResult::ok([
             'brand_id' => $brand->id,
             'post_count' => $rows->count(),
@@ -162,6 +174,10 @@ class GrowthStrategistAgent extends BaseAgent
             'cta_signal' => ($ctaLift['has_signal'] ?? false) ? 'yes' : 'no',
             'platforms' => count($platformFocus),
             'goals' => count($goalProgress),
+            // Observability for the escalation ladder: how hard is this brand
+            // being pushed, and which actuators that unlocked.
+            'max_pressure' => $pressures === [] ? null : round(max($pressures), 3),
+            'max_rung' => $goalProgress === [] ? 0 : max(array_column($goalProgress, 'rung')),
         ], [
             'model' => $result->modelId,
             'prompt_version' => $result->promptVersion,
@@ -244,6 +260,15 @@ class GrowthStrategistAgent extends BaseAgent
             $publishedAt = $m->scheduledPost?->published_at;
             $platform = $m->platform;
             if (! $publishedAt || ! $platform) {
+                continue;
+            }
+            // Exclude posts whose hour records OUR lateness rather than the
+            // audience's presence — see ScheduledPost::NON_EVIDENTIAL_SCHEDULING_STRATEGIES.
+            if (in_array(
+                $m->scheduledPost?->scheduling_strategy,
+                ScheduledPost::NON_EVIDENTIAL_SCHEDULING_STRATEGIES,
+                true,
+            )) {
                 continue;
             }
             $dow = (int) $publishedAt->dayOfWeek; // 0=Sun..6=Sat
@@ -440,27 +465,39 @@ class GrowthStrategistAgent extends BaseAgent
             }
             $netNew = (int) ($row['change'] ?? 0);
             $latest = $row['headline'] !== null ? (int) $row['headline'] : null;
+            $coldStart = $latest !== null && $latest < self::COLD_START_FOLLOWERS;
 
-            // Direction relative to the base: a +2%+ window gain is accelerating,
-            // a >1% loss is declining, otherwise flat. Guards a zero base.
-            $direction = 'flat';
-            if ($latest !== null && $latest > 0) {
-                $pct = $netNew / max(1, $latest - $netNew) * 100;
-                if ($pct >= 2.0) {
+            if ($coldStart) {
+                // Below the cold-start floor a percentage is noise dressed as
+                // signal: at prod brand#1's real Instagram base of 9, ONE new
+                // follower reads +12.5% ("accelerating") and one unfollow reads
+                // -11% ("declining"). The planner was being handed a coin flip
+                // and treating it as momentum. Report the raw count instead and
+                // let the Strategist switch to a cold-start playbook.
+                $direction = 'cold_start';
+            } else {
+                // Direction relative to the base: a +2%+ window gain is accelerating,
+                // a >1% loss is declining, otherwise flat. Guards a zero base.
+                $direction = 'flat';
+                if ($latest !== null && $latest > 0) {
+                    $pct = $netNew / max(1, $latest - $netNew) * 100;
+                    if ($pct >= 2.0) {
+                        $direction = 'accelerating';
+                    } elseif ($pct <= -1.0) {
+                        $direction = 'declining';
+                    }
+                } elseif ($netNew > 0) {
                     $direction = 'accelerating';
-                } elseif ($pct <= -1.0) {
+                } elseif ($netNew < 0) {
                     $direction = 'declining';
                 }
-            } elseif ($netNew > 0) {
-                $direction = 'accelerating';
-            } elseif ($netNew < 0) {
-                $direction = 'declining';
             }
 
             $out[(string) ($row['network'] ?? '')] = [
                 'net_new' => $netNew,
                 'direction' => $direction,
                 'latest' => $latest,
+                'cold_start' => $coldStart,
                 'label' => (string) ($row['label'] ?? $row['network'] ?? ''),
             ];
         }
@@ -617,14 +654,7 @@ class GrowthStrategistAgent extends BaseAgent
 
         $out = [];
         foreach ($goals as $goal) {
-            $current = null;
-            if ($goal->target_metric === 'followers' && $goal->platform) {
-                $net = $followerVelocity[$goal->platform]['latest'] ?? null;
-                $current = $net !== null ? (int) $net : null;
-            }
-            // reach / engagement_rate / link_clicks / profile_visits live in
-            // post_metrics aggregates; left null here (current reading optional),
-            // surfaced honestly as "—" until a first-party reading exists.
+            $current = $this->currentValueFor($brand, $goal, $followerVelocity);
 
             $progressPct = BrandGrowthGoal::progressPct($goal->baseline_value, $goal->target_value, $current);
 
@@ -641,7 +671,24 @@ class GrowthStrategistAgent extends BaseAgent
                 ? BrandGrowthGoal::expectedPct($start, $end, now())
                 : null;
 
+            // Advance the streak BEFORE scoring so a goal lagging for the Nth
+            // consecutive week is scored as such on this very run, rather than
+            // trailing the evidence by one evaluation.
+            $streak = BrandGrowthGoal::nextStreak((int) $goal->lagging_streak, $paceStatus);
+            $daysRemaining = $end ? (int) floor(now()->diffInDays($end, false)) : null;
+
+            $pressure = GrowthPressure::score($progressPct, $expectedPct, $streak, $daysRemaining);
+            $rung = GrowthPressure::rung($pressure);
+
+            $goal->forceFill([
+                'lagging_streak' => $streak,
+                'last_pace_status' => $paceStatus,
+                'last_progress_pct' => $progressPct,
+                'last_evaluated_at' => now(),
+            ])->save();
+
             $out[] = [
+                'goal_id' => $goal->id,
                 'target_metric' => $goal->target_metric,
                 'platform' => $goal->platform,
                 'target_value' => $goal->target_value,
@@ -650,11 +697,119 @@ class GrowthStrategistAgent extends BaseAgent
                 'progress_pct' => $progressPct,
                 'expected_pct' => $expectedPct,
                 'pace_status' => $paceStatus,
+                'lagging_streak' => $streak,
+                'days_remaining' => $daysRemaining,
+                'pressure' => $pressure !== null ? round($pressure, 4) : null,
+                'rung' => $rung,
+                'feasibility_verdict' => $goal->feasibility_verdict,
                 'window_ends_on' => $goal->window_ends_on?->toDateString(),
             ];
         }
 
         return $out;
+    }
+
+    /**
+     * The REAL current value of a goal's target metric, or null when we have no
+     * reading. Never estimated, never substituted.
+     *
+     * Before this method only `followers`-with-a-platform resolved; every other
+     * metric returned null forever, which meant its goal could never read
+     * 'lagging' and therefore never influenced anything. Prod carried two such
+     * goals (LinkedIn reach 100k, TikTok reach 100k) that had been decorative
+     * since 2026-06-14. The data was already being summed 20 lines away in
+     * computePlatformFocus; it simply was not wired to goals.
+     *
+     * Resolution depends on how the metric accumulates (BrandGrowthGoal's
+     * STOCK / FLOW / RATIO split):
+     *   - followers (stock) — the latest level from AccountGrowthService.
+     *   - reach / link_clicks / profile_visits (flow) — summed over the GOAL
+     *     window, which is longer than the 30-day brief window, so this issues
+     *     its own query rather than reusing $rows.
+     *   - engagement_rate (ratio) — mean of real readings, converted from the
+     *     stored fraction to whole percent to match the operator's integer target.
+     *
+     * @param  array<string,mixed>  $followerVelocity
+     */
+    private function currentValueFor(Brand $brand, BrandGrowthGoal $goal, array $followerVelocity): ?int
+    {
+        $metric = (string) $goal->target_metric;
+
+        if (BrandGrowthGoal::isStockMetric($metric)) {
+            // An account-wide follower goal has no single platform to read, and
+            // summing follower counts across networks would double-count humans
+            // who follow the brand in two places. Left null and surfaced by
+            // goals:review as unmeasurable rather than silently faked.
+            if (! $goal->platform) {
+                return null;
+            }
+            $latest = $followerVelocity[$goal->platform]['latest'] ?? null;
+
+            return $latest !== null ? (int) $latest : null;
+        }
+
+        $start = $goal->window_starts_on?->copy()->startOfDay();
+        if (! $start) {
+            return null;
+        }
+
+        $column = match ($metric) {
+            'reach' => 'reach',
+            'link_clicks' => 'url_clicks',
+            'profile_visits' => 'profile_visits',
+            'engagement_rate' => 'engagement_rate',
+            default => null,
+        };
+        if ($column === null) {
+            return null;
+        }
+
+        $rows = $this->latestMetricValues($brand, $goal->platform, $start, $column);
+        if ($rows === []) {
+            return null; // no readings at all — unmeasurable, not zero
+        }
+
+        if (in_array($metric, BrandGrowthGoal::RATIO_METRICS, true)) {
+            // Stored as a fraction (0.0523); operators set integer percent (5).
+            return (int) round(array_sum($rows) / count($rows) * 100);
+        }
+
+        return (int) round(array_sum($rows));
+    }
+
+    /**
+     * Non-null values of one metric column, one row per scheduled_post (latest
+     * snapshot), within the goal window and optionally one platform.
+     *
+     * NULLs are excluded rather than coerced to 0 — the same discipline
+     * computeCtaLift uses. A platform that does not report `reach` must not drag
+     * a reach goal's total down as if it had reported zero. `reach` is NOT
+     * back-filled from `impressions` here: computePlatformFocus does that for a
+     * relative share, but a goal states an absolute target and impressions are a
+     * different quantity.
+     *
+     * @return array<int,float>
+     */
+    private function latestMetricValues(Brand $brand, ?string $platform, Carbon $since, string $column): array
+    {
+        $latestIds = DB::table('post_metrics')
+            ->select(DB::raw('MAX(id) as id'))
+            ->where('brand_id', $brand->id)
+            ->where('observed_at', '>=', $since)
+            ->when($platform, fn ($q) => $q->where('platform', $platform))
+            ->groupBy('scheduled_post_id')
+            ->pluck('id');
+
+        if ($latestIds->isEmpty()) {
+            return [];
+        }
+
+        return DB::table('post_metrics')
+            ->whereIn('id', $latestIds)
+            ->whereNotNull($column)
+            ->pluck($column)
+            ->map(fn ($v) => (float) $v)
+            ->all();
     }
 
     /**
@@ -697,7 +852,17 @@ class GrowthStrategistAgent extends BaseAgent
             : '(no CTA-lift signal — the connected platforms do not expose link-click data)';
 
         $velocityLines = collect($followerVelocity)
-            ->map(fn ($v, $net) => "- {$v['label']}: {$v['direction']} ({$v['net_new']} net new over 30d, now {$v['latest']})")
+            ->map(function ($v) {
+                // A cold-start network is stated as a raw count with no
+                // direction verb: at these bases a percentage would be noise,
+                // and calling it "flat" or "accelerating" would be asserting
+                // momentum we cannot measure.
+                if (! empty($v['cold_start'])) {
+                    return "- {$v['label']}: COLD START — {$v['latest']} followers, {$v['net_new']} net new over 30d (too small for a momentum read)";
+                }
+
+                return "- {$v['label']}: {$v['direction']} ({$v['net_new']} net new over 30d, now {$v['latest']})";
+            })
             ->implode("\n") ?: '(no follower data available)';
 
         $objectiveLine = collect($objectiveMix)
@@ -708,7 +873,18 @@ class GrowthStrategistAgent extends BaseAgent
             ->map(function ($g) {
                 $scope = $g['platform'] ? " ({$g['platform']})" : '';
                 $prog = $g['progress_pct'] !== null ? "{$g['progress_pct']}% to target" : 'progress not yet measurable';
-                return "- Target {$g['target_metric']}{$scope}: {$g['target_value']} by {$g['window_ends_on']} — {$prog}";
+                $line = "- Target {$g['target_metric']}{$scope}: {$g['target_value']} by {$g['window_ends_on']} — {$prog}";
+                if (($g['lagging_streak'] ?? 0) > 0) {
+                    $line .= sprintf(' — behind pace for %d consecutive check(s)', $g['lagging_streak']);
+                }
+                // A goal that was never arithmetically reachable is labelled, so
+                // the model does not write encouragement about a target no
+                // content plan can close.
+                if (($g['feasibility_verdict'] ?? null) === BrandGrowthGoal::FEASIBILITY_INFEASIBLE) {
+                    $line .= ' — NOTE: this target is not reachable at this brand\'s measured rate; guidance should focus on the best achievable gain, not the stated number';
+                }
+
+                return $line;
             })->implode("\n");
         $goalBlock = $goalLines !== '' ? "\n# Active growth goals (bias your guidance toward these)\n{$goalLines}\n" : '';
 

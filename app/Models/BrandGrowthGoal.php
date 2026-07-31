@@ -17,12 +17,42 @@ class BrandGrowthGoal extends Model
 {
     public const METRICS = ['followers', 'reach', 'engagement_rate', 'link_clicks', 'profile_visits'];
 
+    /**
+     * How each metric accumulates — this determines how a "current" reading is
+     * even defined, and it is why four of the five metrics used to be permanently
+     * unmeasurable (see GrowthStrategistAgent::currentValueFor).
+     *
+     * STOCK  — a level you hold at a point in time (followers). Current = latest.
+     * FLOW   — a quantity that accrues over the goal window (reach, clicks,
+     *          visits). Current = sum since window_starts_on, and a baseline of 0
+     *          is correct because we are counting accumulation from goal start.
+     * RATIO  — an average, not a total (engagement_rate). Current = mean of the
+     *          real readings in the window; summing it would be meaningless.
+     */
+    public const STOCK_METRICS = ['followers'];
+    public const FLOW_METRICS = ['reach', 'link_clicks', 'profile_visits'];
+    public const RATIO_METRICS = ['engagement_rate'];
+
+    /** Feasibility verdicts, snapshotted at creation. */
+    public const FEASIBILITY_PLAUSIBLE = 'plausible';
+    public const FEASIBILITY_STRETCH = 'stretch';
+    public const FEASIBILITY_INFEASIBLE = 'infeasible';
+    public const FEASIBILITY_UNKNOWN = 'unknown';
+
+    /** Required rate within this multiple of measured rate reads as plausible. */
+    public const FEASIBILITY_PLAUSIBLE_MULTIPLE = 1.5;
+
+    /** Beyond this multiple of measured rate the goal is arithmetically out of reach. */
+    public const FEASIBILITY_STRETCH_MULTIPLE = 5.0;
+
     protected $fillable = [
         'brand_id', 'workspace_id',
         'target_metric', 'platform',
         'target_value', 'baseline_value',
         'window_starts_on', 'window_ends_on',
         'status', 'created_by_user_id',
+        'lagging_streak', 'last_pace_status', 'last_progress_pct', 'last_evaluated_at',
+        'required_per_day', 'observed_per_day', 'feasibility_verdict',
     ];
 
     protected function casts(): array
@@ -32,7 +62,18 @@ class BrandGrowthGoal extends Model
             'baseline_value' => 'integer',
             'window_starts_on' => 'date',
             'window_ends_on' => 'date',
+            'lagging_streak' => 'integer',
+            'last_progress_pct' => 'float',
+            'last_evaluated_at' => 'datetime',
+            'required_per_day' => 'float',
+            'observed_per_day' => 'float',
         ];
+    }
+
+    /** True when "current" means a level, not an accumulation. */
+    public static function isStockMetric(string $metric): bool
+    {
+        return in_array($metric, self::STOCK_METRICS, true);
     }
 
     public function brand(): BelongsTo
@@ -145,5 +186,111 @@ class BrandGrowthGoal extends Model
         $elapsed = min($now->getTimestamp(), $windowEnd->getTimestamp()) - $windowStart->getTimestamp();
 
         return round($elapsed / $spanSeconds * 100, 1);
+    }
+
+    /**
+     * Is this goal arithmetically reachable, given what the brand actually does?
+     *
+     * A goal of "1 Threads follower to 10,000 in 90 days" is not a plan; it is a
+     * wish. Prod carried exactly that (goal#2, plus an Instagram twin at 7 →
+     * 10,000) and the system's only response for two months was to report
+     * "lagging" every week — technically true, entirely useless, and it made the
+     * lagging signal worthless for the goals that WERE reachable.
+     *
+     * This compares the rate the goal demands against the rate the brand has
+     * demonstrated:
+     *   - plausible   — within 1.5x of measured pace
+     *   - stretch     — within 5x; hard, but a real change in approach could do it
+     *   - infeasible  — beyond 5x; no content plan closes this gap
+     *   - unknown     — no measured rate to compare against (a new brand). We do
+     *                   NOT guess; unknown is a real answer.
+     *
+     * Advisory only. The operator may set whatever target they like — this
+     * labels it honestly instead of letting it masquerade as on-track-but-behind.
+     *
+     * Pure. `$observedPerDay` is supplied by the caller from real readings.
+     *
+     * @return array{required_per_day:?float,observed_per_day:?float,verdict:string,multiple:?float}
+     */
+    public static function feasibility(
+        int $baseline,
+        int $target,
+        Carbon $windowStart,
+        Carbon $windowEnd,
+        ?float $observedPerDay,
+    ): array {
+        $days = $windowStart->diffInDays($windowEnd);
+        $span = $target - $baseline;
+
+        // Degenerate goal (target at or below baseline, or a zero-length window)
+        // — progressPct already returns null for these; stay consistent.
+        if ($days <= 0 || $span <= 0) {
+            return [
+                'required_per_day' => null,
+                'observed_per_day' => $observedPerDay,
+                'verdict' => self::FEASIBILITY_UNKNOWN,
+                'multiple' => null,
+            ];
+        }
+
+        $required = round($span / $days, 2);
+
+        if ($observedPerDay === null) {
+            return [
+                'required_per_day' => $required,
+                'observed_per_day' => null,
+                'verdict' => self::FEASIBILITY_UNKNOWN,
+                'multiple' => null,
+            ];
+        }
+
+        // A brand producing nothing (or shrinking) cannot reach any positive
+        // target by continuing as-is. Infeasible without a multiple to quote —
+        // dividing by zero would be the only way to get a number here.
+        if ($observedPerDay <= 0.0) {
+            return [
+                'required_per_day' => $required,
+                'observed_per_day' => $observedPerDay,
+                'verdict' => self::FEASIBILITY_INFEASIBLE,
+                'multiple' => null,
+            ];
+        }
+
+        $multiple = round($required / $observedPerDay, 2);
+
+        $verdict = match (true) {
+            $multiple <= self::FEASIBILITY_PLAUSIBLE_MULTIPLE => self::FEASIBILITY_PLAUSIBLE,
+            $multiple <= self::FEASIBILITY_STRETCH_MULTIPLE => self::FEASIBILITY_STRETCH,
+            default => self::FEASIBILITY_INFEASIBLE,
+        };
+
+        return [
+            'required_per_day' => $required,
+            'observed_per_day' => $observedPerDay,
+            'verdict' => $verdict,
+            'multiple' => $multiple,
+        ];
+    }
+
+    /**
+     * The next value of the lagging streak, given the newest verdict.
+     *
+     * Only a REAL 'lagging' reading advances the streak. A null verdict (no
+     * reading, degenerate window, window not yet open) leaves the streak
+     * untouched rather than resetting it — an unmeasurable week is not evidence
+     * the goal recovered, and it is not evidence it got worse either. Any
+     * non-lagging real verdict ('on_track' / 'ahead') resets to 0.
+     *
+     * Pure, so the escalation history can be unit-tested without a DB.
+     */
+    public static function nextStreak(int $currentStreak, ?string $paceStatus): int
+    {
+        $currentStreak = max(0, $currentStreak);
+
+        return match ($paceStatus) {
+            'lagging' => $currentStreak + 1,
+            null => $currentStreak,
+            default => 0,
+        };
     }
 }

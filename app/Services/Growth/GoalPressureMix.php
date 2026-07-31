@@ -65,6 +65,24 @@ final class GoalPressureMix
     }
 
     /**
+     * L3: skew a format mix toward the formats that earn distribution rather
+     * than just impressions — saves and shares are the algorithmic signals that
+     * reach non-followers, which is the only thing that moves a follower goal.
+     *
+     * Deliberately narrower than the platform/objective skew: format changes
+     * carry real COGS (a reel is an AI video generation, and videos have their
+     * own plan cap), so the transferable budget is halved.
+     *
+     * @param  array<string,float>  $mix             format => weight
+     * @param  array<string,float>  $pressureByFormat format => pressure [0,1]
+     * @return array<string,float>
+     */
+    public static function skewFormatMix(array $mix, array $pressureByFormat): array
+    {
+        return self::skew($mix, $pressureByFormat, self::MIN_WEIGHT, self::MAX_TOTAL_SKEW / 2);
+    }
+
+    /**
      * The shared transfer. Takes weight from non-targeted keys down to (never
      * below) $floor and hands it to targeted keys in proportion to pressure.
      *
