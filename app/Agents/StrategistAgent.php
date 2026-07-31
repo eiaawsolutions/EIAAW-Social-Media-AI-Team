@@ -94,6 +94,12 @@ class StrategistAgent extends BaseAgent
             ?? ($reco?->pillar_mix && ! empty($reco->pillar_mix) ? $reco->pillar_mix : self::DEFAULT_PILLAR_MIX);
         $formatMix = $input['format_mix']
             ?? ($reco?->format_mix && ! empty($reco->format_mix) ? $reco->format_mix : self::DEFAULT_FORMAT_MIX);
+        // Platform weighting now comes from the same recommendation instead of
+        // an unconditional even split — see resolvePlatformMix().
+        $platformMix = self::resolvePlatformMix(
+            $activePlatforms,
+            $input['platform_mix'] ?? $reco?->platform_mix,
+        );
         $startsOn = isset($input['period_starts_on'])
             ? Carbon::parse($input['period_starts_on'])
             : Carbon::now($brand->timezone)->startOfMonth();
@@ -101,7 +107,7 @@ class StrategistAgent extends BaseAgent
 
         $competitorBlock = $this->renderCompetitorSignals($brand);
 
-        $userMessage = $this->buildUserMessage($brand, $brandStyle->content_md, $activePlatforms, $pillarMix, $formatMix, $startsOn, $endsOn, $competitorBlock);
+        $userMessage = $this->buildUserMessage($brand, $brandStyle->content_md, $activePlatforms, $pillarMix, $formatMix, $startsOn, $endsOn, $competitorBlock, $platformMix);
 
         $result = $this->llm->call(
             promptVersion: $this->promptVersion(),
@@ -171,7 +177,7 @@ class StrategistAgent extends BaseAgent
             ]);
         }
 
-        $calendar = DB::transaction(function () use ($brand, $payload, $pillarMix, $formatMix, $activePlatforms, $startsOn, $endsOn) {
+        $calendar = DB::transaction(function () use ($brand, $payload, $pillarMix, $formatMix, $platformMix, $activePlatforms, $startsOn, $endsOn) {
             $calendar = ContentCalendar::create([
                 'brand_id' => $brand->id,
                 'label' => $payload['period_label'] ?? $startsOn->format('F Y'),
@@ -179,7 +185,7 @@ class StrategistAgent extends BaseAgent
                 'period_ends_on' => $endsOn,
                 'pillar_mix' => $pillarMix,
                 'format_mix' => $formatMix,
-                'platform_mix' => array_fill_keys($activePlatforms, 1.0 / count($activePlatforms)),
+                'platform_mix' => $platformMix,
                 'status' => 'in_review',
                 'created_by_user_id' => auth()->id(),
             ]);
@@ -310,6 +316,89 @@ class StrategistAgent extends BaseAgent
         return $out;
     }
 
+    /**
+     * Reconcile the Optimizer's recommended platform weighting against the
+     * platforms actually connected right now.
+     *
+     * Before 2026-07-31 this was an unconditional even split, which meant a
+     * surface that could not deliver reach at all still consumed an equal share
+     * of the month (Facebook: 68 posts → 139 total impressions, against
+     * Instagram's 3,065). The Optimizer wrote a `platform_mix` the whole time;
+     * nothing read it.
+     *
+     * Rules, in order:
+     *   - no usable recommendation → even split (the pre-2026-07-31 behaviour,
+     *     so a brand with no measured history plans exactly as it did before)
+     *   - platforms in the reco that are no longer connected are dropped
+     *   - active platforms the reco has never seen (newly connected) inherit the
+     *     mean weight, so a fresh surface is never silently excluded
+     *   - the result is renormalised to sum to 1
+     *
+     * @param  array<int,string>  $activePlatforms
+     * @param  array<string,float>|null  $recommended
+     * @return array<string,float>
+     */
+    public static function resolvePlatformMix(array $activePlatforms, ?array $recommended): array
+    {
+        $activePlatforms = array_values(array_unique($activePlatforms));
+        if ($activePlatforms === []) {
+            return [];
+        }
+
+        $even = array_fill_keys($activePlatforms, 1.0 / count($activePlatforms));
+
+        $known = [];
+        foreach ($activePlatforms as $platform) {
+            $weight = $recommended[$platform] ?? null;
+            if (is_numeric($weight) && (float) $weight > 0) {
+                $known[$platform] = (float) $weight;
+            }
+        }
+        if ($known === []) {
+            return $even;
+        }
+
+        // Unseen surfaces inherit the mean of the known weights rather than 0 —
+        // a platform connected after the last Optimizer run has no history, and
+        // "no history" must not read as "does not work".
+        $mean = array_sum($known) / count($known);
+        $mix = [];
+        foreach ($activePlatforms as $platform) {
+            $mix[$platform] = $known[$platform] ?? $mean;
+        }
+
+        $total = array_sum($mix);
+        if ($total <= 0) {
+            return $even;
+        }
+        foreach ($mix as $platform => $weight) {
+            $mix[$platform] = round($weight / $total, 4);
+        }
+
+        return $mix;
+    }
+
+    /**
+     * True when every weight is the same — i.e. the mix carries no information
+     * and the platform section should stay suppressed.
+     *
+     * @param  array<string,float>  $mix
+     */
+    private function isEvenSplit(array $mix): bool
+    {
+        if (count($mix) <= 1) {
+            return true;
+        }
+        $first = (float) reset($mix);
+        foreach ($mix as $weight) {
+            if (abs((float) $weight - $first) > 0.0001) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private function buildUserMessage(
         Brand $brand,
         string $brandStyleMd,
@@ -319,10 +408,31 @@ class StrategistAgent extends BaseAgent
         Carbon $startsOn,
         Carbon $endsOn,
         string $competitorBlock = '',
+        array $platformMix = [],
     ): string {
         $platformList = implode(', ', $platforms);
         $pillarLines = collect($pillarMix)->map(fn ($pct, $key) => "- $key: ".round($pct * 100)."%")->implode("\n");
         $formatLines = collect($formatMix)->map(fn ($pct, $key) => "- $key: ".round($pct * 100)."%")->implode("\n");
+
+        // Platform mix targets. Self-suppresses to '' when the weighting is a
+        // flat even split (a brand with no measured history), so an unmeasured
+        // brand's prompt stays byte-identical to the pre-2026-07-31 behaviour.
+        $platformSection = '';
+        if ($platformMix !== [] && ! $this->isEvenSplit($platformMix)) {
+            arsort($platformMix);
+            $platformLines = collect($platformMix)
+                ->map(fn ($pct, $key) => "- $key: ".round($pct * 100).'%')
+                ->implode("\n");
+            $platformSection = <<<TXT
+
+# Platform mix targets (measured — weight the month toward what is delivering)
+{$platformLines}
+
+Allocate each entry's `platforms` to hit these shares. A platform on a low share
+is there because it is measurably under-delivering for this brand right now —
+give it only its share, do not spread evenly out of habit.
+TXT;
+        }
 
         $competitorSection = $competitorBlock !== ''
             ? "\n# Competitor signals (last 30 days)\n".$competitorBlock."\n"
@@ -378,7 +488,7 @@ ACTIVE PLATFORMS: {$platformList}
 
 # Format mix targets
 {$formatLines}
-{$competitorSection}{$competitorStrategySection}{$marketTrendSection}{$growthSection}{$lagSection}{$recentSection}{$factsSection}{$legalSection}
+{$platformSection}{$competitorSection}{$competitorStrategySection}{$marketTrendSection}{$growthSection}{$lagSection}{$recentSection}{$factsSection}{$legalSection}
 # brand-style.md (single source of truth)
 {$brandStyleMd}
 
