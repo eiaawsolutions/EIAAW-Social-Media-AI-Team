@@ -158,6 +158,9 @@ class GrowthStrategistAgent extends BaseAgent
                 'cost_usd' => (float) ($result->costUsd ?? 0),
             ]);
 
+            // Commit the goal evaluation (streak + last_* ) alongside the brief.
+            $this->persistGoalState($goalProgress);
+
             // Stamp last_refreshed_at on the brand config (audit, like CompetitorIntelAgent).
             $cfg = array_merge((array) ($brand->growth_strategy_config ?? []), [
                 'last_refreshed_at' => now()->toIso8601String(),
@@ -674,18 +677,17 @@ class GrowthStrategistAgent extends BaseAgent
             // Advance the streak BEFORE scoring so a goal lagging for the Nth
             // consecutive week is scored as such on this very run, rather than
             // trailing the evidence by one evaluation.
+            //
+            // Computed here but PERSISTED with the brief (see persistGoalState,
+            // called inside the same transaction). If this run later fails — an
+            // empty LLM response, a provider outage — the streak must not have
+            // advanced, or repeated synthesis failures would inflate pressure
+            // without ever producing the brief that pressure is read from.
             $streak = BrandGrowthGoal::nextStreak((int) $goal->lagging_streak, $paceStatus);
             $daysRemaining = $end ? (int) floor(now()->diffInDays($end, false)) : null;
 
             $pressure = GrowthPressure::score($progressPct, $expectedPct, $streak, $daysRemaining);
             $rung = GrowthPressure::rung($pressure);
-
-            $goal->forceFill([
-                'lagging_streak' => $streak,
-                'last_pace_status' => $paceStatus,
-                'last_progress_pct' => $progressPct,
-                'last_evaluated_at' => now(),
-            ])->save();
 
             $out[] = [
                 'goal_id' => $goal->id,
@@ -707,6 +709,30 @@ class GrowthStrategistAgent extends BaseAgent
         }
 
         return $out;
+    }
+
+    /**
+     * Persist the per-goal evaluation state computed by computeGoalProgress.
+     *
+     * Called inside the brief-writing transaction so goal state and the brief
+     * that reports it commit together — a run that fails to synthesise leaves
+     * both untouched and simply re-evaluates next week.
+     *
+     * @param  array<int,array<string,mixed>>  $goalProgress
+     */
+    private function persistGoalState(array $goalProgress): void
+    {
+        foreach ($goalProgress as $row) {
+            if (! isset($row['goal_id'])) {
+                continue;
+            }
+            BrandGrowthGoal::whereKey($row['goal_id'])->update([
+                'lagging_streak' => (int) ($row['lagging_streak'] ?? 0),
+                'last_pace_status' => $row['pace_status'] ?? null,
+                'last_progress_pct' => $row['progress_pct'] ?? null,
+                'last_evaluated_at' => now(),
+            ]);
+        }
     }
 
     /**
