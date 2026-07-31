@@ -118,14 +118,20 @@ class OptimizerAgent extends BaseAgent
      * end — invisible to a median test (window median was still ~102) and
      * invisible to the publishing pipeline.
      *
-     * A surface is COLLAPSED when its most recent posts have fallen to a small
-     * fraction of what the same surface was doing earlier in the window. The
+     * A surface is COLLAPSED when EVERY ONE of its most recent posts has fallen
+     * to a small fraction of what the same surface was doing before them. The
      * prior-median floor keeps this distinct from DEAD: a surface that never
      * delivered has no height to fall from and is dead, not collapsed.
+     *
+     * Deliberately a fixed recent COUNT, not a proportion of the window. A
+     * trailing 30% slice spans six posts once the window holds 22 of them, so
+     * a collapse that is three posts old washes out of the slice median — that
+     * cut passed a 13-post fixture and still read 'live' against real prod data.
+     *
+     * Requiring unanimity across the recent run (rather than its median) is
+     * what keeps a single dud post from tripping the verdict.
      */
-    private const COLLAPSE_RECENT_FRACTION = 0.3;
-
-    private const COLLAPSE_MIN_RECENT_POSTS = 3;
+    private const COLLAPSE_RECENT_POSTS = 3;
 
     private const COLLAPSE_PRIOR_MEDIAN_FLOOR = 10;
 
@@ -374,13 +380,18 @@ class OptimizerAgent extends BaseAgent
             $imps = array_map(fn ($r) => (int) $r['impressions'], $rows);
             $n = count($imps);
 
-            // Split into "recent tail" vs "everything before it" before sorting,
-            // so the comparison is over time rather than over rank.
-            $recentCount = max(self::COLLAPSE_MIN_RECENT_POSTS, (int) floor($n * self::COLLAPSE_RECENT_FRACTION));
+            // Split into "the most recent few" vs "everything before them"
+            // before sorting, so the comparison is over time, not over rank.
+            $recentCount = self::COLLAPSE_RECENT_POSTS;
+            $recentPeak = null;
             $recentMedian = null;
             $priorMedian = null;
             if ($n >= self::DEAD_SURFACE_MIN_POSTS && $recentCount < $n) {
-                $recentMedian = self::median(array_slice($imps, -$recentCount));
+                $recent = array_slice($imps, -$recentCount);
+                // The BEST of the recent run: comparing the peak is what makes
+                // the test "all of them are down" rather than "most are".
+                $recentPeak = (float) max($recent);
+                $recentMedian = self::median($recent);
                 $priorMedian = self::median(array_slice($imps, 0, $n - $recentCount));
             }
 
@@ -390,6 +401,7 @@ class OptimizerAgent extends BaseAgent
                 'impressions' => array_sum($imps),
                 'median_impressions' => self::median($imps),
                 'recent_median_impressions' => $recentMedian,
+                'recent_peak_impressions' => $recentPeak,
                 'prior_median_impressions' => $priorMedian,
             ];
         }
@@ -425,17 +437,19 @@ class OptimizerAgent extends BaseAgent
      * worked is dead, not collapsed, and the two want different operator
      * actions (fix/abandon the page vs check for a platform restriction).
      *
-     * @param  array{posts:int,recent_median_impressions:?float,prior_median_impressions:?float}  $s
+     * @param  array{posts:int,recent_peak_impressions:?float,prior_median_impressions:?float}  $s
      */
     private static function isCollapsedSurface(array $s): bool
     {
-        $recent = $s['recent_median_impressions'];
+        $recentPeak = $s['recent_peak_impressions'];
         $prior = $s['prior_median_impressions'];
 
-        return $recent !== null
+        // recentPeak, not recentMedian: every post in the recent run must be
+        // down, so one surviving post keeps the surface 'live'.
+        return $recentPeak !== null
             && $prior !== null
             && $prior >= self::COLLAPSE_PRIOR_MEDIAN_FLOOR
-            && $recent <= $prior * self::COLLAPSE_RATIO;
+            && $recentPeak <= $prior * self::COLLAPSE_RATIO;
     }
 
     /**
