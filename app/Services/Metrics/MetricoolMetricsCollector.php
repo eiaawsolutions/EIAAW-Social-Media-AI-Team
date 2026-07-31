@@ -138,8 +138,9 @@ class MetricoolMetricsCollector
      *
      *   TikTok: impressions←viewCount, likes←likeCount, comments←commentCount,
      *     shares←shareCount. reach → NULL (TikTok's API doesn't expose it —
-     *     platform limit, NOT a defect). engagement_rate ← engagement when
-     *     numeric, else derived from the counters / viewCount.
+     *     platform limit, NOT a defect). engagement_rate = counter sum /
+     *     viewCount — NOT Metricool's `engagement`, which is a percentage
+     *     (corrected 2026-07-31; see the note in normalise()).
      *
      *   Other networks: probe a superset of field aliases; absent → NULL.
      *
@@ -158,10 +159,24 @@ class MetricoolMetricsCollector
         $profileVisits = $this->firstNumeric($p, ['profileVisits', 'profileViews', 'profileActivity']);
         $urlClicks = $this->firstNumeric($p, ['urlClicks', 'linkClicks', 'websiteClicks', 'clicks']);
 
-        // engagement_rate: prefer a derived rate from impressions (consistent
-        // with MetaMetricsCollector). Metricool's `interactions`/`engagement`
-        // are COUNTS, not rates — used only as a fallback engagement numerator.
-        $interactions = $this->firstNumeric($p, ['interactions', 'engagement']);
+        // engagement_rate: always a rate derived from impressions (consistent
+        // with MetaMetricsCollector).
+        //
+        // `interactions` IS a count and is the preferred numerator when present
+        // (Instagram supplies it). `engagement` is NOT — verified against live
+        // prod payloads on 2026-07-31, it is a PERCENTAGE Metricool has already
+        // divided by the post's own audience:
+        //
+        //   linkedin post 449 : engagement=44.44  == 4 likes / 9 impressions
+        //   threads  post 502 : engagement= 6.06  == 2 interactions / 33 views
+        //   tiktok   post 383 : engagement= 1.79  == 2 interactions / 112 views
+        //   instagram post 505: engagement= 5.13  == 2 interactions / 39 reach
+        //
+        // Probing it as a numerator divided the rate AGAIN by impressions and
+        // stored impossible values (LinkedIn 449 read 4.8889, i.e. 489%). It is
+        // therefore deliberately NOT in this alias list. Do not re-add it: on
+        // every network that exposes it, the raw counters give the true rate.
+        $interactions = $this->firstNumeric($p, ['interactions']);
         $engagementRate = null;
         if ($impressions && $impressions > 0) {
             $engagementSum = $interactions

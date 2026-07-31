@@ -120,6 +120,95 @@ class MetricoolMetricsCollectorTest extends TestCase
         $this->assertSame(3, $m['likes']);
     }
 
+    // ─── `engagement` is a RATE, not a count (prod audit 2026-07-31) ────────
+    //
+    // The original mapping probed ['interactions', 'engagement'] for the
+    // engagement NUMERATOR, on the documented assumption that both are counts.
+    // Live payloads pulled from prod blogId 6322515 on 2026-07-31 disprove that
+    // for `engagement`: it is a PERCENTAGE (0-100) that Metricool has already
+    // divided by the post's own audience. Dividing it AGAIN by impressions
+    // produced impossible rates — LinkedIn post 449 stored 4.8889 (i.e. 489%).
+    //
+    // Instagram was correct only by accident: it also carries `interactions`
+    // (a genuine count) which the alias list happened to probe first. YouTube
+    // was correct because it carries no `engagement` key at all.
+    //
+    // Fixtures below are verbatim numeric field sets captured from prod.
+
+    /** LinkedIn, prod post 449: engagement=44.44 IS 4 likes / 9 impressions. */
+    public function test_linkedin_engagement_field_is_a_rate_and_must_not_be_the_numerator(): void
+    {
+        $m = $this->collector()->normalise('linkedin', [
+            'blogId' => 6322515,
+            'likes' => 4,
+            'impressions' => 9,
+            'uniqueImpressions' => 7,
+            'engagement' => 44.44444444444444,
+            'like' => 3,
+        ]);
+
+        // 4 likes / 9 impressions = 0.4444. The pre-fix code produced 4.9383
+        // (44.444/9) — a 489% engagement rate, which is impossible.
+        $this->assertSame(0.4444, $m['engagement_rate']);
+        $this->assertLessThanOrEqual(1.0, $m['engagement_rate']);
+    }
+
+    /** Threads, prod post 502: engagement=6.06 IS 2 interactions / 33 views. */
+    public function test_threads_engagement_rate_is_derived_from_counters(): void
+    {
+        $m = $this->collector()->normalise('threads', [
+            'id' => '18098870948356534',
+            'views' => 33,
+            'likes' => 1,
+            'replies' => 0,
+            'reposts' => 1,
+            'quotes' => 0,
+            'shares' => 0,
+            'engagement' => 6.0606060606060606,
+        ]);
+
+        // shares maps from the literal `shares` key (0) before `reposts`, so the
+        // counter sum is likes(1)+comments(0)+shares(0)+saves(0) = 1 → 1/33.
+        $this->assertSame(0.0303, $m['engagement_rate']);
+    }
+
+    /** TikTok, prod post 383: engagement=1.79 IS 2 interactions / 112 views. */
+    public function test_tiktok_engagement_rate_is_derived_from_counters_not_the_rate_field(): void
+    {
+        $m = $this->collector()->normalise('tiktok', [
+            'videoId' => '7658919934965304577',
+            'likeCount' => 1,
+            'commentCount' => 0,
+            'shareCount' => 1,
+            'viewCount' => 112,
+            'engagement' => 1.7857142857142858,
+        ]);
+
+        // (1 like + 0 comments + 1 share) / 112 views = 0.0179.
+        $this->assertSame(0.0179, $m['engagement_rate']);
+    }
+
+    /** Instagram keeps using `interactions` — a real count — and is unchanged. */
+    public function test_instagram_still_prefers_interactions_count_over_counter_sum(): void
+    {
+        $m = $this->collector()->normalise('instagram', [
+            'postId' => '17994532554006520',
+            'likes' => 1,
+            'comments' => 0,
+            'shares' => 1,
+            'interactions' => 2,
+            'engagement' => 5.128205128205129,
+            'reach' => 39,
+            'saved' => 0,
+            'impressionsTotal' => 51,
+            'views' => 51,
+        ]);
+
+        // interactions(2) / impressionsTotal(51) = 0.0392 — the value prod
+        // already stores for this post. The `engagement` rate field is ignored.
+        $this->assertSame(0.0392, $m['engagement_rate']);
+    }
+
     // ─── Robust post-matching (the LinkedIn/TikTok/YouTube metrics gap) ──────
     //
     // Root cause found live 2026-06-02: the Metricool API returns real metrics
