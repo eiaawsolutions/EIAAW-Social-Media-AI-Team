@@ -36,8 +36,14 @@ class MetricsRecomputeEngagementRate extends Command
 
     protected $description = 'Recompute post_metrics.engagement_rate from raw_payload after the Metricool `engagement`-is-a-rate fix.';
 
-    public function handle(MetricoolMetricsCollector $collector): int
+    public function handle(): int
     {
+        // Constructed directly, not injected: the collector's only constructor
+        // arg is a nullable MetricoolClient the container cannot resolve, and
+        // this backfill never calls the API — it re-runs the pure normalise()
+        // over raw_payload we already hold.
+        $collector = new MetricoolMetricsCollector(null);
+
         $apply = (bool) $this->option('apply');
         $scanned = 0;
         $changed = 0;
