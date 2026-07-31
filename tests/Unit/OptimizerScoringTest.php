@@ -277,6 +277,37 @@ class OptimizerScoringTest extends TestCase
         $this->assertGreaterThan(90, $health['tiktok']['median_impressions']);
     }
 
+    /**
+     * Regression: the FULL 22-post window the Optimizer actually sees for
+     * TikTok on brand 1. A first cut compared a trailing 30% slice, which at
+     * n=22 spans six posts — only three of which had collapsed — so the slice
+     * median came out at 50 and the verdict stayed 'live' in prod even though
+     * the same logic passed on a 13-post fixture. The detector must key off the
+     * most recent posts, not off a proportion of the window.
+     */
+    public function test_collapse_is_detected_on_the_real_22_post_window_not_just_a_short_one(): void
+    {
+        $posts = $this->series('tiktok', [
+            117, 115, 104, 96, 112, 123, 108, 110, 110, 192,   // June
+            93, 112, 102, 115, 111, 113, 96, 96, 111,          // July, still healthy
+            1, 1, 4,                                            // 07-23 onward: suppressed
+        ]);
+
+        $health = OptimizerAgent::surfaceHealth($posts);
+
+        $this->assertSame('collapsed', $health['tiktok']['verdict']);
+    }
+
+    public function test_a_single_bad_post_after_a_healthy_run_is_not_a_collapse(): void
+    {
+        // One dud is noise; the detector requires a sustained recent run.
+        $posts = $this->series('tiktok', [110, 112, 104, 96, 112, 123, 108, 110, 110, 115, 111, 1]);
+
+        $health = OptimizerAgent::surfaceHealth($posts);
+
+        $this->assertSame('live', $health['tiktok']['verdict']);
+    }
+
     public function test_a_collapsed_surface_loses_its_share_of_cadence(): void
     {
         $posts = array_merge(
