@@ -124,7 +124,12 @@ class CommunityIngest extends Command
             $brand->forceFill(['inbox_permissions' => $issues])->save();
             $this->totals['blocked'] += count($issues);
             foreach ($issues as $key => $issue) {
-                $detail = $issue['error'] ?? ('missing scopes: '.implode(', ', $issue['missing_scopes'] ?? []));
+                // The REMEDY, never the raw scope list. "missing comment.list"
+                // is the instruction that sends someone to re-consent a personal
+                // TikTok account, which cannot work.
+                $detail = $issue['remedy']
+                    ?? $issue['error']
+                    ?? ('missing scopes: '.implode(', ', $issue['missing_scopes'] ?? []));
                 $this->permissionIssues[] = sprintf('brand#%d %s — %s', $brand->id, $key, $detail);
             }
         } elseif (! $this->option('skip-preflight') && $brand->inbox_permissions) {
@@ -149,12 +154,12 @@ class CommunityIngest extends Command
         array &$issues,
     ): void {
         foreach ($group as $provider) {
-            $this->preflight($client, $blogId, $resource, $provider, $issues);
+            $state = $this->preflight($client, $blogId, $resource, $provider, $issues);
 
             try {
                 $rows = $client->inboxFetch($blogId, $resource, $provider);
             } catch (\Throwable $e) {
-                $this->classifyFetchError($e, $brand, $resource, $provider);
+                $this->classifyFetchError($e, $brand, $resource, $provider, $state);
 
                 continue; // try the next alias
             }
@@ -172,8 +177,20 @@ class CommunityIngest extends Command
      * An error here is one of three very different things and they must not be
      * conflated — conflating them is what made the original log useless.
      */
-    private function classifyFetchError(\Throwable $e, Brand $brand, string $resource, string $provider): void
+    private function classifyFetchError(\Throwable $e, Brand $brand, string $resource, string $provider, ?string $readinessState = null): void
     {
+        // A network that isn't connected to this brand errors on every fetch,
+        // and not always with the "provider invalid" signature — brand#14's
+        // absent Instagram returns a bare 500 with no detail. Counting that as a
+        // failure would make the hourly run report FAILURE forever until someone
+        // connects the account, which trains an operator to ignore failures.
+        // The readiness classifier already knows; trust it.
+        if ($readinessState === InboxReadiness::NOT_CONNECTED) {
+            $this->line(sprintf('   %s/%s skipped: not connected for this brand', $resource, $provider));
+
+            return;
+        }
+
         if (MetricoolClient::isUnsupportedInboxPair($e)) {
             // The matrix said this pair IS supported, yet the API disagrees:
             // Metricool changed its implementation scope under us. Loud, because
@@ -201,11 +218,12 @@ class CommunityIngest extends Command
      * locked out": a scope-blocked pair returns 200 with an empty list.
      *
      * @param  array<string,mixed>  $issues
+     * @return string|null  the InboxReadiness state, when one was determined
      */
-    private function preflight(MetricoolClient $client, int $blogId, string $resource, string $provider, array &$issues): void
+    private function preflight(MetricoolClient $client, int $blogId, string $resource, string $provider, array &$issues): ?string
     {
         if ($this->option('skip-preflight') || $resource === 'reviews') {
-            return; // reviews expose no authorizations endpoint
+            return null; // reviews expose no authorizations endpoint
         }
 
         $key = "{$resource}:{$provider}";
@@ -213,18 +231,32 @@ class CommunityIngest extends Command
         try {
             $auth = $client->inboxAuthorizations($blogId, $provider, $resource);
         } catch (\Throwable $e) {
-            // e.g. 400 "Cant found a page to verify permissions" — a real
-            // operator problem (the account isn't resolvable for this blogId).
-            $issues[$key] = ['error' => substr($e->getMessage(), 0, 200), 'checked_at' => now()->toIso8601String()];
+            // e.g. 400 "Cant found a page to verify permissions". Classify it
+            // too — most often this IS an absent connection, and saying so beats
+            // showing an operator a raw HTTP error.
+            $readiness = InboxReadiness::classify(
+                $provider,
+                $this->networksFor($client, $blogId),
+                $this->profileAuthFor($client, $blogId),
+                [],
+            );
+            $issues[$key] = array_filter([
+                'state' => $readiness['state'],
+                'remedy' => $readiness['remedy'],
+                'error' => substr($e->getMessage(), 0, 200),
+                'checked_at' => now()->toIso8601String(),
+            ], fn ($v) => $v !== null && $v !== '');
 
-            return;
+            $this->warn(sprintf('   %s: %s', strtoupper($readiness['state']), $readiness['remedy'] ?: 'permission check failed'));
+
+            return $readiness['state'];
         }
 
         $missing = array_values(array_filter((array) ($auth['missingScopes'] ?? []), 'is_string'));
         $allowMessages = $auth['allowAccessToMessages'] ?? null;
 
         if ($missing === [] && $allowMessages !== false) {
-            return; // healthy — store nothing
+            return InboxReadiness::READY; // healthy — store nothing
         }
 
         // A missingScopes list on its own cannot name a remedy: the SAME payload
@@ -249,6 +281,8 @@ class CommunityIngest extends Command
         ], fn ($v) => $v !== null && $v !== [] && $v !== '');
 
         $this->warn(sprintf('   %s: %s', strtoupper($readiness['state']), $readiness['remedy']));
+
+        return $readiness['state'];
     }
 
     /**
