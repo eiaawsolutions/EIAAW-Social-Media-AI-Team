@@ -706,25 +706,63 @@ class MetricoolClient
     }
 
     /**
-     * The scopes a resource REQUIRES for a provider (as opposed to the ones
-     * currently missing, which inboxAuthorizations reports). Pairing the two is
-     * what turns "missingScopes: [comment.list]" into an operator-actionable
-     * "reconnect TikTok and grant comment permissions".
+     * Per-brand connection facts: account types, connection types, token
+     * expiries, handles. Keyed by blogId.
      *
-     * @return array<int,string>
+     * This is what turns an ambiguous `missingScopes` list into an actionable
+     * remedy — see InboxReadiness. `tiktokAccountType` in particular is the
+     * difference between "grant a permission" (useless) and "switch the account
+     * to Business" (the actual fix).
+     *
+     * @return array<int,array<string,mixed>>
      */
-    public function inboxScopes(int $blogId, string $provider, string $resource = 'post-comments'): array
+    public function profilesAuth(): array
     {
-        $response = $this->client()->get(
-            "/v2/inbox/{$resource}/scopes",
-            $this->baseQuery($blogId) + ['provider' => $provider],
-        );
-        $this->throwIfError($response, "inboxScopes({$resource}/{$provider})");
+        $response = $this->client()->get('/admin/profiles-auth', $this->baseQuery());
+        $this->throwIfError($response, 'profilesAuth');
 
         $json = $response->json();
         $rows = is_array($json['data'] ?? null) ? $json['data'] : (is_array($json) ? $json : []);
 
-        return array_values(array_filter($rows, 'is_string'));
+        $out = [];
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $blogId = (int) ($row['id'] ?? $row['blogId'] ?? 0);
+            if ($blogId > 0) {
+                $out[$blogId] = $row;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Which networks are actually attached to a brand, as `networksData` keys
+     * (e.g. instagramData, tiktokData).
+     *
+     * The authoritative "is it connected at all" check. Without it, a brand with
+     * NO Instagram is indistinguishable from one connected with missing scopes —
+     * both report the same missingScopes payload.
+     *
+     * @return array<int,string>
+     */
+    public function brandNetworks(int $blogId): array
+    {
+        $response = $this->client()->get("/v2/settings/brands/{$blogId}", $this->baseQuery($blogId));
+        $this->throwIfError($response, "brandNetworks({$blogId})");
+
+        $json = $response->json();
+        $nd = $json['data']['networksData'] ?? $json['networksData'] ?? null;
+        if (! is_array($nd)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_is_list($nd) ? $nd : array_keys($nd),
+            'is_string',
+        ));
     }
 
     /**

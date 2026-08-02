@@ -7,6 +7,7 @@ use App\Models\InboxConversation;
 use App\Models\InboxReplyDraft;
 use App\Services\Inbox\InboxCapabilityMap;
 use App\Services\Inbox\InboxNormalizer;
+use App\Services\Inbox\InboxReadiness;
 use App\Services\Metricool\MetricoolClient;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -52,6 +53,12 @@ class CommunityIngest extends Command
 
     /** @var array<int,string> operator-facing permission problems found this run */
     private array $permissionIssues = [];
+
+    /** @var array<int,array<int,string>> networksData per blogId, fetched once */
+    private array $networksCache = [];
+
+    /** @var array<int,array<string,mixed>>|null /admin/profiles-auth, fetched once */
+    private ?array $profilesAuthCache = null;
 
     public function handle(): int
     {
@@ -220,14 +227,62 @@ class CommunityIngest extends Command
             return; // healthy — store nothing
         }
 
+        // A missingScopes list on its own cannot name a remedy: the SAME payload
+        // is returned for "never connected", for "connected but the account type
+        // can't carry the capability", and for "connected but under-consented".
+        // Those need three different actions from a human, so classify before
+        // telling anyone anything.
+        $readiness = InboxReadiness::classify(
+            $provider,
+            $this->networksFor($client, $blogId),
+            $this->profileAuthFor($client, $blogId),
+            $missing,
+            is_bool($allowMessages) ? $allowMessages : null,
+        );
+
         $issues[$key] = array_filter([
+            'state' => $readiness['state'],
+            'remedy' => $readiness['remedy'],
             'missing_scopes' => $missing,
             'allow_messages' => $allowMessages === false ? false : null,
             'checked_at' => now()->toIso8601String(),
-        ], fn ($v) => $v !== null && $v !== []);
+        ], fn ($v) => $v !== null && $v !== [] && $v !== '');
 
-        $this->warn(sprintf('   PERMISSION: %s missing [%s]%s', $key, implode(', ', $missing),
-            $allowMessages === false ? ' + messages access denied' : ''));
+        $this->warn(sprintf('   %s: %s', strtoupper($readiness['state']), $readiness['remedy']));
+    }
+
+    /**
+     * Connection facts, fetched once per run and reused. Both endpoints are
+     * account-wide or per-brand static, so re-fetching per provider would
+     * multiply calls for no new information.
+     *
+     * @return array<int,string>
+     */
+    private function networksFor(MetricoolClient $client, int $blogId): array
+    {
+        if (! array_key_exists($blogId, $this->networksCache)) {
+            try {
+                $this->networksCache[$blogId] = $client->brandNetworks($blogId);
+            } catch (\Throwable) {
+                $this->networksCache[$blogId] = [];
+            }
+        }
+
+        return $this->networksCache[$blogId];
+    }
+
+    /** @return array<string,mixed> */
+    private function profileAuthFor(MetricoolClient $client, int $blogId): array
+    {
+        if ($this->profilesAuthCache === null) {
+            try {
+                $this->profilesAuthCache = $client->profilesAuth();
+            } catch (\Throwable) {
+                $this->profilesAuthCache = [];
+            }
+        }
+
+        return $this->profilesAuthCache[$blogId] ?? [];
     }
 
     /** @param array<string,mixed> $row */
