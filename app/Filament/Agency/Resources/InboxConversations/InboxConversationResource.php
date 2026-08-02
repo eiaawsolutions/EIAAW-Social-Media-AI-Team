@@ -99,8 +99,16 @@ class InboxConversationResource extends Resource
                 Tables\Columns\TextColumn::make('conversation_type')
                     ->label('Type')
                     ->badge()
-                    ->color(fn (string $state) => $state === InboxConversation::TYPE_COMMENT ? 'info' : 'gray')
-                    ->formatStateUsing(fn (string $state) => $state === InboxConversation::TYPE_COMMENT ? 'Comment' : 'DM'),
+                    ->color(fn (string $state) => match ($state) {
+                        InboxConversation::TYPE_COMMENT => 'info',
+                        InboxConversation::TYPE_REVIEW => 'warning',
+                        default => 'gray',
+                    })
+                    ->formatStateUsing(fn (string $state) => match ($state) {
+                        InboxConversation::TYPE_COMMENT => 'Comment',
+                        InboxConversation::TYPE_REVIEW => 'Review',
+                        default => 'DM',
+                    }),
                 Tables\Columns\TextColumn::make('participant_name')
                     ->label('From')
                     ->placeholder('—'),
@@ -115,9 +123,15 @@ class InboxConversationResource extends Resource
                     // The whole point of the column is urgency, so show relative
                     // time and colour it — an absolute timestamp buries the fact
                     // that something has 40 minutes left.
-                    ->formatStateUsing(fn (?\Illuminate\Support\Carbon $state) => $state === null
-                        ? 'unknown'
-                        : ($state->isPast() ? 'CLOSED' : 'closes '.$state->diffForHumans()))
+                    // A review genuinely has no deadline — say so, rather than
+                    // rendering the same "unknown" we'd show for a missing
+                    // timestamp on a comment.
+                    ->formatStateUsing(fn (?\Illuminate\Support\Carbon $state, InboxConversation $r) => match (true) {
+                        $r->conversation_type === InboxConversation::TYPE_REVIEW => 'no deadline',
+                        $state === null => 'unknown',
+                        $state->isPast() => 'CLOSED',
+                        default => 'closes '.$state->diffForHumans(),
+                    })
                     ->color(fn (InboxConversation $r) => match (true) {
                         $r->window_expires_at === null => 'gray',
                         $r->window_expires_at->isPast() => 'danger',
@@ -149,6 +163,7 @@ class InboxConversationResource extends Resource
                     ->options([
                         InboxConversation::TYPE_DM => 'Direct messages',
                         InboxConversation::TYPE_COMMENT => 'Post comments',
+                        InboxConversation::TYPE_REVIEW => 'Reviews',
                     ]),
                 Tables\Filters\SelectFilter::make('brand_id')
                     ->label('Brand')
@@ -159,7 +174,10 @@ class InboxConversationResource extends Resource
                     ->label('Approve & send')
                     ->icon('heroicon-o-paper-airplane')
                     ->color('success')
-                    ->visible(fn (InboxConversation $r) => self::pendingDraft($r)?->recommends_no_reply === false)
+                    // Reviews are ingest-only until the review-reply request
+                    // shape is verified against a real Google Business Profile.
+                    ->visible(fn (InboxConversation $r) => $r->conversation_type !== InboxConversation::TYPE_REVIEW
+                        && self::pendingDraft($r)?->recommends_no_reply === false)
                     ->requiresConfirmation()
                     ->modalHeading('Send this reply?')
                     ->modalDescription(fn (InboxConversation $r) => 'This sends a real message to '

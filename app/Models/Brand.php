@@ -49,6 +49,12 @@ class Brand extends Model
             'company_profile_file' => 'array',
             'market_intel_config' => 'array',
             'growth_strategy_config' => 'array',
+            // Inbox permission problems found by the community:ingest preflight.
+            // Non-empty ALWAYS means an operator needs to act — a healthy
+            // preflight writes nothing. See the migration for why this matters:
+            // a scope-blocked inbox returns 200-empty and is otherwise
+            // indistinguishable from "nobody is talking to this brand".
+            'inbox_permissions' => 'array',
             'archived_at' => 'datetime',
             'metricool_connect_link_sent_at' => 'datetime',
             'metricool_connected_at' => 'datetime',

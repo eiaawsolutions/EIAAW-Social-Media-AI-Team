@@ -617,36 +617,71 @@ class MetricoolClient
     // /v2/inbox/messages all 404. One GET returns participants + full history.
 
     /**
-     * Provider values the inbox endpoints accept, from the API's own 400 body.
+     * Provider tokens the inbox endpoints accept, from the API's own 400 body.
      * Case matters for the compound ones — 'tiktok' is rejected where
      * 'TIKTOKBUSINESS' is accepted.
      *
-     * NOTE: on live prod only INSTAGRAM / INSTAGRAMBUSINESS / TWITTER / FACEBOOK
-     * returned 200. GMB, TIKTOKBUSINESS, YOUTUBE and LINKEDIN answered 500
-     * "provider invalid" — we could not distinguish "not connected for this
-     * brand" from "not actually supported", so callers must treat a failure on
-     * those as expected and skip, never as an outage.
+     * WHICH of these works on WHICH endpoint is NOT uniform, and the API cannot
+     * tell you: `provider` is an unconstrained `type: string` on every inbox
+     * input schema, and the 8-value enum appears only on OUTPUT models, byte
+     * identical across all three resources. The support matrix therefore has to
+     * be hard-coded — see App\Services\Inbox\InboxCapabilityMap.
      */
     public const INBOX_PROVIDERS = [
         'INSTAGRAM', 'INSTAGRAMBUSINESS', 'TWITTER', 'FACEBOOK',
         'GMB', 'TIKTOKBUSINESS', 'YOUTUBE', 'LINKEDIN',
     ];
 
-    /** Providers confirmed working on live prod. Everything else is best-effort. */
-    public const INBOX_PROVIDERS_VERIFIED = ['INSTAGRAM', 'INSTAGRAMBUSINESS', 'TWITTER', 'FACEBOOK'];
+    /**
+     * The 500 body that means "this (provider, resource) pair has no handler".
+     *
+     * It is NOT "not connected" (that is a 403 "There is no X connection for
+     * blog"), NOT a bad token (that is a 400 carrying the accepted-values list),
+     * and NOT missing scopes (those return 200 with an empty list while
+     * /authorizations reports them). The decisive evidence that it is per-PAIR
+     * rather than per-connection: TWITTER answers 200 on conversations and 500
+     * on post-comments for the same account — no property of a connection can
+     * vary by resource.
+     */
+    public const INBOX_UNSUPPORTED_PAIR_SIGNATURE = 'provider invalid';
+
+    /** True when a thrown error means "unsupported pair", not a real failure. */
+    public static function isUnsupportedInboxPair(\Throwable $e): bool
+    {
+        return str_contains($e->getMessage(), self::INBOX_UNSUPPORTED_PAIR_SIGNATURE);
+    }
 
     /**
-     * DM threads for a brand on one provider. Each row embeds participants[] and
-     * the full messages[] history.
+     * Rows for one inbox resource + provider.
+     *
+     * Deliberately ONE generic method rather than three near-identical ones: the
+     * three resources take the same query shape and the same envelope, and the
+     * per-resource knowledge lives in InboxCapabilityMap instead of being
+     * duplicated here.
+     *
+     * No pagination or date-range parameters are sent because the OpenAPI spec
+     * declares none for any inbox endpoint — `provider` is the ONLY documented
+     * query parameter. If Metricool later adds paging, this is the seam.
+     *
+     * @param  string  $resource  'conversations' | 'post-comments' | 'reviews'
+     * @return array<int,array<string,mixed>>
+     */
+    public function inboxFetch(int $blogId, string $resource, string $provider): array
+    {
+        $response = $this->client()->get("/v2/inbox/{$resource}", $this->baseQuery($blogId) + ['provider' => $provider]);
+        $this->throwIfError($response, "inbox {$resource} ({$provider})");
+
+        return $this->inboxRows($response->json());
+    }
+
+    /**
+     * DM threads. Each row embeds participants[] and the full messages[] history.
      *
      * @return array<int,array<string,mixed>>
      */
     public function inboxConversations(int $blogId, string $provider): array
     {
-        $response = $this->client()->get('/v2/inbox/conversations', $this->baseQuery($blogId) + ['provider' => $provider]);
-        $this->throwIfError($response, "inboxConversations({$provider})");
-
-        return $this->inboxRows($response->json());
+        return $this->inboxFetch($blogId, 'conversations', $provider);
     }
 
     /**
@@ -656,16 +691,56 @@ class MetricoolClient
      */
     public function inboxPostComments(int $blogId, string $provider): array
     {
-        $response = $this->client()->get('/v2/inbox/post-comments', $this->baseQuery($blogId) + ['provider' => $provider]);
-        $this->throwIfError($response, "inboxPostComments({$provider})");
-
-        return $this->inboxRows($response->json());
+        return $this->inboxFetch($blogId, 'post-comments', $provider);
     }
 
     /**
-     * Scope preflight. Returns e.g. {missingScopes: [], allowAccessToMessages: true}.
-     * Call before ingesting so a brand missing a permission is reported as such
-     * rather than surfacing as a stream of 500s.
+     * Google Business Profile reviews. GMB is the ONLY provider this resource
+     * serves; every other token answers 500.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function inboxReviews(int $blogId, string $provider = 'GMB'): array
+    {
+        return $this->inboxFetch($blogId, 'reviews', $provider);
+    }
+
+    /**
+     * The scopes a resource REQUIRES for a provider (as opposed to the ones
+     * currently missing, which inboxAuthorizations reports). Pairing the two is
+     * what turns "missingScopes: [comment.list]" into an operator-actionable
+     * "reconnect TikTok and grant comment permissions".
+     *
+     * @return array<int,string>
+     */
+    public function inboxScopes(int $blogId, string $provider, string $resource = 'post-comments'): array
+    {
+        $response = $this->client()->get(
+            "/v2/inbox/{$resource}/scopes",
+            $this->baseQuery($blogId) + ['provider' => $provider],
+        );
+        $this->throwIfError($response, "inboxScopes({$resource}/{$provider})");
+
+        $json = $response->json();
+        $rows = is_array($json['data'] ?? null) ? $json['data'] : (is_array($json) ? $json : []);
+
+        return array_values(array_filter($rows, 'is_string'));
+    }
+
+    /**
+     * Permission preflight. Returns e.g.
+     * {missingScopes: [], allowAccessToMessages: true}.
+     *
+     * THIS IS THE ONLY WAY TO SEE A PERMISSION PROBLEM. A supported pair whose
+     * scopes were never granted returns HTTP 200 with an EMPTY list — identical
+     * to a brand nobody is talking to. Live examples at time of writing: both
+     * brands are missing ["comment.list","comment.list.manage"] on
+     * TIKTOKBUSINESS post-comments, and brand#14 has
+     * allowAccessToMessages:false plus two missing Instagram scopes. Without
+     * calling this, all of that renders as "Nothing in the inbox yet".
+     *
+     * Never returns 500 for an unsupported pair — it answers 200 even for pairs
+     * whose data call is unsupported, so it cannot be used to probe support.
      *
      * @param  string  $resource  'conversations' or 'post-comments'
      * @return array<string,mixed>

@@ -93,6 +93,25 @@ class CommunitySend extends Command
                 continue;
             }
 
+            // An empty provider round-trips to Metricool, is rejected, and parks
+            // the draft at STATUS_FAILED — which nothing retries, so an operator's
+            // approved reply would be lost silently. Fail it here with a cause.
+            if (trim((string) $conversation->provider) === '') {
+                $this->markFailed($draft, 'Conversation has no provider recorded; cannot address the reply.');
+                $failed++;
+                continue;
+            }
+
+            // Reviews are ingest-only for now: POST /v2/inbox/reviews/replies
+            // exists in the spec but we have no Google Business Profile
+            // connected, so its request shape is UNVERIFIED. Guessing it would
+            // mean posting an unproven body to a customer-facing surface.
+            if ($conversation->conversation_type === InboxConversation::TYPE_REVIEW) {
+                $this->markFailed($draft, 'Review replies are not wired yet — reply in Metricool directly.');
+                $failed++;
+                continue;
+            }
+
             try {
                 $blogId = (int) $brand->metricool_blog_id;
 

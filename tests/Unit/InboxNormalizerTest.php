@@ -164,4 +164,84 @@ class InboxNormalizerTest extends TestCase
         $this->assertSame([], InboxNormalizer::sortedMessages('nope'));
         $this->assertCount(1, InboxNormalizer::sortedMessages([['id' => 'a'], 'junk', 42]));
     }
+
+    public function test_provider_falls_back_to_the_one_we_queried(): void
+    {
+        // The stored provider is posted straight back to Metricool on reply.
+        // An empty one is rejected and parks the draft at STATUS_FAILED, which
+        // nothing retries — the operator's approved reply would be lost.
+        $out = InboxNormalizer::normalize(
+            ['id' => 'c1', 'self' => 'us', 'text' => 'hello'],
+            InboxConversation::TYPE_COMMENT,
+            'LINKEDIN',
+        );
+
+        $this->assertSame('LINKEDIN', $out['provider']);
+    }
+
+    public function test_row_provider_wins_over_the_queried_one(): void
+    {
+        $out = InboxNormalizer::normalize(
+            ['id' => 'c1', 'provider' => 'INSTAGRAM', 'text' => 'hi'],
+            InboxConversation::TYPE_COMMENT,
+            'INSTAGRAMBUSINESS',
+        );
+
+        $this->assertSame('INSTAGRAM', $out['provider']);
+    }
+
+    public function test_comment_authored_by_us_is_detected(): void
+    {
+        // Comment rows have no messages[], so the DM-shaped check was
+        // structurally always false for them — meaning a comment we had already
+        // answered stayed in the awaiting-reply queue and the brand could
+        // publicly reply to its own comment.
+        $out = InboxNormalizer::normalize([
+            'id' => '18074401205320311',
+            'self' => '17841424103721687',
+            'from' => '17841424103721687',
+            'provider' => 'INSTAGRAM',
+            'text' => 'thanks for the kind words!',
+            'creationDate' => '2026-08-01T10:00:00+0200',
+        ], InboxConversation::TYPE_COMMENT);
+
+        $this->assertTrue($out['last_message_from_us']);
+    }
+
+    public function test_comment_authored_by_someone_else_is_not_ours(): void
+    {
+        $out = InboxNormalizer::normalize([
+            'id' => '18074401205320312',
+            'self' => '17841424103721687',
+            'from' => ['id' => '999', 'name' => 'amoswafula'],
+            'provider' => 'INSTAGRAM',
+            'text' => 'is this open on sunday?',
+            'creationDate' => '2026-08-01T10:00:00+0200',
+        ], InboxConversation::TYPE_COMMENT);
+
+        $this->assertFalse($out['last_message_from_us']);
+        $this->assertSame('amoswafula', $out['participant_name']);
+    }
+
+    public function test_comment_counts_as_one_message_not_zero(): void
+    {
+        $out = InboxNormalizer::normalize(
+            ['id' => 'c9', 'self' => 'us', 'text' => 'hi', 'creationDate' => '2026-08-01T10:00:00+0200'],
+            InboxConversation::TYPE_COMMENT,
+            'YOUTUBE',
+        );
+
+        $this->assertSame(1, $out['message_count']);
+    }
+
+    public function test_review_has_no_window(): void
+    {
+        $out = InboxNormalizer::normalize([
+            'id' => 'r1', 'provider' => 'GMB', 'text' => 'great service',
+            'creationDate' => '2026-08-01T10:00:00+0200',
+        ], InboxConversation::TYPE_REVIEW, 'GMB');
+
+        $this->assertNull($out['window_expires_at'], 'Google reviews have no reply deadline');
+        $this->assertSame('GMB', $out['provider']);
+    }
 }

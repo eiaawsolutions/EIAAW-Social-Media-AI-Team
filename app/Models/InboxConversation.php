@@ -21,6 +21,7 @@ class InboxConversation extends Model
 {
     public const TYPE_DM = 'dm';
     public const TYPE_COMMENT = 'comment';
+    public const TYPE_REVIEW = 'review';
 
     public const STATUS_PENDING = 'PENDING';
     public const STATUS_READ = 'READ';
@@ -30,6 +31,12 @@ class InboxConversation extends Model
      * hard deadlines enforced by the platforms, not guidance: a reply drafted
      * after the window has closed cannot be delivered, so drafting one is wasted
      * spend and a false promise on the dashboard.
+     *
+     * TYPE_REVIEW is DELIBERATELY ABSENT. Google Business Profile reviews carry
+     * no reply deadline, and windowExpiryFor() already returns null for an
+     * unlisted type while windowIsOpen() treats null as open — which is exactly
+     * right. Adding a fabricated deadline here would expire replies the platform
+     * would still have accepted.
      */
     public const WINDOW_HOURS = [
         self::TYPE_COMMENT => 24,

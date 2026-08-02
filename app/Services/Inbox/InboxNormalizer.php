@@ -30,9 +30,13 @@ final class InboxNormalizer
 {
     /**
      * @param  array<string,mixed>  $row
+     * @param  string  $queriedProvider  the provider we ASKED for. Used as the
+     *   fallback when the row omits its own `provider`: that column is posted
+     *   straight back to Metricool on reply, and an empty one produces a
+     *   permanently-failed send (STATUS_FAILED has no retry path).
      * @return array<string,mixed>|null  null when the row lacks an id to key on
      */
-    public static function normalize(array $row, string $type): ?array
+    public static function normalize(array $row, string $type, string $queriedProvider = ''): ?array
     {
         $externalId = trim((string) ($row['id'] ?? ''));
         if ($externalId === '') {
@@ -61,7 +65,7 @@ final class InboxNormalizer
 
         return [
             'conversation_type' => $type,
-            'provider' => (string) ($row['provider'] ?? ''),
+            'provider' => trim((string) ($row['provider'] ?? '')) ?: strtoupper(trim($queriedProvider)),
             'external_id' => $externalId,
             'recipient_external_id' => $type === InboxConversation::TYPE_DM
                 ? self::otherParticipantId($row, $self)
@@ -69,12 +73,61 @@ final class InboxNormalizer
             'participant_name' => self::otherParticipantName($row, $self),
             'status' => strtoupper((string) ($row['status'] ?? InboxConversation::STATUS_PENDING)),
             'last_message_text' => $text,
-            'last_message_from_us' => $last !== null && $self !== '' && (string) ($last['from'] ?? '') === $self,
+            'last_message_from_us' => self::lastMessageIsOurs($row, $type, $self, $last),
             'last_message_at' => $lastAt,
             'window_expires_at' => InboxConversation::windowExpiryFor($type, $lastAt),
-            'message_count' => count($messages),
+            // A comment row is one message; only DM rows carry a thread.
+            'message_count' => $type === InboxConversation::TYPE_DM ? count($messages) : 1,
             'raw' => $row,
         ];
+    }
+
+    /**
+     * Did WE write the most recent thing in this row?
+     *
+     * DM rows answer this from the newest embedded message's `from`. COMMENT
+     * rows have no `messages[]` at all, so the naive version was structurally
+     * always false for every comment — which meant `scopeAwaitingReply` could
+     * never exclude a comment, CommunityAgent's "already ours" guard could never
+     * fire on one, and the brand could end up publicly replying to its own
+     * comment. Comment rows DO carry `self` and an author field, so the check is
+     * perfectly possible; it simply wasn't done.
+     *
+     * @param  array<string,mixed>       $row
+     * @param  array<string,mixed>|null  $last  newest DM message, if any
+     */
+    private static function lastMessageIsOurs(array $row, string $type, string $self, ?array $last): bool
+    {
+        if ($self === '') {
+            return false;
+        }
+
+        if ($type === InboxConversation::TYPE_DM) {
+            return $last !== null && (string) ($last['from'] ?? '') === $self;
+        }
+
+        $author = self::authorId($row);
+
+        return $author !== null && $author === $self;
+    }
+
+    /** Author id of a comment/review row, across the shapes providers use. */
+    private static function authorId(array $row): ?string
+    {
+        foreach (['from', 'author', 'authorId', 'userId', 'fromId'] as $k) {
+            $v = $row[$k] ?? null;
+            if (is_string($v) && trim($v) !== '') {
+                return trim($v);
+            }
+            if (is_array($v)) {
+                $id = trim((string) ($v['id'] ?? ''));
+                if ($id !== '') {
+                    return $id;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
