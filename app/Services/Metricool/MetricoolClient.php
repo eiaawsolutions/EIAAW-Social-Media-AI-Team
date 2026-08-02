@@ -599,4 +599,251 @@ class MetricoolClient
             substr($response->body(), 0, 500),
         ));
     }
+
+    // ─────────────────────── Inbox (community / L4 actuator) ───────────────────────
+    //
+    // Verified live against prod 2026-08-01, including a proven send round-trip.
+    // The whole surface rides the SAME shared agency token we publish with — no
+    // OAuth, no per-brand credentials — with the brand's blogId scoping it.
+    //
+    // Contract (from https://app.metricool.com/api/openapi.json):
+    //   GET  /v2/inbox/conversations?provider=          — DM threads, messages[] EMBEDDED
+    //   POST /v2/inbox/conversations                    — {conversationId, provider, recipient, text}
+    //   GET  /v2/inbox/post-comments?provider=          — comments on our posts
+    //   POST /v2/inbox/post-comments                    — {objectId, provider, text}
+    //   GET  /v2/inbox/{resource}/authorizations        — scope preflight
+    //
+    // There is NO message sub-resource: /conversations/{id}, /{id}/messages and
+    // /v2/inbox/messages all 404. One GET returns participants + full history.
+
+    /**
+     * Provider tokens the inbox endpoints accept, from the API's own 400 body.
+     * Case matters for the compound ones — 'tiktok' is rejected where
+     * 'TIKTOKBUSINESS' is accepted.
+     *
+     * WHICH of these works on WHICH endpoint is NOT uniform, and the API cannot
+     * tell you: `provider` is an unconstrained `type: string` on every inbox
+     * input schema, and the 8-value enum appears only on OUTPUT models, byte
+     * identical across all three resources. The support matrix therefore has to
+     * be hard-coded — see App\Services\Inbox\InboxCapabilityMap.
+     */
+    public const INBOX_PROVIDERS = [
+        'INSTAGRAM', 'INSTAGRAMBUSINESS', 'TWITTER', 'FACEBOOK',
+        'GMB', 'TIKTOKBUSINESS', 'YOUTUBE', 'LINKEDIN',
+    ];
+
+    /**
+     * The 500 body that means "this (provider, resource) pair has no handler".
+     *
+     * It is NOT "not connected" (that is a 403 "There is no X connection for
+     * blog"), NOT a bad token (that is a 400 carrying the accepted-values list),
+     * and NOT missing scopes (those return 200 with an empty list while
+     * /authorizations reports them). The decisive evidence that it is per-PAIR
+     * rather than per-connection: TWITTER answers 200 on conversations and 500
+     * on post-comments for the same account — no property of a connection can
+     * vary by resource.
+     */
+    public const INBOX_UNSUPPORTED_PAIR_SIGNATURE = 'provider invalid';
+
+    /** True when a thrown error means "unsupported pair", not a real failure. */
+    public static function isUnsupportedInboxPair(\Throwable $e): bool
+    {
+        return str_contains($e->getMessage(), self::INBOX_UNSUPPORTED_PAIR_SIGNATURE);
+    }
+
+    /**
+     * Rows for one inbox resource + provider.
+     *
+     * Deliberately ONE generic method rather than three near-identical ones: the
+     * three resources take the same query shape and the same envelope, and the
+     * per-resource knowledge lives in InboxCapabilityMap instead of being
+     * duplicated here.
+     *
+     * No pagination or date-range parameters are sent because the OpenAPI spec
+     * declares none for any inbox endpoint — `provider` is the ONLY documented
+     * query parameter. If Metricool later adds paging, this is the seam.
+     *
+     * @param  string  $resource  'conversations' | 'post-comments' | 'reviews'
+     * @return array<int,array<string,mixed>>
+     */
+    public function inboxFetch(int $blogId, string $resource, string $provider): array
+    {
+        $response = $this->client()->get("/v2/inbox/{$resource}", $this->baseQuery($blogId) + ['provider' => $provider]);
+        $this->throwIfError($response, "inbox {$resource} ({$provider})");
+
+        return $this->inboxRows($response->json());
+    }
+
+    /**
+     * DM threads. Each row embeds participants[] and the full messages[] history.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function inboxConversations(int $blogId, string $provider): array
+    {
+        return $this->inboxFetch($blogId, 'conversations', $provider);
+    }
+
+    /**
+     * Comments left on this brand's posts.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function inboxPostComments(int $blogId, string $provider): array
+    {
+        return $this->inboxFetch($blogId, 'post-comments', $provider);
+    }
+
+    /**
+     * Google Business Profile reviews. GMB is the ONLY provider this resource
+     * serves; every other token answers 500.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function inboxReviews(int $blogId, string $provider = 'GMB'): array
+    {
+        return $this->inboxFetch($blogId, 'reviews', $provider);
+    }
+
+    /**
+     * Per-brand connection facts: account types, connection types, token
+     * expiries, handles. Keyed by blogId.
+     *
+     * This is what turns an ambiguous `missingScopes` list into an actionable
+     * remedy — see InboxReadiness. `tiktokAccountType` in particular is the
+     * difference between "grant a permission" (useless) and "switch the account
+     * to Business" (the actual fix).
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function profilesAuth(): array
+    {
+        $response = $this->client()->get('/admin/profiles-auth', $this->baseQuery());
+        $this->throwIfError($response, 'profilesAuth');
+
+        $json = $response->json();
+        $rows = is_array($json['data'] ?? null) ? $json['data'] : (is_array($json) ? $json : []);
+
+        $out = [];
+        foreach ($rows as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $blogId = (int) ($row['id'] ?? $row['blogId'] ?? 0);
+            if ($blogId > 0) {
+                $out[$blogId] = $row;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Which networks are actually attached to a brand, as `networksData` keys
+     * (e.g. instagramData, tiktokData).
+     *
+     * The authoritative "is it connected at all" check. Without it, a brand with
+     * NO Instagram is indistinguishable from one connected with missing scopes —
+     * both report the same missingScopes payload.
+     *
+     * @return array<int,string>
+     */
+    public function brandNetworks(int $blogId): array
+    {
+        $response = $this->client()->get("/v2/settings/brands/{$blogId}", $this->baseQuery($blogId));
+        $this->throwIfError($response, "brandNetworks({$blogId})");
+
+        $json = $response->json();
+        $nd = $json['data']['networksData'] ?? $json['networksData'] ?? null;
+        if (! is_array($nd)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_is_list($nd) ? $nd : array_keys($nd),
+            'is_string',
+        ));
+    }
+
+    /**
+     * Permission preflight. Returns e.g.
+     * {missingScopes: [], allowAccessToMessages: true}.
+     *
+     * THIS IS THE ONLY WAY TO SEE A PERMISSION PROBLEM. A supported pair whose
+     * scopes were never granted returns HTTP 200 with an EMPTY list — identical
+     * to a brand nobody is talking to. Live examples at time of writing: both
+     * brands are missing ["comment.list","comment.list.manage"] on
+     * TIKTOKBUSINESS post-comments, and brand#14 has
+     * allowAccessToMessages:false plus two missing Instagram scopes. Without
+     * calling this, all of that renders as "Nothing in the inbox yet".
+     *
+     * Never returns 500 for an unsupported pair — it answers 200 even for pairs
+     * whose data call is unsupported, so it cannot be used to probe support.
+     *
+     * @param  string  $resource  'conversations' or 'post-comments'
+     * @return array<string,mixed>
+     */
+    public function inboxAuthorizations(int $blogId, string $provider, string $resource = 'conversations'): array
+    {
+        $response = $this->client()->get(
+            "/v2/inbox/{$resource}/authorizations",
+            $this->baseQuery($blogId) + ['provider' => $provider],
+        );
+        $this->throwIfError($response, "inboxAuthorizations({$resource}/{$provider})");
+
+        $json = $response->json();
+
+        return is_array($json['data'] ?? null) ? $json['data'] : (is_array($json) ? $json : []);
+    }
+
+    /**
+     * Send a DM reply into an existing thread. `recipient` is the OTHER
+     * participant's id (never our own `self` id).
+     *
+     * Sending also flips the thread PENDING → READ on Metricool's side, so no
+     * separate status call is needed after a successful reply.
+     */
+    public function replyToConversation(int $blogId, string $provider, string $conversationId, string $recipient, string $text): void
+    {
+        $response = $this->client()->post(
+            '/v2/inbox/conversations?'.http_build_query($this->baseQuery($blogId)),
+            [
+                'conversationId' => $conversationId,
+                'provider' => $provider,
+                'recipient' => $recipient,
+                'text' => $text,
+            ],
+        );
+        $this->throwIfError($response, 'replyToConversation');
+    }
+
+    /** Reply to a comment on one of our posts. `objectId` is the comment id. */
+    public function replyToPostComment(int $blogId, string $provider, string $objectId, string $text): void
+    {
+        $response = $this->client()->post(
+            '/v2/inbox/post-comments?'.http_build_query($this->baseQuery($blogId)),
+            [
+                'objectId' => $objectId,
+                'provider' => $provider,
+                'text' => $text,
+            ],
+        );
+        $this->throwIfError($response, 'replyToPostComment');
+    }
+
+    /**
+     * Unwrap the inbox envelope. Metricool returns {data:[…]} here, but the rest
+     * of this client already tolerates bare lists across versions — do the same.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function inboxRows(mixed $json): array
+    {
+        if (is_array($json) && array_is_list($json)) {
+            return $json;
+        }
+        $rows = $json['data'] ?? null;
+
+        return is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [];
+    }
 }

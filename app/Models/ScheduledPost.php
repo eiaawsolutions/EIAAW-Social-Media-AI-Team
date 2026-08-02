@@ -13,7 +13,32 @@ class ScheduledPost extends Model
         'scheduled_for', 'status', 'blotato_post_id',
         'platform_post_id', 'platform_post_url', 'last_error',
         'attempt_count', 'submitted_at', 'published_at',
-        'queued_for_period_at',
+        'queued_for_period_at', 'scheduling_strategy',
+    ];
+
+    /**
+     * How this post's time was chosen. Written by PostsAutoScheduleApproved;
+     * read by the best-time learner to tell evidence from accident.
+     */
+    public const SCHEDULING_OPERATOR_PINNED = 'operator_pinned';
+    public const SCHEDULING_EXPLOIT = 'exploit';
+    public const SCHEDULING_EXPLORE = 'explore';
+    public const SCHEDULING_DEFAULT_FALLBACK = 'default_fallback';
+    public const SCHEDULING_PAST_SLOT_FALLBACK = 'past_slot_fallback';
+
+    /**
+     * Strategies whose publish hour says NOTHING about audience timing, so the
+     * best-time learner must exclude them.
+     *
+     * `past_slot_fallback` means the calendar slot had already passed and we
+     * published at now()+offset — the hour records when our pipeline caught up,
+     * not when the audience was there. Prod brand#1 had a 60-day publish-hour
+     * histogram spread across 13 different hours that looked like healthy
+     * variance; most of the non-09:00 mass was this path. Feeding it to
+     * computeBestPostingTimes taught the learner that being late was optimal.
+     */
+    public const NON_EVIDENTIAL_SCHEDULING_STRATEGIES = [
+        self::SCHEDULING_PAST_SLOT_FALLBACK,
     ];
 
     /**

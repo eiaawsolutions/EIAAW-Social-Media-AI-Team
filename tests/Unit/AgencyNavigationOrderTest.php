@@ -17,6 +17,7 @@ use App\Filament\Agency\Resources\Brands\BrandResource;
 use App\Filament\Agency\Resources\CalendarEntries\CalendarEntryResource;
 use App\Filament\Agency\Resources\Drafts\DraftResource;
 use App\Filament\Agency\Resources\GrowthGoals\GrowthGoalResource;
+use App\Filament\Agency\Resources\InboxConversations\InboxConversationResource;
 use App\Filament\Agency\Resources\PlatformConnections\PlatformConnectionResource;
 use App\Filament\Agency\Resources\ScheduledPosts\ScheduledPostResource;
 use ReflectionClass;
@@ -72,9 +73,14 @@ class AgencyNavigationOrderTest extends TestCase
         [CalendarEntryResource::class,      'Calendar',        7],
         [DraftResource::class,              'Drafts',          8],
         [ScheduledPostResource::class,      'Schedule',        9],
-        [LiveFeed::class,                   'Live feed',      10],
-        [Performance::class,                'Performance',    11],
-        [Billing::class,                    'Billing',        12],
+        // Inbox sits ABOVE Live feed deliberately: it is the only surface with
+        // platform-enforced deadlines on it (24h comments / 7d DMs), so burying
+        // it below passive monitoring views is how conversations silently
+        // become unanswerable. Inserting it here bumped the three rows below.
+        [InboxConversationResource::class,  'Inbox',          10],
+        [LiveFeed::class,                   'Live feed',      11],
+        [Performance::class,                'Performance',    12],
+        [Billing::class,                    'Billing',        13],
         // --- HQ-only below ---
         [AgentsMonitor::class,              'Agents',         91],
     ];

@@ -123,6 +123,36 @@ return Application::configure(basePath: dirname(__DIR__))
             ->withoutOverlapping(60)
             ->runInBackground();
 
+        // ── Community inbox (L4 growth actuator) ────────────────────────
+        // HOURLY, not daily and emphatically not weekly: platform reply windows
+        // are 24h for comments and 7d for DMs, so a slower cadence would surface
+        // conversations that are already dead on arrival. Ingest is read-only;
+        // drafting writes drafts only. NOTHING here sends — community:send picks
+        // up only what a human approved in the inbox page.
+        $schedule->command('community:ingest')
+            ->hourly()
+            ->withoutOverlapping(30);
+
+        $schedule->command('community:draft --limit=25')
+            ->hourlyAt(10)
+            ->withoutOverlapping(30);
+
+        // Delivery of operator-approved replies. Every 5 minutes so an approval
+        // goes out while the conversation is still warm.
+        $schedule->command('community:send')
+            ->everyFiveMinutes()
+            ->withoutOverlapping(10);
+
+        // Goal-lifecycle watchdog — Mondays 04:00 UTC, AFTER intel:refresh has
+        // rewritten the growth briefs, so it reads this week's evaluation rather
+        // than last week's. Reports goals that are expiring, structurally
+        // unmeasurable, arithmetically unreachable, never evaluated, or pinned at
+        // max pressure with no actuator left. Read-only and fast, so it runs
+        // INLINE (no runInBackground) — see the PID-leak policy note above.
+        $schedule->command('goals:review')
+            ->weekly()->mondays()->at('04:00')
+            ->withoutOverlapping(30);
+
         // Plan-cap release valve: hourly, flip any scheduled_posts that were
         // deferred to next period back to status='queued' once their
         // queued_for_period_at has arrived. Hourly cadence is plenty — the
