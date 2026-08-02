@@ -599,4 +599,138 @@ class MetricoolClient
             substr($response->body(), 0, 500),
         ));
     }
+
+    // ─────────────────────── Inbox (community / L4 actuator) ───────────────────────
+    //
+    // Verified live against prod 2026-08-01, including a proven send round-trip.
+    // The whole surface rides the SAME shared agency token we publish with — no
+    // OAuth, no per-brand credentials — with the brand's blogId scoping it.
+    //
+    // Contract (from https://app.metricool.com/api/openapi.json):
+    //   GET  /v2/inbox/conversations?provider=          — DM threads, messages[] EMBEDDED
+    //   POST /v2/inbox/conversations                    — {conversationId, provider, recipient, text}
+    //   GET  /v2/inbox/post-comments?provider=          — comments on our posts
+    //   POST /v2/inbox/post-comments                    — {objectId, provider, text}
+    //   GET  /v2/inbox/{resource}/authorizations        — scope preflight
+    //
+    // There is NO message sub-resource: /conversations/{id}, /{id}/messages and
+    // /v2/inbox/messages all 404. One GET returns participants + full history.
+
+    /**
+     * Provider values the inbox endpoints accept, from the API's own 400 body.
+     * Case matters for the compound ones — 'tiktok' is rejected where
+     * 'TIKTOKBUSINESS' is accepted.
+     *
+     * NOTE: on live prod only INSTAGRAM / INSTAGRAMBUSINESS / TWITTER / FACEBOOK
+     * returned 200. GMB, TIKTOKBUSINESS, YOUTUBE and LINKEDIN answered 500
+     * "provider invalid" — we could not distinguish "not connected for this
+     * brand" from "not actually supported", so callers must treat a failure on
+     * those as expected and skip, never as an outage.
+     */
+    public const INBOX_PROVIDERS = [
+        'INSTAGRAM', 'INSTAGRAMBUSINESS', 'TWITTER', 'FACEBOOK',
+        'GMB', 'TIKTOKBUSINESS', 'YOUTUBE', 'LINKEDIN',
+    ];
+
+    /** Providers confirmed working on live prod. Everything else is best-effort. */
+    public const INBOX_PROVIDERS_VERIFIED = ['INSTAGRAM', 'INSTAGRAMBUSINESS', 'TWITTER', 'FACEBOOK'];
+
+    /**
+     * DM threads for a brand on one provider. Each row embeds participants[] and
+     * the full messages[] history.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function inboxConversations(int $blogId, string $provider): array
+    {
+        $response = $this->client()->get('/v2/inbox/conversations', $this->baseQuery($blogId) + ['provider' => $provider]);
+        $this->throwIfError($response, "inboxConversations({$provider})");
+
+        return $this->inboxRows($response->json());
+    }
+
+    /**
+     * Comments left on this brand's posts.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function inboxPostComments(int $blogId, string $provider): array
+    {
+        $response = $this->client()->get('/v2/inbox/post-comments', $this->baseQuery($blogId) + ['provider' => $provider]);
+        $this->throwIfError($response, "inboxPostComments({$provider})");
+
+        return $this->inboxRows($response->json());
+    }
+
+    /**
+     * Scope preflight. Returns e.g. {missingScopes: [], allowAccessToMessages: true}.
+     * Call before ingesting so a brand missing a permission is reported as such
+     * rather than surfacing as a stream of 500s.
+     *
+     * @param  string  $resource  'conversations' or 'post-comments'
+     * @return array<string,mixed>
+     */
+    public function inboxAuthorizations(int $blogId, string $provider, string $resource = 'conversations'): array
+    {
+        $response = $this->client()->get(
+            "/v2/inbox/{$resource}/authorizations",
+            $this->baseQuery($blogId) + ['provider' => $provider],
+        );
+        $this->throwIfError($response, "inboxAuthorizations({$resource}/{$provider})");
+
+        $json = $response->json();
+
+        return is_array($json['data'] ?? null) ? $json['data'] : (is_array($json) ? $json : []);
+    }
+
+    /**
+     * Send a DM reply into an existing thread. `recipient` is the OTHER
+     * participant's id (never our own `self` id).
+     *
+     * Sending also flips the thread PENDING → READ on Metricool's side, so no
+     * separate status call is needed after a successful reply.
+     */
+    public function replyToConversation(int $blogId, string $provider, string $conversationId, string $recipient, string $text): void
+    {
+        $response = $this->client()->post(
+            '/v2/inbox/conversations?'.http_build_query($this->baseQuery($blogId)),
+            [
+                'conversationId' => $conversationId,
+                'provider' => $provider,
+                'recipient' => $recipient,
+                'text' => $text,
+            ],
+        );
+        $this->throwIfError($response, 'replyToConversation');
+    }
+
+    /** Reply to a comment on one of our posts. `objectId` is the comment id. */
+    public function replyToPostComment(int $blogId, string $provider, string $objectId, string $text): void
+    {
+        $response = $this->client()->post(
+            '/v2/inbox/post-comments?'.http_build_query($this->baseQuery($blogId)),
+            [
+                'objectId' => $objectId,
+                'provider' => $provider,
+                'text' => $text,
+            ],
+        );
+        $this->throwIfError($response, 'replyToPostComment');
+    }
+
+    /**
+     * Unwrap the inbox envelope. Metricool returns {data:[…]} here, but the rest
+     * of this client already tolerates bare lists across versions — do the same.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function inboxRows(mixed $json): array
+    {
+        if (is_array($json) && array_is_list($json)) {
+            return $json;
+        }
+        $rows = $json['data'] ?? null;
+
+        return is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [];
+    }
 }
