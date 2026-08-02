@@ -51,9 +51,16 @@ class ManageInboxConversations extends ManageRecords
                 if (! is_array($issue)) {
                     continue;
                 }
+                // Show the classified REMEDY. Rendering the raw missingScopes
+                // list here would reintroduce the exact wrong instruction this
+                // whole classifier exists to prevent — e.g. "grant comment.list"
+                // on a personal TikTok account, where no amount of re-consenting
+                // works because TikTok never offers those scopes to that type.
                 $missing = implode(', ', (array) ($issue['missing_scopes'] ?? []));
-                $detail = $issue['error'] ?? ($missing !== '' ? "missing {$missing}" : 'access denied');
-                $out[] = "{$brand->name} · {$key}: {$detail}";
+                $detail = $issue['remedy']
+                    ?? $issue['error']
+                    ?? ($missing !== '' ? "missing {$missing}" : 'access denied');
+                $out[] = "{$brand->name}: {$detail}";
             }
         }
 
