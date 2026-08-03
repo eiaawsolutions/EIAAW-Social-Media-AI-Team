@@ -508,26 +508,30 @@ class CustomisedPostSchedulerTest extends TestCase
 
     /**
      * Safety: a first occurrence that did NOT pass must never auto-queue its
-     * followers — they inherit awaiting_approval (surfaced for review), not the
-     * passed statuses. Guards against a held/failed series silently publishing.
+     * followers. Guards against a held/failed series silently publishing.
+     *
+     * This originally asserted that EVERY non-passing verdict cloned as
+     * 'awaiting_approval'. That over-reached, and on 2026-07-17 it cost brand #1
+     * seven weeks of silence: laundering a deterministic 'compliance_failed' into
+     * "waiting for a human" discarded the reason AND parked the series behind an
+     * approval gate that a green-lane brand does not have. The safety property is
+     * "never auto-queue", not "always awaiting_approval" — so that is what we
+     * assert now, behaviourally, against the extracted pure rule. Failure
+     * propagation itself is covered in CustomisedPostDeadlockTest.
      */
-    public function test_followers_inherit_awaiting_approval_when_first_did_not_pass(): void
+    public function test_followers_never_auto_queue_when_first_did_not_pass(): void
     {
-        $src = $this->schedulerSource();
-        $this->assertSame(
-            1,
-            preg_match('/function cloneComplianceVerdict\(.*?\n    \}/s', $src, $fn),
-            'Could not locate cloneComplianceVerdict().',
-        );
-        $block = $fn[0];
-        // Only the genuinely-passed statuses are treated as pass.
-        $this->assertMatchesRegularExpression(
-            "/\\\$passed\s*=\s*\[\s*'approved',\s*'scheduled'\s*\]/",
-            $block,
-            'Only approved/scheduled count as a pass when cloning the verdict.',
-        );
-        $this->assertStringContainsString("'awaiting_approval'", $block,
-            'A non-passing first occurrence must clone awaiting_approval to followers, never auto-queue.');
+        foreach ([null, 'compliance_pending', 'compliance_failed', 'awaiting_approval', 'rejected'] as $notPassing) {
+            $this->assertNotContains(
+                CustomisedPostScheduler::inheritedStatusFor($notPassing),
+                ['approved', 'scheduled'],
+                'A non-passing first occurrence must never clone an auto-queueing status to its followers.',
+            );
+        }
+
+        // ...and a genuine pass still clones verbatim, so the series ships.
+        $this->assertSame('approved', CustomisedPostScheduler::inheritedStatusFor('approved'));
+        $this->assertSame('scheduled', CustomisedPostScheduler::inheritedStatusFor('scheduled'));
     }
 
     /** Helper: isolate the createEntry() method body from the scheduler source. */
