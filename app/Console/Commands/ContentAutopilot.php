@@ -141,7 +141,11 @@ class ContentAutopilot extends Command
             }
 
             // ── Calendar coverage: build a fresh month if we're running thin. ─
-            $upcoming = $this->upcomingEntryCount($brand, $now, $coverageDays);
+            // Operator-pinned customised posts are excluded from BOTH the
+            // coverage signal and the drafting pass — they are additive, not plan.
+            $calendarIds = $this->autonomousCalendarIds($brand);
+
+            $upcoming = $this->upcomingEntryCount($brand, $now, $coverageDays, $calendarIds);
             if ($upcoming < $minCoverage) {
                 if ($dry) {
                     $this->line("brand #{$brand->id} ({$brand->name}): [dry] coverage {$upcoming}<{$minCoverage} — would run Strategist.");
@@ -150,12 +154,16 @@ class ContentAutopilot extends Command
                     if ($built) {
                         $totals['calendars_built']++;
                         $this->info("brand #{$brand->id} ({$brand->name}): Strategist built a new calendar.");
+                        // Pick up the calendar the Strategist just created, so
+                        // this same run can draft against it instead of idling
+                        // for another hour.
+                        $calendarIds = $this->autonomousCalendarIds($brand);
                     }
                 }
             }
 
             // ── Draft generation: dispatch idempotent per-(entry,platform) jobs. ─
-            $dispatched = $this->dispatchDrafts($brand, $now, $coverageDays, $budget, $dry);
+            $dispatched = $this->dispatchDrafts($brand, $now, $coverageDays, $budget, $dry, $calendarIds);
             $totals['drafts_dispatched'] += $dispatched;
 
             if ($dispatched > 0) {
@@ -215,18 +223,63 @@ class ContentAutopilot extends Command
     }
 
     /**
+     * The brand's AUTONOMOUS calendars — every ContentCalendar except the single
+     * operator-owned "Customised posts" one.
+     *
+     * This distinction is load-bearing, not cosmetic. Operator-pinned customised
+     * posts (CustomisedPostScheduler) are ADDITIVE one-offs: the operator drops a
+     * specific asset on a specific date, optionally on a recurrence. They are not
+     * the content plan, and the content plan must not treat them as such.
+     *
+     * Conflating the two deadlocked brand #1 for seven weeks. On 2026-07-17 an
+     * operator scheduled one asset as a DAILY recurrence — 52 occurrences (the
+     * RecurrenceExpander cap) across all 6 platforms, claiming every calendar day
+     * from 07-18 to 09-07. From that moment:
+     *
+     *   - upcomingEntryCount() saw a full 10-day window and never ran the
+     *     Strategist, so no August plan was ever built;
+     *   - dispatchDrafts() saw a non-rejected draft on every (entry, platform)
+     *     pair and dispatched nothing;
+     *
+     * so the autopilot reported a clean "0 dispatched, 0 built" every hour while
+     * the brand quietly went dark after its last July post. Scoping both to the
+     * autonomous calendars makes operator posts purely additive again: they ride
+     * the same publishing rail, but they can no longer starve the plan.
+     *
+     * @return array<int,int>
+     */
+    private function autonomousCalendarIds(Brand $brand): array
+    {
+        return \App\Models\ContentCalendar::where('brand_id', $brand->id)
+            ->autonomous()
+            ->pluck('id')
+            ->all();
+    }
+
+    /**
      * Count upcoming calendar entries (today .. today+coverageDays, brand TZ)
      * that still represent publishable plan — i.e. not archived/rejected at
      * the entry level. We don't require them to be undrafted here; this is the
      * "is the plan running out" signal that decides whether to call Strategist.
+     *
+     * Only AUTONOMOUS calendars count — see autonomousCalendarIds(). A brand
+     * whose next fortnight is wall-to-wall operator customised posts still has
+     * an empty *plan*, and the Strategist must be allowed to build one.
+     *
+     * @param  array<int,int>  $calendarIds
      */
-    private function upcomingEntryCount(Brand $brand, Carbon $nowUtc, int $coverageDays): int
+    private function upcomingEntryCount(Brand $brand, Carbon $nowUtc, int $coverageDays, array $calendarIds): int
     {
+        if (empty($calendarIds)) {
+            return 0; // no autonomous calendar at all — definitely run the Strategist
+        }
+
         $tz = $brand->timezone ?: 'UTC';
         $today = Carbon::now($tz)->startOfDay();
         $until = $today->copy()->addDays($coverageDays)->endOfDay();
 
         return CalendarEntry::where('brand_id', $brand->id)
+            ->whereIn('content_calendar_id', $calendarIds)
             ->whereBetween('scheduled_date', [$today->toDateString(), $until->toDateString()])
             ->count();
     }
@@ -266,10 +319,20 @@ class ContentAutopilot extends Command
      * (they shouldn't — withoutOverlapping guards the cron) the duplicate
      * job no-ops. Jobs go on the dedicated `autopilot` queue.
      *
+     * Scoped to the brand's AUTONOMOUS calendars — see autonomousCalendarIds().
+     * Operator customised entries already carry their own operator-authored
+     * drafts; the Writer must never fan out over them (it would overwrite pinned
+     * copy), and a stuck one must never be mistaken for a filled plan slot.
+     *
+     * @param  array<int,int>  $calendarIds
      * @return int number of jobs dispatched (or, in dry-run, that would be)
      */
-    private function dispatchDrafts(Brand $brand, Carbon $nowUtc, int $coverageDays, int $budget, bool $dry): int
+    private function dispatchDrafts(Brand $brand, Carbon $nowUtc, int $coverageDays, int $budget, bool $dry, array $calendarIds): int
     {
+        if (empty($calendarIds)) {
+            return 0; // nothing autonomous to draft against yet
+        }
+
         $tz = $brand->timezone ?: 'UTC';
         $today = Carbon::now($tz)->startOfDay();
         $until = $today->copy()->addDays($coverageDays)->endOfDay();
@@ -290,6 +353,7 @@ class ContentAutopilot extends Command
         }
 
         $entries = CalendarEntry::where('brand_id', $brand->id)
+            ->whereIn('content_calendar_id', $calendarIds)
             ->whereBetween('scheduled_date', [$today->toDateString(), $until->toDateString()])
             ->with('drafts:id,calendar_entry_id,platform,status')
             ->orderBy('scheduled_date')

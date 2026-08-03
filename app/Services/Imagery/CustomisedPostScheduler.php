@@ -215,13 +215,30 @@ class CustomisedPostScheduler
      * compliance verdict is identical too — re-running the 7 checks N times would
      * burn N LLM passes for the same answer.
      *
-     * Safety: if the first occurrence did NOT pass (it is anything other than
-     * 'approved' / 'scheduled'), the followers inherit 'awaiting_approval' rather
-     * than the literal held/failed status — we never auto-queue copy that didn't
-     * pass, but we also surface the whole series on the Drafts page for one review
-     * instead of leaving followers stranded at compliance_pending (invisible to
-     * every downstream cron). Approving the first on the Drafts page is the
-     * operator's single action; each follower is then independently approvable.
+     * The follower inherits the first occurrence's LITERAL verdict, because the
+     * copy is identical and so the verdict is too:
+     *
+     *   approved / scheduled  → inherit as-is (green lane passed, already queued)
+     *   awaiting_approval     → inherit as-is (amber lane passed, or compliance
+     *                           could not be determined — a human must look)
+     *   compliance_failed     → inherit compliance_failed, AND clone the first
+     *                           occurrence's check rows so every follower carries
+     *                           the concrete reason
+     *
+     * That last branch used to collapse to 'awaiting_approval'. It was wrong in
+     * two ways, and on 2026-07-17 it froze brand #1 for seven weeks:
+     *
+     *   1. It routed a DETERMINISTIC, reproducible failure (e.g. "hashtag #3 is
+     *      110 chars") into a vague "waiting for a human", discarding the reason.
+     *      306 drafts sat with zero compliance_check rows and no explanation.
+     *   2. 'awaiting_approval' is a human gate. A GREEN-lane brand has no human
+     *      approver by definition — the operator configured it to ship alone. So
+     *      the drafts landed in a queue nobody was watching, and the series went
+     *      silent instead of surfacing as broken.
+     *
+     * Inheriting the real failure keeps the series honest: it shows up on the
+     * Drafts page as failed-with-a-reason, which the operator can act on (fix the
+     * hashtags and reschedule). We still never auto-queue copy that didn't pass.
      *
      * @param  array<string,Draft>  $firstDrafts     platform => first-occurrence draft (already refreshed)
      * @param  array<int,array<string,Draft>>  $followerDrafts  [occurrenceIndex][platform] => draft
@@ -232,14 +249,14 @@ class CustomisedPostScheduler
             return; // single post — nothing to clone
         }
 
-        $passed = ['approved', 'scheduled'];
+        // Cache the first occurrence's check rows per platform so we clone them
+        // once per platform, not once per (occurrence × platform).
+        $checksByPlatform = [];
 
         foreach ($followerDrafts as $byPlatform) {
             foreach ($byPlatform as $platform => $draft) {
                 $source = $firstDrafts[$platform] ?? null;
-                $inherited = $source && in_array($source->status, $passed, true)
-                    ? $source->status
-                    : 'awaiting_approval';
+                $inherited = self::inheritedStatusFor($source?->status);
 
                 try {
                     $draft->update(['status' => $inherited]);
@@ -248,7 +265,100 @@ class CustomisedPostScheduler
                         'CustomisedPostScheduler: could not clone compliance verdict to follower draft',
                         ['draft_id' => $draft->id ?? null, 'error' => substr($e->getMessage(), 0, 200)],
                     );
+                    continue;
                 }
+
+                // A failed follower with no check rows shows a blank compliance
+                // section on the Drafts page — the same trap recordComplianceHold()
+                // guards against. Clone the source's rows so the reason travels.
+                if ($inherited === 'compliance_failed' && $source) {
+                    if (! array_key_exists($platform, $checksByPlatform)) {
+                        $checksByPlatform[$platform] = $this->readSourceChecks($source);
+                    }
+                    $this->cloneChecksTo($draft, $checksByPlatform[$platform]);
+                }
+            }
+        }
+    }
+
+    /**
+     * The status a follower occurrence inherits, given the first occurrence's
+     * post-compliance status. Pure + static so the rule is the single source of
+     * truth and is unit-testable without a database (same reasoning as
+     * normalisePlatforms).
+     *
+     * The followers are byte-identical copies of the first occurrence, so they
+     * inherit its LITERAL verdict — including a failure. Collapsing a failure to
+     * 'awaiting_approval' (the behaviour before 2026-08-03) hid the reason and
+     * parked the series behind a human gate that a green-lane brand does not
+     * have; see cloneComplianceVerdict()'s docblock for the incident.
+     *
+     * A null / unrecognised source status means compliance never wrote a verdict
+     * at all (the run errored before it got there). That — and only that — is a
+     * genuine "we don't know", which fails safe to the human gate.
+     */
+    public static function inheritedStatusFor(?string $sourceStatus): string
+    {
+        return match ($sourceStatus) {
+            'approved', 'scheduled', 'awaiting_approval', 'compliance_failed' => $sourceStatus,
+            default => 'awaiting_approval',
+        };
+    }
+
+    /**
+     * Snapshot the first occurrence's compliance rows as plain arrays, ready to
+     * be re-inserted against a follower draft. Best-effort: a read failure just
+     * means the follower carries the status without the detail rows.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function readSourceChecks(Draft $source): array
+    {
+        try {
+            return $source->complianceChecks()
+                ->get(['check_type', 'score', 'threshold', 'result', 'reason', 'details', 'model_id', 'latency_ms', 'checked_at'])
+                ->map(fn (\App\Models\ComplianceCheck $c) => [
+                    'check_type' => $c->check_type,
+                    'score' => $c->score,
+                    'threshold' => $c->threshold,
+                    'result' => $c->result,
+                    'reason' => $c->reason,
+                    'details' => $c->details,
+                    'model_id' => $c->model_id,
+                    'latency_ms' => $c->latency_ms,
+                    'checked_at' => $c->checked_at,
+                ])
+                ->all();
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning(
+                'CustomisedPostScheduler: could not read source compliance checks',
+                ['draft_id' => $source->id ?? null, 'error' => substr($e->getMessage(), 0, 200)],
+            );
+
+            return [];
+        }
+    }
+
+    /**
+     * Re-insert the cached check rows against a follower draft. Best-effort per
+     * the same reasoning as recordComplianceHold(): a missing audit row must
+     * never abort the caller's upload request.
+     *
+     * @param  array<int,array<string,mixed>>  $checks
+     */
+    private function cloneChecksTo(Draft $draft, array $checks): void
+    {
+        foreach ($checks as $row) {
+            try {
+                \App\Models\ComplianceCheck::create($row + [
+                    'draft_id' => $draft->id,
+                    'brand_id' => $draft->brand_id,
+                ]);
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning(
+                    'CustomisedPostScheduler: could not clone compliance check row to follower draft',
+                    ['draft_id' => $draft->id ?? null, 'error' => substr($e->getMessage(), 0, 200)],
+                );
             }
         }
     }
@@ -362,7 +472,7 @@ class CustomisedPostScheduler
     private function customisedCalendar(Brand $brand): ContentCalendar
     {
         return ContentCalendar::firstOrCreate(
-            ['brand_id' => $brand->id, 'label' => 'Customised posts'],
+            ['brand_id' => $brand->id, 'label' => ContentCalendar::CUSTOMISED_LABEL],
             [
                 'period_starts_on' => now()->startOfMonth()->toDateString(),
                 'period_ends_on' => now()->addYear()->endOfMonth()->toDateString(),
