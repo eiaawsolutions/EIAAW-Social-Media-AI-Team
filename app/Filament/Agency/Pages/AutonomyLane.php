@@ -5,10 +5,11 @@ namespace App\Filament\Agency\Pages;
 use App\Models\AutonomySetting;
 use App\Models\Brand;
 use App\Models\Draft;
-use App\Models\Workspace;
+use App\Services\Brands\BrandScope;
 use App\Services\Readiness\SetupReadiness;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Illuminate\Support\Collection;
 
 /**
  * Stage 05 — Autonomy lane decided.
@@ -49,14 +50,37 @@ class AutonomyLane extends Page
 
     public function mount(): void
     {
-        $this->brand = request()->integer('brand') ?: null;
+        // Seed from the URL, else from the global brand scope when it resolves
+        // to exactly one brand, else the first brand in scope.
+        $this->brand = request()->integer('brand') ?: $this->scope()->single()?->id;
+
+        // Pin to a CONCRETE id so the selector always shows the brand the
+        // buttons will write to. Leaving this null was the bug: the page had no
+        // picker, resolveBrand() fell through to the first brand, and picking a
+        // lane ALWAYS wrote brand #1's autonomy_settings row — brands #2..n on
+        // Studio / Agency / Enterprise could never have their lane set at all.
+        $this->brand = $this->resolveBrand()?->id;
+        $this->refreshState();
+    }
+
+    /**
+     * Livewire hook: the brand selector changed. Re-read the stored lane so the
+     * highlighted option always reflects the newly-selected brand rather than
+     * the previous one.
+     */
+    public function updatedBrand(): void
+    {
         $this->refreshState();
     }
 
     private function refreshState(): void
     {
         $brand = $this->resolveBrand();
-        if (! $brand) return;
+        if (! $brand) {
+            $this->currentLane = null;
+
+            return;
+        }
 
         $row = AutonomySetting::where('brand_id', $brand->id)
             ->whereNull('platform')
@@ -67,26 +91,49 @@ class AutonomyLane extends Page
         $this->currentLane = $stored === 'red' ? 'amber' : $stored;
     }
 
+    /** The global brand scope set by the topbar switcher. */
+    public function scope(): BrandScope
+    {
+        return app(BrandScope::class);
+    }
+
+    /**
+     * Brands the operator can set a lane for. Narrowed to the current topbar
+     * scope so the page agrees with the rest of the panel, but never empty:
+     * if the scope somehow excludes everything we fall back to the whole
+     * workspace rather than presenting an unusable page.
+     *
+     * @return \Illuminate\Support\Collection<int, Brand>
+     */
+    public function brands(): Collection
+    {
+        $scope = $this->scope();
+        $inScope = $scope->brands();
+
+        return $inScope->isNotEmpty() ? $inScope : $scope->available();
+    }
+
+    /**
+     * The brand every action on this page writes to.
+     *
+     * brands() supplies the ALLOWED id set (already workspace- and scope-
+     * constrained, so this doubles as the authorisation check), but the model
+     * is re-fetched in full: BrandScope::available() selects only id/name/
+     * timezone for the picker, and handing a partially-hydrated model to
+     * SetupReadiness or an agent would silently read nulls for real columns.
+     */
     public function resolveBrand(): ?Brand
     {
-        $user = auth()->user();
-        if (! $user) return null;
-
-        /** @var ?Workspace $ws */
-        $ws = $user->currentWorkspace
-            ?? $user->workspaces()->first()
-            ?? $user->ownedWorkspaces()->first();
-        if (! $ws) return null;
-
-        if ($this->brand) {
-            $b = Brand::where('workspace_id', $ws->id)->find($this->brand);
-            if ($b) return $b;
+        $allowedIds = $this->brands()->pluck('id')->all();
+        if ($allowedIds === []) {
+            return null;
         }
 
-        return Brand::where('workspace_id', $ws->id)
-            ->whereNull('archived_at')
-            ->orderBy('id')
-            ->first();
+        $targetId = in_array((int) $this->brand, $allowedIds, true)
+            ? (int) $this->brand
+            : (int) $allowedIds[0];
+
+        return Brand::find($targetId);
     }
 
     public function pickLane(string $lane): void

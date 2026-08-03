@@ -33,6 +33,8 @@ use Illuminate\Database\Eloquent\Builder;
  */
 class InboxConversationResource extends Resource
 {
+    use \App\Filament\Agency\Concerns\ScopesToSelectedBrands;
+
     protected static ?string $model = InboxConversation::class;
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedInbox;
     protected static ?string $navigationLabel = 'Inbox';
@@ -58,7 +60,11 @@ class InboxConversationResource extends Resource
             return $query->whereRaw('1 = 0');
         }
 
-        return $query->where('workspace_id', $workspaceId);
+        // Workspace isolation first (authoritative), then the operator's brand
+        // selection from the topbar switcher on top of it. The table also keeps
+        // its own per-column brand filter for a one-off narrowing that shouldn't
+        // change the whole panel's scope.
+        return self::applyBrandScope($query->where('workspace_id', $workspaceId));
     }
 
     /** Count of things genuinely waiting on a human — drives the sidebar badge. */

@@ -33,6 +33,8 @@ use Illuminate\Database\Eloquent\Builder;
  */
 class PlatformConnectionResource extends Resource
 {
+    use \App\Filament\Agency\Concerns\ScopesToSelectedBrands;
+
     protected static ?string $model = PlatformConnection::class;
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedLink;
     protected static ?string $navigationLabel = 'Platforms';
@@ -192,11 +194,15 @@ class PlatformConnectionResource extends Resource
             return $query->whereRaw('1 = 0');
         }
 
-        return $query
-            ->where('status', '!=', 'revoked')
-            ->whereHas('brand', function (Builder $q) use ($workspaceId) {
-                $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
-            });
+        // Workspace isolation first (authoritative), then the operator's brand
+        // selection from the topbar switcher on top of it.
+        return self::applyBrandScope(
+            $query
+                ->where('status', '!=', 'revoked')
+                ->whereHas('brand', function (Builder $q) use ($workspaceId) {
+                    $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
+                })
+        );
     }
 
     public static function getPages(): array

@@ -24,6 +24,8 @@ use Illuminate\Database\Eloquent\Builder;
  */
 class GrowthGoalResource extends Resource
 {
+    use \App\Filament\Agency\Concerns\ScopesToSelectedBrands;
+
     protected static ?string $model = BrandGrowthGoal::class;
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedFlag;
     protected static ?string $navigationLabel = 'Growth goals';
@@ -140,7 +142,10 @@ class GrowthGoalResource extends Resource
             return $query->whereRaw('1 = 0');
         }
 
-        return $query->where('workspace_id', $workspaceId);
+        // Workspace isolation first (authoritative), then the operator's brand
+        // selection from the topbar switcher on top of it. brand_id is NOT NULL
+        // on brand_growth_goals, so no row can fall out of a whereIn.
+        return self::applyBrandScope($query->where('workspace_id', $workspaceId));
     }
 
     public static function getPages(): array

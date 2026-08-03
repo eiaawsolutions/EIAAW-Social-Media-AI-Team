@@ -55,7 +55,12 @@ class SetupWizard extends Page
 
     public function mount(): void
     {
-        $this->brand = request()->integer('brand') ?: null;
+        // Seed from the URL (the in-page brand pills link with ?brand=), else
+        // from the global brand scope when it resolves to exactly one brand, so
+        // arriving here after picking a brand in the topbar lands on that brand
+        // instead of whatever nextActionableBrand() would have chosen.
+        $this->brand = request()->integer('brand')
+            ?: app(\App\Services\Brands\BrandScope::class)->single()?->id;
         $this->focus = request()->string('focus')->toString() ?: null;
         $this->refreshReadiness();
     }

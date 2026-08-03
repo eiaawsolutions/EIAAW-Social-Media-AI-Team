@@ -119,12 +119,40 @@
                 color: var(--eiaaw-bg);
                 padding: 3px 9px; border-radius: 999px;
             }
+            .autonomy-brand-switch {
+                background: white;
+                border: 1px solid var(--eiaaw-line);
+                border-radius: 12px;
+                padding: 14px 16px;
+                margin-bottom: 22px;
+                max-width: 520px;
+            }
+            .autonomy-field-label {
+                display: block;
+                font-family: var(--eiaaw-mono);
+                font-size: 10.5px; letter-spacing: .12em;
+                text-transform: uppercase;
+                color: var(--eiaaw-mute);
+                margin: 0 0 6px;
+            }
+            .autonomy-input {
+                width: 100%;
+                padding: 9px 12px;
+                border: 1px solid var(--eiaaw-line);
+                border-radius: 9px;
+                background: var(--eiaaw-bg);
+                font-family: inherit;
+                font-size: 14px;
+                color: var(--eiaaw-ink);
+            }
+            .autonomy-input:focus { outline: 2px solid var(--eiaaw-primary); outline-offset: 1px; }
         </style>
     @endpush
 
     @php
         $brand = $this->resolveBrand();
         $current = $this->currentLane;
+        $laneBrands = $this->brands();
     @endphp
 
     <div class="autonomy-shell">
@@ -139,6 +167,28 @@
                 <span aria-hidden="true">→</span>
             </a>
         @else
+            @if ($laneBrands->count() > 1)
+                {{-- Brand selector. The lane is stored per brand
+                     (autonomy_settings.brand_id), so without a picker this page
+                     always wrote the FIRST brand's row — brands #2..n on the
+                     multi-brand tiers could never have their lane set at all.
+                     Every button below writes to whatever is chosen here. --}}
+                <div class="autonomy-brand-switch">
+                    <label class="autonomy-field-label" for="autonomy-brand-select">
+                        Which brand is this lane for?
+                    </label>
+                    <select id="autonomy-brand-select" class="autonomy-input" wire:model.live="brand">
+                        @foreach ($laneBrands as $b)
+                            <option value="{{ $b->id }}">{{ $b->name }}</option>
+                        @endforeach
+                    </select>
+                    <p style="font-size:12px;color:var(--eiaaw-mute);margin:8px 0 0;">
+                        The lane you pick below applies to <strong>{{ $brand->name }}</strong> only.
+                        Switch here to set a different brand's lane.
+                    </p>
+                </div>
+            @endif
+
             <div class="autonomy-meta">{{ $brand->name }} · Default autonomy lane</div>
             <h2 class="autonomy-heading">
                 @if ($current)

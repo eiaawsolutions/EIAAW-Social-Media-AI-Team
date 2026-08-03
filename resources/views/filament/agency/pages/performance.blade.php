@@ -67,22 +67,44 @@
     @endpush
 
     @php
-        $g = $this->growth();
-        $gs = $this->growthStrategy();
+        // Growth and Growth-strategy are ACCOUNT-level readings: one per brand,
+        // never summable. So each renders one labelled block per brand in scope,
+        // while the post metrics below aggregate the whole scope. Previously
+        // growth showed ONE brand directly above metrics for ALL brands.
+        $growthBlocks = $this->growthBlocks();
+        $gsBlocks = $this->growthStrategyBlocks();
         $s = $this->summary();
         $platforms = $this->perPlatform();
         $top = $this->topPosts();
         $hasMetrics = $s['impressions'] > 0 || $s['likes'] > 0 || $s['comments'] > 0;
+        $scope = $this->scope();
+        $multiBrand = count($scope->brandIds()) > 1;
     @endphp
 
     <div class="perf-shell">
+        @if ($scope->shouldRender())
+            <div class="fi-brand-scope-banner">
+                <span aria-hidden="true">◈</span>
+                <span>
+                    Showing <strong>{{ $scope->description() }}</strong>.
+                    @if ($multiBrand)
+                        Post totals below are combined across these brands; account growth is listed per brand.
+                    @endif
+                    Change this with the brand picker in the top bar.
+                </span>
+            </div>
+        @endif
+
         <div class="perf-window">
             <button type="button" wire:click="setWindow(7)"  class="{{ $this->window === 7  ? 'active' : '' }}">7 days</button>
             <button type="button" wire:click="setWindow(30)" class="{{ $this->window === 30 ? 'active' : '' }}">30 days</button>
             <button type="button" wire:click="setWindow(90)" class="{{ $this->window === 90 ? 'active' : '' }}">90 days</button>
         </div>
 
-        {{-- ── Account growth (followers + impressions over time, per network) ── --}}
+        {{-- ── Account growth (followers + impressions over time, per network) ──
+             One block PER brand in scope. Growth is read per Metricool account
+             (blogId), so it can only be reported per brand, never summed. --}}
+        @foreach ($growthBlocks as $g)
         @if ($g['brand'] !== null && $g['data'] !== null)
             @php
                 // Metricool down RIGHT NOW = every attempted network on BOTH dimensions
@@ -93,8 +115,13 @@
                 $growthUnreachable = ($g['data']['followers']['reachable'] ?? true) === false
                     && ($g['data']['impressions']['reachable'] ?? true) === false;
             @endphp
-            <div class="perf-growth">
-                <div class="perf-section-title">Account growth · live from Metricool</div>
+            <div class="perf-growth" wire:key="growth-brand-{{ $g['brand']['id'] }}">
+                <div class="perf-section-title">
+                    Account growth · live from Metricool
+                    {{-- Name the brand whenever more than one is in scope, so two
+                         stacked growth blocks can never be mistaken for one. --}}
+                    @if ($multiBrand) · <strong>{{ $g['brand']['name'] }}</strong> @endif
+                </div>
 
                 @if (($g['data']['warming'] ?? false) === true)
                     {{-- Cold cache: the worker is pulling growth off the web request
@@ -156,13 +183,20 @@
                         </div>
 
                         @if ($dim['has_data'])
-                            @php $historyDays = count($dim['axis']); @endphp
-                            <div class="perf-chart-box" wire:ignore wire:key="perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}">
+                            @php
+                                $historyDays = count($dim['axis']);
+                                // Brand id is part of the canvas id: with several
+                                // brands in scope the page renders one chart pair
+                                // per brand, and duplicate DOM ids would make
+                                // Chart.js draw every dataset into the first canvas.
+                                $chartId = 'perf-growth-'.$g['brand']['id'].'-'.$dimKey.'-'.$g['data']['window_days'];
+                            @endphp
+                            <div class="perf-chart-box" wire:ignore wire:key="{{ $chartId }}">
                                 <canvas
-                                    id="perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}"
+                                    id="{{ $chartId }}"
                                     x-data
                                     x-init="window.eiaawRenderGrowthChart(
-                                        'perf-growth-{{ $dimKey }}-{{ $g['data']['window_days'] }}',
+                                        '{{ $chartId }}',
                                         @js($dim['axis']),
                                         @js(collect($dim['networks'])->where('status','ok')->map(fn($n)=>['label'=>$n['label'],'color'=>$n['color'],'data'=>$n['series']])->values()),
                                         '{{ $dimKey === 'followers' ? 'line' : 'area' }}',
@@ -192,12 +226,18 @@
         @elseif (! $g['configured'])
             {{-- Metricool not wired in this env — quiet, no scary banner on the customer page --}}
         @endif
+        @endforeach {{-- /growthBlocks --}}
 
-        {{-- ── Growth strategy (computed from this brand's own real performance) ── --}}
-        @if ($gs['brief'] !== null)
+        {{-- ── Growth strategy (computed from each brand's own real performance) ──
+             Also per-brand: a brief is derived from one brand's metrics and is
+             meaningless averaged across clients. --}}
+        @foreach ($gsBlocks as $gs)
             @php $b = $gs['brief']; @endphp
-            <div class="perf-growth" style="margin-top:18px;">
-                <div class="perf-section-title">Growth strategy · from your own performance</div>
+            <div class="perf-growth" style="margin-top:18px;" wire:key="gs-brand-{{ $loop->index }}">
+                <div class="perf-section-title">
+                    Growth strategy · from your own performance
+                    @if ($multiBrand) · <strong>{{ $gs['brand'] }}</strong> @endif
+                </div>
 
                 @if ($b['summary'] !== '')
                     <div class="perf-growth-note" style="margin-bottom:12px; font-size:0.95em;">{{ $b['summary'] }}</div>
@@ -262,9 +302,12 @@
                     Computed from {{ $b['post_count'] }} of your published posts · updated {{ $b['updated_at'] }} · real readings only — the AI uses this to plan your calendar, hooks, and CTAs.
                 </div>
             </div>
-        @endif
+        @endforeach {{-- /gsBlocks --}}
 
-        <div class="perf-section-title">Posts — last {{ $this->window }} days</div>
+        <div class="perf-section-title">
+            Posts — last {{ $this->window }} days
+            @if ($multiBrand) · combined across {{ $scope->description() }} @endif
+        </div>
 
         <div class="perf-grid">
             <div class="perf-tile">

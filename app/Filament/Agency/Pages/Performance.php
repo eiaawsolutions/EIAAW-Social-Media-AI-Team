@@ -7,6 +7,7 @@ use App\Models\Brand;
 use App\Models\PostMetric;
 use App\Models\ScheduledPost;
 use App\Models\Workspace;
+use App\Services\Brands\BrandScope;
 use App\Services\Metricool\AccountGrowthService;
 use App\Services\Metrics\MetricsCsvImporter;
 use Filament\Actions\Action;
@@ -74,9 +75,13 @@ class Performance extends Page
                 ->color('gray')
                 ->action(function (): void {
                     $svc = app(AccountGrowthService::class);
-                    $ws = $this->workspace();
-                    $brand = $ws ? $svc->brandForWorkspace($ws) : null;
-                    if ($brand && $brand->metricool_blog_id) {
+
+                    // Refresh EVERY brand currently in scope, not just the
+                    // workspace's first Metricool-mapped brand — otherwise an
+                    // agency viewing three clients could only ever refresh one
+                    // of them, and the other two silently kept stale figures.
+                    $refreshed = 0;
+                    foreach ($this->growthBrands() as $brand) {
                         // Drop the cached payload AND the stampede guard, then
                         // queue a fresh pull on the worker. Never pull inline —
                         // that would re-pin the web worker (the original stall).
@@ -85,10 +90,26 @@ class Performance extends Page
                             AccountGrowthService::refreshLockKey((int) $brand->metricool_blog_id, $this->window)
                         );
                         $svc->queueRefresh($brand, $this->window);
+                        $refreshed++;
                     }
+
+                    if ($refreshed === 0) {
+                        Notification::make()
+                            ->title('Nothing to refresh')
+                            ->body('No brand in the current scope is connected to Metricool yet.')
+                            ->warning()
+                            ->send();
+
+                        return;
+                    }
+
                     Notification::make()
                         ->title('Refreshing growth')
-                        ->body('Pulling the latest followers + impressions from Metricool in the background — they’ll appear here in a few seconds.')
+                        ->body(sprintf(
+                            'Pulling the latest followers + impressions from Metricool for %d brand%s in the background — they’ll appear here in a few seconds.',
+                            $refreshed,
+                            $refreshed === 1 ? '' : 's',
+                        ))
                         ->success()
                         ->send();
                 }),
@@ -132,6 +153,12 @@ class Performance extends Page
                         return;
                     }
 
+                    // Deliberately the WHOLE workspace, not the current brand
+                    // scope. Rows are matched by platform_post_url, which is
+                    // globally unambiguous — narrowing to the selected brands
+                    // would silently skip valid rows for brands the operator
+                    // happens to have filtered out of view, and read as data
+                    // loss rather than as a filter.
                     $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
                     if ($brandIds->isEmpty()) {
                         Notification::make()
@@ -191,27 +218,46 @@ class Performance extends Page
 
     public function workspace(): ?Workspace
     {
-        $user = auth()->user();
-        if (! $user) return null;
-        return $user->currentWorkspace
-            ?? $user->workspaces()->first()
-            ?? $user->ownedWorkspaces()->first();
+        return $this->scope()->workspace();
+    }
+
+    /** The global brand scope set by the topbar switcher. */
+    public function scope(): BrandScope
+    {
+        return app(BrandScope::class);
     }
 
     /**
-     * Brand timezone used for window cutoffs and display formatting.
-     * Falls back to the first non-archived brand of the workspace; UTC
-     * if neither resolves.
+     * The brand ids every figure on this page is computed from — the operator's
+     * current selection, already intersected with their own workspace.
+     *
+     * This replaces the old "every brand in the workspace" pluck. That was the
+     * root of this page's worst defect: post metrics summed ALL brands while the
+     * growth and strategy cards above them described ONE brand, on the same
+     * screen, with nothing saying so.
+     *
+     * @return array<int>
+     */
+    public function scopedBrandIds(): array
+    {
+        return $this->scope()->brandIds();
+    }
+
+    /**
+     * Timezone for window cutoffs and display. Unambiguous when the scope is a
+     * single brand; for a mixed scope it falls back to the workspace's first
+     * brand and the subheading says so explicitly (see getSubheading) rather
+     * than implying every brand shares one clock.
      */
     public function brandTimezone(): string
     {
-        $ws = $this->workspace();
-        if (! $ws) return 'UTC';
-        $brand = Brand::where('workspace_id', $ws->id)
-            ->whereNull('archived_at')
-            ->orderBy('id')
-            ->first();
-        return $brand?->timezone ?: 'UTC';
+        return $this->scope()->timezone();
+    }
+
+    /** True when the scope spans brands in different timezones. */
+    public function hasMixedTimezones(): bool
+    {
+        return $this->scope()->hasMixedTimezones();
     }
 
     /**
@@ -225,29 +271,52 @@ class Performance extends Page
      *
      * @return array<string,mixed>
      */
-    public function growth(): array
+    /**
+     * The in-scope brands that actually have a Metricool account mapped, in
+     * display order. Growth is an ACCOUNT-level reading (one timeseries per
+     * blogId), so it can only ever be reported per brand — never summed.
+     *
+     * @return \Illuminate\Support\Collection<int, Brand>
+     */
+    public function growthBrands(): \Illuminate\Support\Collection
+    {
+        return Brand::query()
+            ->whereIn('id', $this->scopedBrandIds())
+            ->whereNotNull('metricool_blog_id')
+            ->orderBy('name')
+            ->get();
+    }
+
+    /**
+     * One account-growth block PER brand in scope.
+     *
+     * Previously this returned a single block for the workspace's first
+     * Metricool-mapped brand while the post metrics below aggregated every
+     * brand — so a Studio/Agency workspace read one client's follower chart
+     * directly above another client's impressions. Growth is per-account and
+     * cannot be summed, so the honest fix is one labelled block per brand.
+     *
+     * @return array<int, array<string,mixed>>
+     */
+    public function growthBlocks(): array
     {
         $svc = app(AccountGrowthService::class);
-        $ws = $this->workspace();
-        $brand = $ws ? $svc->brandForWorkspace($ws) : null;
+        $configured = \App\Services\Metricool\MetricoolClient::fromConfig() !== null;
 
-        if ($brand === null) {
-            return [
-                'configured' => \App\Services\Metricool\MetricoolClient::fromConfig() !== null,
-                'brand' => null,
-                'data' => null,
+        $blocks = [];
+        foreach ($this->growthBrands() as $brand) {
+            $blocks[] = [
+                'configured' => $configured,
+                'brand' => ['id' => $brand->id, 'name' => $brand->name, 'blog_id' => $brand->metricool_blog_id],
+                // Web-safe read: cache-hit or a 'warming' scaffold — never the ~13
+                // serial Metricool calls inside this request (that pinned the web
+                // worker; see memory prod_web_is_artisan_serve_dev_server). The
+                // worker warms the cache and the view polls it in.
+                'data' => $svc->cachedForBrand($brand, $this->window),
             ];
         }
 
-        return [
-            'configured' => \App\Services\Metricool\MetricoolClient::fromConfig() !== null,
-            'brand' => ['id' => $brand->id, 'name' => $brand->name, 'blog_id' => $brand->metricool_blog_id],
-            // Web-safe read: cache-hit or a 'warming' scaffold — never the ~13
-            // serial Metricool calls inside this request (that pinned the web
-            // worker; see memory prod_web_is_artisan_serve_dev_server). The
-            // worker warms the cache and the view polls it in.
-            'data' => $svc->cachedForBrand($brand, $this->window),
-        ];
+        return $blocks;
     }
 
     /**
@@ -260,14 +329,29 @@ class Performance extends Page
      *
      * @return array<string,mixed>
      */
-    public function growthStrategy(): array
+    /**
+     * One Growth Strategy brief PER brand in scope — same reasoning as
+     * growthBlocks(): a brief is computed from one brand's own metrics and is
+     * meaningless averaged across clients.
+     *
+     * @return array<int, array<string,mixed>>  each ['brand'=>string, 'brief'=>array]
+     */
+    public function growthStrategyBlocks(): array
     {
-        $ws = $this->workspace();
-        $brand = $ws ? app(AccountGrowthService::class)->brandForWorkspace($ws) : null;
-        if ($brand === null) {
-            return ['brief' => null];
+        $blocks = [];
+        foreach (Brand::whereIn('id', $this->scopedBrandIds())->orderBy('name')->get() as $brand) {
+            $block = $this->growthStrategyForBrand($brand);
+            if ($block['brief'] !== null) {
+                $blocks[] = ['brand' => $brand->name, 'brief' => $block['brief']];
+            }
         }
 
+        return $blocks;
+    }
+
+    /** @return array<string,mixed> */
+    public function growthStrategyForBrand(Brand $brand): array
+    {
         $brief = \App\Models\GrowthStrategyBrief::currentForBrand($brand->id)->first();
         if (! $brief) {
             return ['brief' => null];
@@ -337,7 +421,7 @@ class Performance extends Page
 
         $tz = $this->brandTimezone();
         $since = Carbon::now($tz)->subDays($this->window)->utc();
-        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        $brandIds = $this->scopedBrandIds();
 
         $publishedCount = ScheduledPost::whereIn('brand_id', $brandIds)
             ->where('status', 'published')
@@ -405,7 +489,7 @@ class Performance extends Page
         if (! $ws) return [];
         $tz = $this->brandTimezone();
         $since = Carbon::now($tz)->subDays($this->window)->utc();
-        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        $brandIds = $this->scopedBrandIds();
 
         $latestMetricIds = \DB::table('post_metrics')
             ->select(\DB::raw('MAX(id) as id'))
@@ -444,7 +528,7 @@ class Performance extends Page
         if (! $ws) return [];
         $tz = $this->brandTimezone();
         $since = Carbon::now($tz)->subDays($this->window)->utc();
-        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        $brandIds = $this->scopedBrandIds();
 
         // Latest metric per post — order by engagement desc.
         $latestMetricIds = \DB::table('post_metrics')
@@ -481,8 +565,23 @@ class Performance extends Page
     {
         $ws = $this->workspace();
         if (! $ws) return null;
-        $tz = $this->brandTimezone();
-        return $ws->name . ' · ' . $tz . ' · every number is a real reading or sourced upload, no fabricated metrics';
+
+        $scope = $this->scope();
+
+        // Name the brand scope FIRST. Every number below is computed from it,
+        // and a screenshot of this page must be self-describing — "which brand
+        // is this?" was previously unanswerable.
+        $bits = [$ws->name, $scope->description()];
+
+        // A mixed scope has no single clock. Say so instead of printing one
+        // brand's timezone as if it governed every row.
+        $bits[] = $scope->hasMixedTimezones()
+            ? 'mixed timezones'
+            : $this->brandTimezone();
+
+        $bits[] = 'every number is a real reading or sourced upload, no fabricated metrics';
+
+        return implode(' · ', $bits);
     }
 
     private function emptySummary(): array

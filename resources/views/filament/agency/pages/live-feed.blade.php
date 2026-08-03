@@ -309,6 +309,8 @@
 
     @php
         $tz = $this->brandTimezone();
+        $scope = $this->scope();
+        $multiBrand = count($scope->brandIds()) > 1;
         $platformCounts = $this->platformCounts();
         $total = $this->totalLive();
         $posts = $this->posts();
@@ -355,6 +357,19 @@
             </div>
         </div>
 
+        @if ($scope->shouldRender())
+            <div class="fi-brand-scope-banner">
+                <span aria-hidden="true">◈</span>
+                <span>
+                    Showing <strong>{{ $scope->description() }}</strong>.
+                    @if ($multiBrand)
+                        Each tile is stamped in its own brand's timezone; the date filters read as <strong>{{ $tz }}</strong>.
+                    @endif
+                    Change this with the brand picker in the top bar.
+                </span>
+            </div>
+        @endif
+
         <div class="lf-tabs">
             <button type="button"
                     wire:click="setPlatform(null)"
@@ -394,7 +409,11 @@
                         $caption = trim((string) ($draft?->body ?? ''));
                         $isPublishing = $post->status === 'submitted';
                         $stamp = $isPublishing ? $post->submitted_at : $post->published_at;
-                        $stampLocal = $stamp?->copy()->setTimezone($tz);
+                        // Render in THIS post's own brand timezone. Using one
+                        // workspace-wide timezone stamped every brand's posts
+                        // with the first brand's wall clock.
+                        $postTz = $this->postTimezone($post);
+                        $stampLocal = $stamp?->copy()->setTimezone($postTz);
                         $clickHref = $isPublishing ? null : $this->clickUrl($post);
                         $hasUrl = ! empty($clickHref);
                         // Published row but no verified permalink — the
