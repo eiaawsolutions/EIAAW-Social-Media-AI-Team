@@ -30,6 +30,8 @@ use Illuminate\Database\Eloquent\Builder;
  */
 class CalendarEntryResource extends Resource
 {
+    use \App\Filament\Agency\Concerns\ScopesToSelectedBrands;
+
     protected static ?string $model = CalendarEntry::class;
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCalendarDays;
     protected static ?string $navigationLabel = 'Calendar';
@@ -50,6 +52,8 @@ class CalendarEntryResource extends Resource
             ->persistFiltersInSession()
             ->persistSearchInSession()
             ->columns([
+                // Auto-hides when the brand scope is a single brand.
+                self::brandColumn(),
                 Tables\Columns\TextColumn::make('scheduled_date')
                     ->label('Day')
                     ->date('M j')
@@ -402,10 +406,14 @@ class CalendarEntryResource extends Resource
             return parent::getEloquentQuery()->whereRaw('1 = 0');
         }
 
-        return parent::getEloquentQuery()
-            ->whereHas('brand', function (Builder $q) use ($workspaceId) {
-                $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
-            });
+        // Workspace isolation first (authoritative), then the operator's brand
+        // selection from the topbar switcher on top of it.
+        return self::applyBrandScope(
+            parent::getEloquentQuery()
+                ->whereHas('brand', function (Builder $q) use ($workspaceId) {
+                    $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
+                })
+        );
     }
 
     public static function getPages(): array

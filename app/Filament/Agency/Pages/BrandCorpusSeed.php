@@ -120,7 +120,10 @@ class BrandCorpusSeed extends Page
 
     public function mount(): void
     {
-        $this->brand = request()->integer('brand') ?: null;
+        // URL wins, then the global topbar scope when it names exactly one
+        // brand — so picking a brand up there lands you on that brand's corpus.
+        $this->brand = request()->integer('brand')
+            ?: app(\App\Services\Brands\BrandScope::class)->single()?->id;
         // Pin the selector to a CONCRETE brand id so the dropdown shows the
         // brand every action will tie to. Without this, $this->brand stays null
         // and the page silently operated on the first brand (the bug: every

@@ -129,6 +129,21 @@ class AgencyPanelProvider extends PanelProvider
                 fn (): string => Blade::render('<link rel="stylesheet" href="' . asset('brand/auth.css') . '?v=' . filemtime(public_path('brand/auth.css')) . '">'),
                 scopes: [Login::class, RequestPasswordReset::class, ResetPassword::class],
             )
+            // Global brand switcher — the single control that decides which
+            // brand(s) every page and table in this panel shows. Multi-select:
+            // all brands, one brand, or a subset. It self-hides for workspaces
+            // with a single brand (Solo tier), so this hook is a no-op there.
+            //
+            // Styles go in <head> because a Livewire component renders after
+            // the layout's @push stacks are flushed.
+            ->renderHook(
+                PanelsRenderHook::HEAD_END,
+                fn (): string => view('filament.agency.partials.brand-scope-styles')->render(),
+            )
+            ->renderHook(
+                PanelsRenderHook::TOPBAR_START,
+                fn (): string => Blade::render('@livewire(\App\Livewire\BrandScopeSwitcher::class)'),
+            )
             ->renderHook(
                 PanelsRenderHook::SIMPLE_LAYOUT_START,
                 fn (): string => view('filament.agency.auth.hero')->render(),

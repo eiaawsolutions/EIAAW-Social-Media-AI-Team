@@ -6,6 +6,7 @@ use App\Models\Brand;
 use App\Models\PostMetric;
 use App\Models\ScheduledPost;
 use App\Models\Workspace;
+use App\Services\Brands\BrandScope;
 use App\Services\Publishing\PostVerificationRules;
 use Filament\Pages\Page;
 use Illuminate\Contracts\Support\Htmlable;
@@ -72,22 +73,57 @@ class LiveFeed extends Page
 
     public function workspace(): ?Workspace
     {
-        $user = auth()->user();
-        if (! $user) return null;
-        return $user->currentWorkspace
-            ?? $user->workspaces()->first()
-            ?? $user->ownedWorkspaces()->first();
+        return $this->scope()->workspace();
     }
 
+    /** The global brand scope set by the topbar switcher. */
+    public function scope(): BrandScope
+    {
+        return app(BrandScope::class);
+    }
+
+    /**
+     * The brand ids this feed draws from — the operator's current selection,
+     * already intersected with their own workspace.
+     *
+     * @return array<int>
+     */
+    public function scopedBrandIds(): array
+    {
+        return $this->scope()->brandIds();
+    }
+
+    /**
+     * Timezone for the date-range filter boundaries. Unambiguous when the scope
+     * is one brand.
+     *
+     * NOTE: individual tiles render their OWN brand's timezone (see
+     * postTimezone) — this is only used for interpreting the from/until filter
+     * inputs, which need a single reference clock.
+     */
     public function brandTimezone(): string
     {
-        $ws = $this->workspace();
-        if (! $ws) return 'UTC';
-        $brand = Brand::where('workspace_id', $ws->id)
-            ->whereNull('archived_at')
-            ->orderBy('id')
-            ->first();
-        return $brand?->timezone ?: 'UTC';
+        return $this->scope()->timezone();
+    }
+
+    /** True when the visible posts span brands in different timezones. */
+    public function hasMixedTimezones(): bool
+    {
+        return $this->scope()->hasMixedTimezones();
+    }
+
+    /**
+     * The timezone a given post's published_at should be rendered in — its own
+     * brand's, not the workspace's first brand's.
+     *
+     * The old page formatted every tile in the first brand's timezone, so an
+     * agency with a KL brand and a London brand saw the London posts stamped
+     * with KL wall-clock times. Times shown against the wrong clock are worse
+     * than no times at all.
+     */
+    public function postTimezone(ScheduledPost $post): string
+    {
+        return $post->brand?->timezone ?: 'UTC';
     }
 
     /** @return \Illuminate\Support\Collection<int, ScheduledPost> */
@@ -96,7 +132,7 @@ class LiveFeed extends Page
         $ws = $this->workspace();
         if (! $ws) return collect();
 
-        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        $brandIds = $this->scopedBrandIds();
 
         // Show published rows AND submitted rows (the "publishing —
         // confirming with platform" gap). Submitted-without-blotato_post_id
@@ -211,7 +247,7 @@ class LiveFeed extends Page
     {
         $ws = $this->workspace();
         if (! $ws) return [];
-        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        $brandIds = $this->scopedBrandIds();
 
         return ScheduledPost::query()
             ->join('drafts', 'drafts.id', '=', 'scheduled_posts.draft_id')
@@ -233,7 +269,7 @@ class LiveFeed extends Page
     {
         $ws = $this->workspace();
         if (! $ws) return 0;
-        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        $brandIds = $this->scopedBrandIds();
         return ScheduledPost::whereIn('brand_id', $brandIds)
             ->where('status', 'submitted')
             ->whereNotNull('blotato_post_id')
@@ -250,7 +286,7 @@ class LiveFeed extends Page
     {
         $ws = $this->workspace();
         if (! $ws) return 0;
-        $brandIds = Brand::where('workspace_id', $ws->id)->pluck('id');
+        $brandIds = $this->scopedBrandIds();
         $rows = ScheduledPost::with('draft')
             ->whereIn('brand_id', $brandIds)
             ->where('status', 'published')
@@ -307,6 +343,15 @@ class LiveFeed extends Page
             ? implode(' · ', $bits)
             : 'only posts confirmed live on the platform appear here';
 
-        return $ws->name . ' · ' . $this->brandTimezone() . ' · ' . $tail;
+        $scope = $this->scope();
+
+        // Name the brand scope, and be honest when the feed spans clocks —
+        // each tile renders its own brand's timezone, so printing one timezone
+        // here as if it governed the page would be a lie.
+        $clock = $scope->hasMixedTimezones()
+            ? 'times shown per brand'
+            : $this->brandTimezone();
+
+        return implode(' · ', [$ws->name, $scope->description(), $clock, $tail]);
     }
 }

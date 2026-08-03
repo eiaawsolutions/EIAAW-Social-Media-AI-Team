@@ -26,6 +26,8 @@ use Illuminate\Support\Facades\Storage;
  */
 class BrandAssetResource extends Resource
 {
+    use \App\Filament\Agency\Concerns\ScopesToSelectedBrands;
+
     protected static ?string $model = BrandAsset::class;
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedPhoto;
     protected static ?string $navigationLabel = 'Asset library';
@@ -43,6 +45,10 @@ class BrandAssetResource extends Resource
         return $table
             ->defaultSort('id', 'desc')
             ->columns([
+                // Auto-hides when the brand scope is a single brand. Assets are
+                // brand-approved material, so mixing two clients' libraries with
+                // no label is how the wrong logo ends up in the wrong post.
+                self::brandColumn(),
                 Tables\Columns\ImageColumn::make('public_url')
                     ->label('Preview')
                     ->size(64)
@@ -225,10 +231,14 @@ class BrandAssetResource extends Resource
             return parent::getEloquentQuery()->whereRaw('1 = 0');
         }
 
-        return parent::getEloquentQuery()
-            ->whereHas('brand', function (Builder $q) use ($workspaceId) {
-                $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
-            });
+        // Workspace isolation first (authoritative), then the operator's brand
+        // selection from the topbar switcher on top of it.
+        return self::applyBrandScope(
+            parent::getEloquentQuery()
+                ->whereHas('brand', function (Builder $q) use ($workspaceId) {
+                    $q->whereNull('archived_at')->where('workspace_id', $workspaceId);
+                })
+        );
     }
 
     public static function getPages(): array

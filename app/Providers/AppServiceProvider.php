@@ -40,6 +40,13 @@ class AppServiceProvider extends ServiceProvider
             \Filament\Auth\Notifications\ResetPassword::class,
             fn ($app, array $params) => new \App\Notifications\PinnedResetPassword(...$params),
         );
+
+        // The global brand scope is read many times per request — by the topbar
+        // switcher, by every scoped resource query, and by page subheadings.
+        // `scoped` gives one instance per request/job so its brand lookup runs a
+        // single query, while never leaking one worker's tenant into the next
+        // job (which a plain singleton would do on a long-lived queue worker).
+        $this->app->scoped(\App\Services\Brands\BrandScope::class);
     }
 
     public function boot(): void
